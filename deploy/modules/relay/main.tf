@@ -62,7 +62,10 @@ locals {
 }
 
 resource "google_service_account" "relay" {
-  account_id   = substr("${var.name_prefix}-relay-${var.region}", 0, 30)
+  # 30 characters is the hard limit, and a truncated region name can land on a
+  # hyphen, which the API rejects for a reason that is not obvious from the
+  # error.
+  account_id   = trimsuffix(substr("${var.name_prefix}-relay-${var.region}", 0, 30), "-")
   project      = var.project_id
   display_name = "MOQOM relay (${var.region})"
   description  = "Runs the relay VMs. Holds no data-plane authority: media is authorised by CAT tokens the relay verifies, not by this identity."
@@ -143,11 +146,11 @@ resource "google_compute_instance_template" "relay" {
   }
 
   metadata = {
-    user-data                  = local.cloud_init
-    google-logging-enabled     = "true"
-    google-monitoring-enabled  = "true"
-    block-project-ssh-keys     = "true"
-    cos-update-strategy        = "update_disabled"
+    user-data                    = local.cloud_init
+    google-logging-enabled       = "true"
+    google-monitoring-enabled    = "true"
+    block-project-ssh-keys       = "true"
+    cos-update-strategy          = "update_disabled"
     google-logging-use-fluentbit = "true"
   }
 
@@ -252,18 +255,27 @@ resource "google_compute_region_instance_group_manager" "relay" {
   distribution_policy_target_shape = "EVEN"
 
   update_policy {
-    type                         = "PROACTIVE"
-    minimal_action               = "REPLACE"
+    type                           = "PROACTIVE"
+    minimal_action                 = "REPLACE"
     most_disruptive_allowed_action = "REPLACE"
-    replacement_method           = "SUBSTITUTE"
+    replacement_method             = "SUBSTITUTE"
 
     # Surge first, then remove. `max_unavailable_fixed = 0` is the whole point:
     # capacity never dips below the current size during a rollout, because the
     # instances being replaced are holding sessions that cannot be re-established
     # somewhere else without the viewer noticing.
-    max_surge_fixed       = var.update_max_surge
-    max_unavailable_fixed = 0
-    min_ready_sec         = var.update_min_ready_sec
+    #
+    # A regional MIG rejects a non-zero surge unless redistribution is off, so
+    # rebalancing across zones is suspended for the duration of the update.
+    max_surge_fixed              = var.update_max_surge
+    max_unavailable_fixed        = 0
+    instance_redistribution_type = "NONE"
+
+    # There is no `min_ready_sec` here: it exists only in google-beta for
+    # regional groups. What gates the rollout instead is the serving health
+    # check — two consecutive passes five seconds apart — which is a weaker
+    # guarantee than a fixed soak, and the reason `update_max_surge` is small
+    # enough that a bad build cannot replace the whole tier before anyone looks.
   }
 
   auto_healing_policies {

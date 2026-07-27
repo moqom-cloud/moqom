@@ -1,0 +1,48 @@
+project_id     = "moqom-prod"
+primary_region = "us-central1"
+
+# Three regions covering the Americas, EMEA, and APAC. Every additional region
+# is a fixed cost — a MIG floor of three machines and an external address — so
+# add them when the latency of the nearest existing region is the complaint,
+# not in anticipation.
+relay_regions = {
+  us-central1 = {
+    relay_cidr      = "10.30.0.0/20"
+    serverless_cidr = "10.30.16.0/26"
+    machine_type    = "n2d-standard-8"
+    min_replicas    = 3
+    max_replicas    = 30
+  }
+  europe-west1 = {
+    relay_cidr      = "10.31.0.0/20"
+    serverless_cidr = "10.31.16.0/26"
+    machine_type    = "n2d-standard-8"
+    min_replicas    = 3
+    max_replicas    = 30
+  }
+  asia-southeast1 = {
+    relay_cidr      = "10.32.0.0/20"
+    serverless_cidr = "10.32.16.0/26"
+    machine_type    = "n2d-standard-4"
+    min_replicas    = 3
+    max_replicas    = 15
+  }
+}
+
+relay_image    = "us-docker.pkg.dev/moqom-prod/moqom/moqom-relay@sha256:0000000000000000000000000000000000000000000000000000000000000000"
+control_image  = "us-docker.pkg.dev/moqom-prod/moqom/moqom-control@sha256:0000000000000000000000000000000000000000000000000000000000000000"
+director_image = "us-docker.pkg.dev/moqom-prod/moqom/moqom-director@sha256:0000000000000000000000000000000000000000000000000000000000000000"
+
+dns_domain = "moqom.example."
+
+recording_bucket_name     = "moqom-prod-recordings-example"
+recording_bucket_location = "US"
+recording_retention_days  = 365
+
+github_owner        = "moqom"
+github_repositories = ["moqom/moqom"]
+github_deploy_refs  = ["refs/heads/main"]
+
+byoc_aws_accounts = {}
+
+notification_emails = ["sre@example.com"]

@@ -148,14 +148,13 @@ variable "connection_idle_timeout_sec" {
 
 variable "update_max_surge" {
   type        = number
-  description = "Extra instances a rolling update may create. For a regional MIG this must be at least the number of zones, or zero; zero means the update is done by taking capacity away first, which for a relay means dropping sessions."
+  description = "Extra instances a rolling update may create. A regional MIG rejects anything between one and its zone count, so in practice this is three or zero; zero means the update takes capacity away first, which for a relay means dropping sessions."
   default     = 3
-}
 
-variable "update_min_ready_sec" {
-  type        = number
-  description = "How long a replacement instance must be healthy before the update moves on."
-  default     = 120
+  validation {
+    condition     = var.update_max_surge == 0 || var.update_max_surge >= 3
+    error_message = "update_max_surge must be 0 or at least 3, the zone count of a regional MIG."
+  }
 }
 
 variable "autohealing_initial_delay_sec" {

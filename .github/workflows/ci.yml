@@ -98,6 +98,40 @@ jobs:
       - name: Verify
         run: ./vendor/verify-quinn.sh
 
+  # Terraform is the one layer where a mistake is discovered by a failed apply
+  # against a real project, which is the most expensive place to find one.
+  # Formatting and schema validation are cheap and catch a useful fraction of it
+  # -- not quota, org policy, or IAM propagation, which need a plan.
+  terraform:
+    name: Terraform
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: deploy
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.15.8
+          terraform_wrapper: false
+
+      - name: Format
+        run: terraform fmt -recursive -check -diff
+
+      # Every module standalone as well as the roots: a module only ever
+      # reached through a root can carry a schema error that the root's own
+      # variables happen to paper over.
+      - name: Validate
+        run: |
+          set -euo pipefail
+          for dir in bootstrap envs/* modules/*; do
+            echo "::group::$dir"
+            terraform -chdir="$dir" init -backend=false -input=false -no-color
+            terraform -chdir="$dir" validate -no-color
+            echo "::endgroup::"
+          done
+
   go:
     name: Go
     runs-on: ubuntu-latest

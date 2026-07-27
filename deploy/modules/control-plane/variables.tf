@@ -105,6 +105,18 @@ variable "secret_env" {
   default     = {}
 }
 
+variable "readable_buckets" {
+  type        = list(string)
+  description = "GCS buckets this service may read. Bound here rather than in the data module so the dependency runs one way: storage is created first, and the things that use it grant themselves access."
+  default     = []
+}
+
+variable "sql_instance_name" {
+  type        = string
+  description = "Cloud SQL instance to register this service's identity against as an IAM database user. Null skips it. Registering here rather than in the data module keeps the dependency one-way; the database is created first and its consumers enrol themselves."
+  default     = null
+}
+
 variable "sql_instance_connection_name" {
   type        = string
   description = "project:region:instance for the Cloud SQL volume mount. Null skips it; with private IP and direct VPC egress the socket mount is redundant, and it is here only for tooling that insists on the Unix socket."

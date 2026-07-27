@@ -31,13 +31,33 @@ DerivedData/
 *.xcworkspace/xcshareddata/IDEWorkspaceChecks.plist
 Pods/
 
-# Terraform
+# Terraform. State is in GCS and never on disk; a *.tfstate here means someone
+# ran a root without initialising its backend, and it will contain credentials.
 .terraform/
 *.tfstate
 *.tfstate.*
+crash.log
+crash.*.log
 *.tfvars
 !*.tfvars.example
-.terraform.lock.hcl
+!*.tfvars.json.example
+backend.hcl
+!backend.hcl.example
+
+# Root lock files are committed on purpose. They pin the exact provider builds
+# and their checksums, so CI and a laptop resolve to the same code and a
+# compromised registry release cannot be substituted silently. Regenerate with
+# `terraform providers lock` for every platform that runs Terraform, not just
+# your own — a lock file missing linux_amd64 breaks CI and looks like a network
+# error when it does.
+#
+# Module lock files are ignored, and the asymmetry is deliberate. A module is
+# never applied on its own; the only thing that initialises one is CI running
+# `validate` against it. Such a run writes a lock file for whichever platform
+# happened to produce it, and committing that single-platform file is strictly
+# worse than having none: the next machine with a different OS fails init on a
+# checksum mismatch. The pinning that matters already lives in the roots.
+deploy/modules/*/.terraform.lock.hcl
 
 # Secrets and local config
 .env

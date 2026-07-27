@@ -1,0 +1,16 @@
+project_id = "moqom-dev"
+region     = "us-central1"
+
+# Tags are fine in dev. Prod pins digests; see the comment on the relay module's
+# `image` variable for why.
+relay_image    = "us-docker.pkg.dev/moqom-dev/moqom-dev/moqom-relay:latest"
+control_image  = "us-docker.pkg.dev/moqom-dev/moqom-dev/moqom-control:latest"
+director_image = "us-docker.pkg.dev/moqom-dev/moqom-dev/moqom-director:latest"
+
+dns_domain            = "dev.moqom.example."
+recording_bucket_name = "moqom-dev-recordings-example"
+
+github_owner        = "moqom"
+github_repositories = ["moqom/moqom"]
+
+notification_emails = ["sre@example.com"]

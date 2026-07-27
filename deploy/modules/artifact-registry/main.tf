@@ -12,17 +12,21 @@ resource "google_artifact_registry_repository" "this" {
 
   cleanup_policy_dry_run = var.cleanup_policy_dry_run
 
-  cleanup_policy {
+  # KEEP is evaluated ahead of DELETE, so the retention floor holds regardless
+  # of what the delete rule below matches.
+  cleanup_policies {
     id     = "keep-tagged-releases"
     action = "KEEP"
+
     most_recent_versions {
       keep_count = var.keep_tagged_versions
     }
   }
 
-  cleanup_policy {
+  cleanup_policies {
     id     = "delete-untagged"
     action = "DELETE"
+
     condition {
       tag_state  = "UNTAGGED"
       older_than = var.untagged_retention

@@ -22,7 +22,11 @@
 # Everything else in this file is the first direction.
 
 locals {
-  pool_name = "projects/${var.project_number}/locations/global/workloadIdentityPools/${var.pool_id}"
+  # Read back rather than assembled from the project number, because a
+  # principalSet built from the wrong number is accepted by the API and simply
+  # never matches, which presents as an authentication failure with no
+  # diagnostic anywhere.
+  pool_name = google_iam_workload_identity_pool.this.name
 
   github_repo_principals = var.github == null ? [] : [
     for repo in var.github.repositories :
@@ -104,6 +108,27 @@ resource "google_project_iam_member" "deployer" {
   member  = google_service_account.deployer[0].member
 }
 
+# `roles/iam.serviceAccountUser` on named accounts, never on the project.
+#
+# Deploying the relay means replacing an instance template, and an instance
+# template names the service account its VMs run as, so CI genuinely needs to
+# act as the relay identity. Granting that at project scope, though, means CI
+# can act as *every* identity in the project — and it already holds
+# `compute.instanceAdmin.v1`. Those two together are a complete escalation: boot
+# a VM as the most privileged account in the project, read its access token off
+# the metadata server, and CI is now that account. Neither role looks alarming
+# on its own, which is what makes the pair worth spelling out.
+#
+# Scoped per account, the ceiling is whatever the listed identities can already
+# do. The relay account, by design, can do very little.
+resource "google_service_account_iam_member" "deployer_acts_as" {
+  for_each = var.github == null ? toset([]) : toset(var.deployer_impersonates)
+
+  service_account_id = "projects/${var.project_id}/serviceAccounts/${each.value}"
+  role               = "roles/iam.serviceAccountUser"
+  member             = google_service_account.deployer[0].member
+}
+
 # --- BYOC: relays running outside GCP ----------------------------------------
 
 resource "google_iam_workload_identity_pool_provider" "aws" {
@@ -136,7 +161,7 @@ resource "google_iam_workload_identity_pool_provider" "oidc" {
   display_name                       = "OIDC ${each.key}"
 
   attribute_mapping = {
-    "google.subject"  = "assertion.sub"
+    "google.subject"   = "assertion.sub"
     "attribute.issuer" = "assertion.iss"
   }
 

@@ -17,3 +17,8 @@ output "service_account_member" {
   value       = google_service_account.service.member
   description = "Runtime service account in IAM member form."
 }
+
+output "postgres_username" {
+  value       = local.postgres_username
+  description = "Username to connect to Cloud SQL with. Not the service account email: Cloud SQL strips the domain suffix, and the full email will fail authentication."
+}

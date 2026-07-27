@@ -12,8 +12,10 @@ resource "google_project_service" "this" {
 
 # Enabling an API returns before the control plane will reliably serve it, and
 # the first resource to touch it fails with a 403 that reads like a broken IAM
-# binding. Dependents wait on `services_ready`, not on the module, because
-# `depends_on` alone only orders the API call, not its propagation.
+# binding. Ordering the API call is not enough; something has to wait out the
+# propagation. A `depends_on` against this whole module covers it, since this
+# resource is inside it, and `services_ready` exists for callers that want to
+# depend on the wait alone.
 resource "time_sleep" "propagation" {
   depends_on = [google_project_service.this]
 

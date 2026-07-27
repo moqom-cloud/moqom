@@ -3,11 +3,6 @@ variable "project_id" {
   description = "Project that owns the pool and the service accounts."
 }
 
-variable "project_number" {
-  type        = string
-  description = "Numeric project number. Principal identifiers use the number, not the id, and there is no way to derive one from the other inside Terraform without a data source round trip."
-}
-
 variable "name_prefix" {
   type        = string
   description = "Prefix for resource names, e.g. moqom-prod."
@@ -36,7 +31,18 @@ variable "github" {
 
 variable "deployer_roles" {
   type        = list(string)
-  description = "Project roles for the CI deployer service account. Enumerated by the caller so the blast radius of CI is written down in the environment root rather than buried in a module."
+  description = "Project roles for the CI deployer service account. Enumerated by the caller so the blast radius of CI is written down in the environment root rather than buried in a module. Do not put roles/iam.serviceAccountUser here; use deployer_impersonates, which grants it on named accounts instead of every account in the project."
+  default     = []
+
+  validation {
+    condition     = !contains(var.deployer_roles, "roles/iam.serviceAccountUser")
+    error_message = "roles/iam.serviceAccountUser at project scope lets CI launch a VM as any service account in the project, including more privileged ones, and read its token from the metadata server. List the specific accounts in deployer_impersonates instead."
+  }
+}
+
+variable "deployer_impersonates" {
+  type        = list(string)
+  description = "Service account emails the CI deployer may run workloads as. Granted roles/iam.serviceAccountUser on each account individually rather than project-wide."
   default     = []
 }
 

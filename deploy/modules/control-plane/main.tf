@@ -10,6 +10,10 @@ resource "google_service_account" "service" {
   description  = "Runtime identity for the ${var.service_name} Cloud Run service."
 }
 
+locals {
+  postgres_username = trimsuffix(google_service_account.service.email, ".gserviceaccount.com")
+}
+
 resource "google_project_iam_member" "base" {
   for_each = toset(concat([
     "roles/logging.logWriter",
@@ -30,6 +34,50 @@ resource "google_artifact_registry_repository_iam_member" "pull" {
   repository = var.artifact_registry_repository.repository
   role       = "roles/artifactregistry.reader"
   member     = google_service_account.service.member
+}
+
+# Cloud SQL turns a service account into a Postgres role by stripping the
+# `.gserviceaccount.com` suffix from its email. The truncated form is what the
+# application must send as its username; the access token is the password.
+resource "google_sql_user" "iam" {
+  count = var.sql_instance_name == null ? 0 : 1
+
+  name     = local.postgres_username
+  project  = var.project_id
+  instance = var.sql_instance_name
+  type     = "CLOUD_IAM_SERVICE_ACCOUNT"
+}
+
+resource "google_project_iam_member" "sql" {
+  for_each = var.sql_instance_name == null ? toset([]) : toset([
+    "roles/cloudsql.client",
+    "roles/cloudsql.instanceUser",
+  ])
+
+  project = var.project_id
+  role    = each.value
+  member  = google_service_account.service.member
+}
+
+resource "google_storage_bucket_iam_member" "readable" {
+  for_each = toset(var.readable_buckets)
+
+  bucket = each.value
+  role   = "roles/storage.objectViewer"
+  member = google_service_account.service.member
+}
+
+# Access to the secrets this service actually mounts, and to nothing else. The
+# grant lives with the reference rather than with the secret, so adding an
+# environment variable cannot leave a service with a mount it is not permitted
+# to read — the two are the same line of configuration.
+resource "google_secret_manager_secret_iam_member" "secret_env" {
+  for_each = var.secret_env
+
+  project   = var.project_id
+  secret_id = each.value
+  role      = "roles/secretmanager.secretAccessor"
+  member    = google_service_account.service.member
 }
 
 resource "google_cloud_run_v2_service" "this" {
@@ -105,6 +153,17 @@ resource "google_cloud_run_v2_service" "this" {
         }
       }
 
+      # Injected rather than left to the caller because the correct value is a
+      # mangled form of an identity created inside this module, and a caller
+      # asking for it would be asking the module for its own output.
+      dynamic "env" {
+        for_each = var.sql_instance_name == null ? [] : [local.postgres_username]
+        content {
+          name  = "PGUSER"
+          value = env.value
+        }
+      }
+
       dynamic "env" {
         for_each = var.secret_env
         content {
@@ -155,6 +214,10 @@ resource "google_cloud_run_v2_service" "this" {
     type    = "TRAFFIC_TARGET_ALLOCATION_TYPE_LATEST"
     percent = 100
   }
+
+  # Cloud Run resolves secret mounts at revision creation, not at first request,
+  # so a deploy that races the IAM binding fails outright rather than degrading.
+  depends_on = [google_secret_manager_secret_iam_member.secret_env]
 }
 
 # Cloud Run IAM is a coarse gate in front of the application's own
