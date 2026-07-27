@@ -92,23 +92,39 @@ todos:
     content: "Build the iOS SDK: UniFFI bindings over moqom-client packaged as an XCFramework, a RealityKit capture layer on customPostProcessing with no pre-26 fallback, a Metal RGB-to-NV12 compute pass writing into the VTCompressionSession pool, HEVC with low-latency rate control plus temporal SVC and LTR, and an AVSampleBufferDisplayLayer viewer. Secure Enclave key generation for device identity."
     status: in_progress
     remaining: "The shared logic is done and tested: namespaces, identity, the session state machine, the room model with its four kinds of mute and its capability subset rule, and render-aware layer selection. 103 tests, Swift 6 language mode, complete strict concurrency. The SwiftUI layer now runs too -- three UI tests drive join, go-live and leave on a simulator in CI. What is written but has never executed is everything touching hardware: the VideoToolbox encoder, the Metal scene capture, the RealityKit tap, AVCaptureSession, and display-layer rendering, none of which a simulator exercises. Broadcast still publishes a per-frame descriptor rather than encoded bytes, which keeps group numbering and priority testable off-device but is a placeholder that would be easy to mistake for a real payload. An earlier probe claiming this SDK had neither customPostProcessing nor NetworkConnection<QUIC> was measuring the Command Line Tools SDK, which is macOS-only; against iPhoneOS 26.2 both are present, and the 26 floor makes them reachable without a single availability check anywhere in the SDK."
+    # Lives in moqom-swift, not here. SwiftPM resolves a git dependency by
+    # looking for Package.swift at the repository root and cannot be pointed at
+    # a subdirectory, so a package nested in this monorepo is not consumable by
+    # URL at all. The split is forced by the package manager rather than chosen.
     evidence:
-      - sdk/ios/Package.swift
-      - sdk/ios/Sources/MoqomCore/Identity.swift
-      - sdk/ios/Sources/MoqomKit/Session/SessionStateMachine.swift
-      - sdk/ios/Sources/MoqomKit/Room/*.swift
-      - sdk/ios/Sources/MoqomKit/Platform/*.swift
-      - sdk/ios/Tests/MoqomKitTests/*.swift
-      - samples/ios/project.yml
-      - samples/ios/MoqomRoom/Sources/RoomScreen.swift
-      - samples/ios/MoqomRoomUITests/JoinFlowTests.swift
-      - path: sdk/ios/Package.swift
+      - repo: moqom-swift
+        path: Package.swift
+      - repo: moqom-swift
+        path: Sources/MoqomCore/Identity.swift
+      - repo: moqom-swift
+        path: Sources/MoqomKit/Session/SessionStateMachine.swift
+      - repo: moqom-swift
+        path: Sources/MoqomKit/Room/*.swift
+      - repo: moqom-swift
+        path: Sources/MoqomKit/Platform/*.swift
+      - repo: moqom-swift
+        path: Tests/MoqomKitTests/*.swift
+      - repo: moqom-swift
+        path: Samples/MoqomRoom/project.yml
+      - repo: moqom-swift
+        path: Samples/MoqomRoom/MoqomRoom/Sources/RoomScreen.swift
+      - repo: moqom-swift
+        path: Samples/MoqomRoom/MoqomRoomUITests/JoinFlowTests.swift
+      - repo: moqom-swift
+        path: Package.swift
         contains: 'swiftLanguageMode\(\.v6\)'
       # The floor is load-bearing rather than incidental: dropping it back
       # reintroduces every availability check this design does without.
-      - path: sdk/ios/Package.swift
+      - repo: moqom-swift
+        path: Package.swift
         contains: '\.iOS\(\.v26\)'
-      - path: samples/ios/project.yml
+      - repo: moqom-swift
+        path: Samples/MoqomRoom/project.yml
         contains: 'iOS: "26\.0"'
   - id: ios-realityview
     content: "Add the RealityView.renderingEffects.customPostProcessing tap, which the 26 floor makes unconditional, as SceneCaptureEffect conforming to PostProcessEffect. Same handoff shape as the UIKit hook -- source texture, target texture, command buffer -- so SceneCapture.submit is unchanged and the obligation to write targetColorTexture or render nothing carries over verbatim."
@@ -118,9 +134,11 @@ todos:
     # UIKit hook would cost UIKit hosts support rather than shed a legacy path.
     # The two are different UI frameworks, not different OS versions.
     evidence:
-      - path: sdk/ios/Sources/MoqomKit/Platform/RealityKitCapture.swift
+      - repo: moqom-swift
+        path: Sources/MoqomKit/Platform/RealityKitCapture.swift
         contains: 'customPostProcessing'
-      - path: sdk/ios/Sources/MoqomKit/Platform/RealityKitCapture.swift
+      - repo: moqom-swift
+        path: Sources/MoqomKit/Platform/RealityKitCapture.swift
         contains: 'struct SceneCaptureEffect: PostProcessEffect'
   - id: visionos-sdk
     content: "Build the visionOS SDK: broadcast via RealityRenderer driving a parallel scene with an explicit broadcast camera entity rendering into an IOSurface-backed CVPixelBuffer, and viewing via VTDecompressionSession into a LowLevelTexture wrapped as a TextureResource inside a RealityView. Design the scene API around the broadcast camera from the start. Verify RealityRenderer on device early, not in the simulator."

@@ -17,11 +17,11 @@ yet. `moqom-transport` accepts sessions over both QUIC and WebTransport on one
 UDP port, but nothing above it speaks MOQT over them, so the bytes are correct
 and now movable rather than moving.
 
-`MoqomKit` covers the client logic that does not touch hardware — rooms, roles
-and capabilities, the session state machine, render-aware layer selection —
-under Swift 6 strict concurrency, tested against an in-memory loopback relay.
-The capture and encode path is written and compiles but has never executed,
-because that needs a device.
+[`MoqomKit`](https://github.com/moqom-cloud/moqom-swift) covers the client logic
+that does not touch hardware — rooms, roles and capabilities, the session state
+machine, render-aware layer selection — under Swift 6 strict concurrency, tested
+against an in-memory loopback relay. The capture and encode path is written and
+compiles but has never executed, because that needs a device.
 
 [`docs/PLAN.md`](docs/PLAN.md) is the full design and build order — what is
 built, what is next, and the reasoning behind the decisions that are hard to
@@ -35,7 +35,7 @@ do when it fails.
 ```
 rs/          Rust: protocol, transport, relay, client core, CLI
 go/          Go: control plane and director (identity, tokens, rooms, policy)
-sdk/         Platform SDKs: ios, android, web
+sdk/         Platform SDKs: android, web
 schemas/     FlatBuffers schemas for catalog, data, and agent tracks
 agents/      Reference AI agents
 samples/     Quickstarts, reference app, platform showcases
@@ -48,6 +48,22 @@ vendor/      Vendored dependencies (quinn, verified unmodified in CI)
 The Rust/Go split is by role, not preference: Go owns request/response state
 backed by Postgres, Rust owns everything on the media path. Nothing written in
 Go sits between a publisher and a subscriber.
+
+## Other repositories
+
+| Repository | What |
+| --- | --- |
+| [`moqom-swift`](https://github.com/moqom-cloud/moqom-swift) | `MoqomKit`, the Apple-platform SDK, and the `MoqomRoom` sample |
+
+The Swift SDK is not here for a mechanical reason rather than an architectural
+one: SwiftPM resolves a git dependency by looking for `Package.swift` at the
+repository *root* and cannot be pointed at a subdirectory, so a package nested
+in this tree is not consumable by URL at all. Android and web have no such
+constraint — Gradle and npm resolve published artifacts and do not care where
+the source lives — so those SDKs stay in `sdk/`.
+
+The `MoqomRoom` sample moved with it, because a sample that can only depend on a
+released version stops being an integration test.
 
 ## Development
 

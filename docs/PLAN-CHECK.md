@@ -54,6 +54,31 @@ Point evidence at things that only exist if the work was really done. A
 with a source file or a symbol. Tests are often the best evidence available: a
 passing test file is harder to produce accidentally than a module.
 
+### Evidence in another repository
+
+The plan covers the platform, but the Swift SDK lives in `moqom-swift` — SwiftPM
+will not resolve a package nested in a monorepo, so that split is forced by the
+package manager. Name the repository and the entry becomes relative to it:
+
+```yaml
+    evidence:
+      - repo: moqom-swift
+        path: Sources/MoqomKit/Platform/RealityKitCapture.swift
+        contains: 'customPostProcessing'
+```
+
+These resolve against a **sibling checkout** — `../moqom-swift` next to this
+repo — which is where both land if you clone them into the same directory. Clone
+both and the entry is checked exactly like a local one.
+
+With no sibling present the entry is reported as external and left unjudged. It
+is never counted as verified and never fails the run, so a completed item whose
+evidence is all external shows up as neither. That is a weaker guarantee, and it
+is weak in the right place: all this check could prove about those files is that
+they exist, while `moqom-swift`'s own CI builds them and runs their tests. The
+property worth protecting is that unresolved evidence is never silently counted
+as verified, and it is not.
+
 ## Items with no evidence
 
 Most of the plan has none, and that is correct rather than a gap to close. The

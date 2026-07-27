@@ -23,6 +23,18 @@ Evidence is a path glob, or a mapping of `path` plus a `contains` regex that
 must match somewhere in the file. Items with no evidence are counted and
 reported but never fail: most of this plan is argument rather than artifact,
 and pretending otherwise would turn the check into a rubber stamp.
+
+Evidence may also name another repository with `repo`, because the plan covers
+the whole platform while the Swift SDK lives in `moqom-swift` -- SwiftPM cannot
+consume a package nested in a monorepo, so that split is forced rather than
+chosen. Such entries resolve against a sibling checkout when one exists, and are
+otherwise reported as external and left unjudged. They never fail the run.
+
+That is a deliberately weaker guarantee, and it is weak in the right place. What
+these entries would prove here is that a file exists; the other repository's own
+CI builds those files and runs their tests, which is a stronger claim than this
+check could make. What matters is that an unresolved entry is never silently
+counted as verified.
 """
 
 from __future__ import annotations
@@ -52,33 +64,45 @@ if not sys.stdout.isatty():
     GREEN = RED = YELLOW = DIM = BOLD = OFF = ""
 
 
-class Missing(Exception):
-    """An evidence entry the tree does not satisfy."""
+def check_one(entry: str | dict) -> tuple[str, str | None]:
+    """Judge one evidence entry.
 
-
-def check_one(entry: str | dict) -> str | None:
-    """Return None if the entry holds, else why it does not."""
+    Returns ("ok", None), ("fail", why), or ("external", where) -- the last for
+    evidence in another repository with no checkout to resolve it against.
+    """
     if isinstance(entry, str):
-        pattern, contains = entry, None
+        pattern, contains, repo = entry, None, None
     else:
-        pattern, contains = entry["path"], entry.get("contains")
+        pattern = entry["path"]
+        contains = entry.get("contains")
+        repo = entry.get("repo")
 
-    matches = sorted(ROOT.glob(pattern))
+    base = ROOT
+    if repo:
+        # A sibling of this repo, which is where a working checkout lands if you
+        # cloned both into the same directory. Anywhere else and we cannot know.
+        base = ROOT.parent / repo
+        if not base.is_dir():
+            return "external", f"{repo}/{pattern} (no checkout at {base})"
+
+    matches = sorted(base.glob(pattern))
     if not matches:
-        return f"no file matches {pattern}"
+        where = f"{repo}/{pattern}" if repo else pattern
+        return "fail", f"no file matches {where}"
 
     if contains is None:
-        return None
+        return "ok", None
 
     regex = re.compile(contains)
     for path in matches:
         try:
             if regex.search(path.read_text(errors="replace")):
-                return None
+                return "ok", None
         except OSError as exc:
-            return f"{path.relative_to(ROOT)} unreadable: {exc}"
+            return "fail", f"{path} unreadable: {exc}"
 
-    return f"{pattern} exists but nothing in it matches /{contains}/"
+    where = f"{repo}/{pattern}" if repo else pattern
+    return "fail", f"{where} exists but nothing in it matches /{contains}/"
 
 
 def main() -> int:
@@ -97,6 +121,7 @@ def main() -> int:
 
     seen: set[str] = set()
     failures: list[tuple[str, str, list[str]]] = []
+    external: list[tuple[str, list[str]]] = []
     verified = unverifiable = 0
 
     for todo in todos:
@@ -119,16 +144,25 @@ def main() -> int:
             unverifiable += 1
             continue
 
-        problems = [p for p in (check_one(e) for e in evidence) if p]
+        judged = [check_one(e) for e in evidence]
+        problems = [why for verdict, why in judged if verdict == "fail" and why]
+        elsewhere = [where for verdict, where in judged if verdict == "external" and where]
+
+        if elsewhere:
+            external.append((tid, elsewhere))
 
         if status == "completed":
             if problems:
                 failures.append(
                     (tid, "marked completed, but the tree disagrees", problems)
                 )
+            elif elsewhere:
+                # Some or all of the evidence could not be resolved, so this is
+                # not verified and must not be counted as such.
+                pass
             else:
                 verified += 1
-        elif status == "pending" and not problems:
+        elif status == "pending" and not problems and not elsewhere:
             failures.append(
                 (
                     tid,
@@ -146,6 +180,21 @@ def main() -> int:
         f"  {GREEN}{verified} verified against the tree{OFF}, "
         f"{DIM}{unverifiable} carry no evidence{OFF}"
     )
+
+    if external:
+        print(
+            f"  {YELLOW}{len(external)} item(s) cite evidence in another repo "
+            f"with no checkout to resolve it{OFF}"
+        )
+        for tid, wheres in external:
+            print(f"      {DIM}{tid}{OFF}")
+            for where in wheres:
+                print(f"        {YELLOW}{where}{OFF}")
+        print(
+            f"  {DIM}Not counted as verified. Clone the sibling repo to check "
+            f"these locally; its own CI{OFF}"
+        )
+        print(f"  {DIM}builds and tests those files, which proves more.{OFF}")
 
     if unverifiable:
         print(
