@@ -108,8 +108,24 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
+      # Pinned rather than taking the image default. 16.4 is deliberately older
+      # than local dev (26.x): the deployment target is iOS 17, and building
+      # against the oldest SDK we claim to support is what catches an API that
+      # only exists on newer ones. The cost is that isolation annotations differ
+      # between the two SDKs, so local-green is not CI-green on its own.
+      #
+      # Failing loudly when the image drops this version is the point. An image
+      # bump that silently moved the SDK would change what the job proves
+      # without changing anything in this file.
       - name: Toolchain
-        run: swift --version && xcodebuild -version
+        run: |
+          if [ ! -d /Applications/Xcode_16.4.app ]; then
+            echo "::error::Xcode 16.4 is gone from the runner image. Available:"
+            ls -d /Applications/Xcode*.app
+            exit 1
+          fi
+          sudo xcode-select -s /Applications/Xcode_16.4.app
+          swift --version && xcodebuild -version
 
       # The package builds for macOS, so the shared logic -- rooms, layer
       # selection, the session machine -- is tested on the host rather than in a
