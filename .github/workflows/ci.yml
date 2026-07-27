@@ -21,7 +21,7 @@ jobs:
       run:
         working-directory: rs
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       # No toolchain action: rust-toolchain.toml pins the version, and letting
       # rustup honour it keeps CI and local builds on exactly one compiler.
@@ -53,9 +53,9 @@ jobs:
       run:
         working-directory: go
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v7
         with:
           go-version-file: go/go.mod
           # Re-enable once there is a go.sum; setup-go's cache requires one.
