@@ -55,4 +55,16 @@ Two documents are worth reading before changing protocol code:
 
 ## Licence
 
-Not yet set, deliberately. See [LICENSING.md](LICENSING.md).
+Dual-licensed. Protocol, client core, SDKs, schemas, and samples are
+Apache-2.0; the relay, control plane, and `moqom-cc` are BUSL-1.1, converting to
+Apache-2.0 four years after each release. The Business Source License permits
+self-hosting for your own applications and users, including commercially, and
+prohibits only offering MOQOM to third parties as a competing hosted service.
+
+See [LICENSING.md](LICENSING.md) for the full map and the reasoning.
+
+## Contributing
+
+Contributions require signing the [CLA](.github/CLA.md). MOQOM is dual-licensed
+and the CLA permits relicensing — Section 4 spells out exactly what that means,
+because it is the term most worth reading before you agree to it.
