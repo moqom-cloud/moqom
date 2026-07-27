@@ -17,6 +17,12 @@ yet. `moqom-transport` accepts sessions over both QUIC and WebTransport on one
 UDP port, but nothing above it speaks MOQT over them, so the bytes are correct
 and now movable rather than moving.
 
+`MoqomKit` covers the client logic that does not touch hardware — rooms, roles
+and capabilities, the session state machine, render-aware layer selection —
+under Swift 6 strict concurrency, tested against an in-memory loopback relay.
+The capture and encode path is written and compiles but has never executed,
+because that needs a device.
+
 [`docs/PLAN.md`](docs/PLAN.md) is the full design and build order — what is
 built, what is next, and the reasoning behind the decisions that are hard to
 reverse. It is checked against this repository on every push, so an item marked

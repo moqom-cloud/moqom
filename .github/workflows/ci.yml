@@ -98,6 +98,57 @@ jobs:
       - name: Verify
         run: ./vendor/verify-quinn.sh
 
+  # The only runner with an iOS SDK on it, which is the point. Three `#if
+  # os(iOS)` branches in the SDK have never been compiled anywhere else, and the
+  # sample app has only ever been typechecked against macOS. Building for the
+  # simulator here is the first thing that reads them.
+  swift:
+    name: Swift
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Toolchain
+        run: swift --version && xcodebuild -version
+
+      # The package builds for macOS, so the shared logic -- rooms, layer
+      # selection, the session machine -- is tested on the host rather than in a
+      # simulator, which is faster and where all 103 tests live.
+      - name: Build and test the package
+        working-directory: sdk/ios
+        run: |
+          swift build
+          swift test
+
+      - name: Install xcodegen and xcbeautify
+        run: brew install xcodegen xcbeautify
+
+      # project.yml is the source and the pbxproj is generated, so this also
+      # confirms the generator still agrees with the file.
+      - name: Generate the sample project
+        working-directory: samples/ios
+        run: xcodegen generate
+
+      # No signing: a simulator build needs none, and the runner has no team.
+      # This compiles the iOS-only branches without needing a certificate.
+      #
+      # pipefail is load-bearing. Without it the pipeline reports xcbeautify's
+      # exit code, xcodebuild's failure is discarded, and the job goes green on
+      # a broken build -- which is worse than having no job at all.
+      - name: Build the sample for the simulator
+        working-directory: samples/ios
+        shell: bash
+        run: |
+          set -o pipefail
+          xcodebuild build \
+            -project MoqomRoom.xcodeproj \
+            -scheme MoqomRoom \
+            -destination 'generic/platform=iOS Simulator' \
+            CODE_SIGNING_ALLOWED=NO \
+            | xcbeautify --renderer github-actions
+        env:
+          NSUnbufferedIO: YES
+
   # The plan is a document, so nothing about it fails to compile. Checking it
   # against the tree is what keeps it from quietly becoming fiction -- in both
   # directions, since an item stuck on "pending" after the work landed misleads
