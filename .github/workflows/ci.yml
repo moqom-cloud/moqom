@@ -98,33 +98,37 @@ jobs:
       - name: Verify
         run: ./vendor/verify-quinn.sh
 
-  # The only runner with an iOS SDK on it, which is the point. Three `#if
-  # os(iOS)` branches in the SDK have never been compiled anywhere else, and the
-  # sample app has only ever been typechecked against macOS. Building for the
-  # simulator here is the first thing that reads them.
+  # The only runner with an iOS SDK on it, and the only place the SwiftUI layer
+  # is executed rather than merely compiled. The `#if os(iOS)` branches in the
+  # SDK are read nowhere else either.
   swift:
     name: Swift
-    runs-on: macos-15
+    # macos-26 for the iOS 26 SDK; the macos-15 image tops out below the floor.
+    runs-on: macos-26
     steps:
       - uses: actions/checkout@v7
 
-      # Pinned rather than taking the image default. 16.4 is deliberately older
-      # than local dev (26.x): the deployment target is iOS 17, and building
-      # against the oldest SDK we claim to support is what catches an API that
-      # only exists on newer ones. The cost is that isolation annotations differ
-      # between the two SDKs, so local-green is not CI-green on its own.
+      # Asserts the requirement, not a version string. What the build actually
+      # needs is an iOS 26 SDK -- the deployment floor is 26, and SwiftPM must
+      # be new enough to parse `.v26` at all -- so that is what gets checked.
+      # Naming an exact Xcode here instead would rot at the next image bump and
+      # fail with "not found" rather than with the reason.
       #
-      # Failing loudly when the image drops this version is the point. An image
-      # bump that silently moved the SDK would change what the job proves
-      # without changing anything in this file.
+      # This replaces an earlier pin to 16.4, whose rationale was that building
+      # against the oldest supported SDK catches accidental use of newer APIs.
+      # Raising the floor to 26 inverted that: the oldest supported SDK is now
+      # the newest one, and the APIs in question are the point rather than an
+      # accident.
       - name: Toolchain
         run: |
-          if [ ! -d /Applications/Xcode_16.4.app ]; then
-            echo "::error::Xcode 16.4 is gone from the runner image. Available:"
+          latest=$(ls -d /Applications/Xcode*.app | sort -V | tail -1)
+          sudo xcode-select -s "$latest"
+          sdk=$(xcodebuild -showsdks | sed -n 's/.*-sdk iphoneos\([0-9][0-9]*\).*/\1/p' | sort -n | tail -1)
+          if [ -z "$sdk" ] || [ "$sdk" -lt 26 ]; then
+            echo "::error::need an iOS 26 SDK, newest on this image is '${sdk:-none}' ($latest)"
             ls -d /Applications/Xcode*.app
             exit 1
           fi
-          sudo xcode-select -s /Applications/Xcode_16.4.app
           swift --version && xcodebuild -version
 
       # The package builds for macOS, so the shared logic -- rooms, layer
@@ -151,8 +155,24 @@ jobs:
       - name: Boot a simulator
         id: sim
         run: |
-          udid=$(xcrun simctl list devices available --json \
-            | python3 -c "import json,sys; d=json.load(sys.stdin)['devices']; print(next(dev['udid'] for rt in sorted(d, reverse=True) if 'iOS' in rt for dev in d[rt] if 'iPhone' in dev['name']))")
+          udid=$(xcrun simctl list devices available --json | python3 -c "
+          import json, sys
+          devices = json.load(sys.stdin)['devices']
+          # Runtime identifiers look like com.apple.CoreSimulator.SimRuntime.iOS-26-2.
+          # An iOS 17 device would install fine and then fail to launch an app
+          # built for 26, so the floor is enforced when picking, not after.
+          runtimes = sorted(
+              (rt for rt in devices if '.iOS-' in rt and int(rt.split('.iOS-')[1].split('-')[0]) >= 26),
+              key=lambda rt: [int(p) for p in rt.split('.iOS-')[1].split('-')],
+              reverse=True,
+          )
+          for rt in runtimes:
+              for dev in devices[rt]:
+                  if 'iPhone' in dev['name']:
+                      print(dev['udid'])
+                      sys.exit(0)
+          sys.exit('no iOS 26+ iPhone simulator on this image')
+          ")
           echo "udid=$udid" >> "$GITHUB_OUTPUT"
           xcrun simctl boot "$udid"
           xcrun simctl bootstatus "$udid" -b

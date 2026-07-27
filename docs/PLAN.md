@@ -89,9 +89,9 @@ todos:
     evidence:
       - schemas/catalog.fbs
   - id: ios-sdk
-    content: "Build the iOS SDK: UniFFI bindings over moqom-client packaged as an XCFramework, a RealityKit capture layer with customPostProcessing on iOS 26+ and ARView.renderCallbacks below that, a Metal RGB-to-NV12 compute pass writing into the VTCompressionSession pool, HEVC with low-latency rate control plus temporal SVC and LTR, and an AVSampleBufferDisplayLayer viewer. Secure Enclave key generation for device identity."
+    content: "Build the iOS SDK: UniFFI bindings over moqom-client packaged as an XCFramework, a RealityKit capture layer on customPostProcessing with no pre-26 fallback, a Metal RGB-to-NV12 compute pass writing into the VTCompressionSession pool, HEVC with low-latency rate control plus temporal SVC and LTR, and an AVSampleBufferDisplayLayer viewer. Secure Enclave key generation for device identity."
     status: in_progress
-    remaining: "The shared logic is done and tested: namespaces, identity, the session state machine, the room model with its four kinds of mute and its capability subset rule, and render-aware layer selection. 103 tests, Swift 6 language mode, complete strict concurrency. What is written but has never executed is everything touching hardware -- the VideoToolbox encoder, the Metal scene capture, the RealityKit tap, AVCaptureSession, and display-layer rendering -- because there is no device in the loop yet. Broadcast currently publishes a per-frame descriptor rather than encoded bytes, which keeps group numbering and priority testable off-device but is a placeholder that would be easy to mistake for a real payload. This SDK has neither RealityView.renderingEffects.customPostProcessing nor NetworkConnection<QUIC>, both of which the content above assumes, so SceneCapture.submit is deliberately not typed against RealityKit and the iOS 26 callback can call it unchanged."
+    remaining: "The shared logic is done and tested: namespaces, identity, the session state machine, the room model with its four kinds of mute and its capability subset rule, and render-aware layer selection. 103 tests, Swift 6 language mode, complete strict concurrency. The SwiftUI layer now runs too -- three UI tests drive join, go-live and leave on a simulator in CI. What is written but has never executed is everything touching hardware: the VideoToolbox encoder, the Metal scene capture, the RealityKit tap, AVCaptureSession, and display-layer rendering, none of which a simulator exercises. Broadcast still publishes a per-frame descriptor rather than encoded bytes, which keeps group numbering and priority testable off-device but is a placeholder that would be easy to mistake for a real payload. An earlier probe claiming this SDK had neither customPostProcessing nor NetworkConnection<QUIC> was measuring the Command Line Tools SDK, which is macOS-only; against iPhoneOS 26.2 both are present, and the 26 floor makes them reachable without a single availability check anywhere in the SDK."
     evidence:
       - sdk/ios/Package.swift
       - sdk/ios/Sources/MoqomCore/Identity.swift
@@ -101,8 +101,18 @@ todos:
       - sdk/ios/Tests/MoqomKitTests/*.swift
       - samples/ios/project.yml
       - samples/ios/MoqomRoom/Sources/RoomScreen.swift
+      - samples/ios/MoqomRoomUITests/JoinFlowTests.swift
       - path: sdk/ios/Package.swift
         contains: 'swiftLanguageMode\(\.v6\)'
+      # The floor is load-bearing rather than incidental: dropping it back
+      # reintroduces every availability check this design does without.
+      - path: sdk/ios/Package.swift
+        contains: '\.iOS\(\.v26\)'
+      - path: samples/ios/project.yml
+        contains: 'iOS: "26\.0"'
+  - id: ios-realityview
+    content: "Move the RealityKit tap from ARView.renderCallbacks.postProcess to RealityView.renderingEffects.customPostProcessing. The 26 floor makes the SwiftUI-native hook unconditional and the UIKit-era one is what the SDK still implements, so the sample reaches RealityKit through a UIViewRepresentable it should not need. Same handoff shape -- source texture, target texture, command buffer -- so SceneCapture.submit is unchanged; the obligation to write targetColorTexture or render nothing carries over verbatim."
+    status: pending
   - id: visionos-sdk
     content: "Build the visionOS SDK: broadcast via RealityRenderer driving a parallel scene with an explicit broadcast camera entity rendering into an IOSurface-backed CVPixelBuffer, and viewing via VTDecompressionSession into a LowLevelTexture wrapped as a TextureResource inside a RealityView. Design the scene API around the broadcast camera from the start. Verify RealityRenderer on device early, not in the simulator."
     status: pending
@@ -1700,7 +1710,7 @@ RealityView.renderingEffects.customPostProcessing   (iOS 26+)
   -> CMSampleBuffer -> MOQT object
 ```
 
-Below iOS 26, the same shape works through `ARView.renderCallbacks.postProcess` behind a `UIViewRepresentable`.
+There is no "below iOS 26". The deployment floor is 26 on every platform, so `customPostProcessing` is reachable unconditionally and the `ARView.renderCallbacks.postProcess` fallback is not carried. Both paths existing would mean two capture paths to test on hardware and only one of them ever exercised — the fallback would be the untested one, on the older devices, which is the wrong way round.
 
 Two details that are easy to get silently wrong:
 - **Pull the pixel buffer pool from the encoder** via `VTCompressionSessionGetPixelBufferPool()`, not from scratch. Buffers that merely look right trigger a per-frame `VTPixelTransferSession` copy that never surfaces as an error. Use `420v`, never BGRA — Apple's TN3121 puts BGRA at ~2.6× the memory bandwidth.
@@ -1754,7 +1764,7 @@ On iPhone and iPad, the 2D viewer uses `AVSampleBufferDisplayLayer.sampleBufferR
 
 ### Client transport on Apple platforms
 
-Link `moqom-client` via UniFFI so the wire protocol exists in exactly one place. Because `moqom-proto` is sans-io, the Swift `Transport` protocol can be backed by either quinn or Apple's **`NetworkConnection<QUIC>`** (iOS 26+/visionOS 26+).
+Link `moqom-client` via UniFFI so the wire protocol exists in exactly one place. Because `moqom-proto` is sans-io, the Swift `Transport` protocol can be backed by either quinn or Apple's **`NetworkConnection<QUIC>`**, which the 26 floor makes available without gating — confirmed present in `Network.swiftinterface` on iPhoneOS 26.2, along with `QUICStream` and `QUICDatagram`.
 
 Ship quinn first — one implementation across every platform is worth a lot while the protocol is still moving. Apple's stack is the more interesting long-term option though: no added binary, kernel-integrated connection migration when the user walks from Wi-Fi to cellular, and no memory pressure inside a ReplayKit broadcast extension's ~50MB ceiling. Its gap is no stream priority, which matters less now that our drop-notification mechanism lives at the MOQT layer. Revisit once we can measure migration behaviour and battery on real devices.
 
