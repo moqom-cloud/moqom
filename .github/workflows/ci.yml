@@ -87,6 +87,17 @@ jobs:
           name: fuzz-artifacts
           path: rs/fuzz/artifacts/
 
+  # Vendoring quinn is only worth anything if it stays unmodified and is
+  # actually the copy that gets linked. Both claims decay silently, so both are
+  # checked rather than trusted.
+  vendor:
+    name: Vendored quinn
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Verify
+        run: ./vendor/verify-quinn.sh
+
   go:
     name: Go
     runs-on: ubuntu-latest

@@ -26,7 +26,7 @@ schemas/     FlatBuffers schemas for catalog, data, and agent tracks
 agents/      Reference AI agents
 samples/     Quickstarts, reference app, platform showcases
 deploy/      Terraform
-vendor/      Vendored dependencies (quinn, unmodified)
+vendor/      Vendored dependencies (quinn, verified unmodified in CI)
 ```
 
 The Rust/Go split is by role, not preference: Go owns request/response state
