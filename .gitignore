@@ -1,5 +1,14 @@
 # Rust
 target/
+
+# Fuzzing. The corpus is regenerable (`cargo run --example seed-corpus`) and CI
+# caches its own, so committing it would only add churn. Crashes are not kept
+# here either: anything found gets transcribed into REGRESSION_CORPUS in
+# moqom-proto::testing, where it runs on stable CI instead of rotting in a
+# directory nobody reads.
+rs/fuzz/corpus/
+rs/fuzz/artifacts/
+rs/fuzz/coverage/
 **/*.rs.bk
 *.pdb
 

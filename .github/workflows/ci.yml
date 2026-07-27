@@ -46,6 +46,47 @@ jobs:
         env:
           RUSTDOCFLAGS: -D warnings
 
+  # A short fuzz run on every change, sized to catch a regression that the
+  # property tests miss without holding up a PR. The deep runs happen on the
+  # schedule in fuzz.yml; this is a smoke test, and it is only meaningful
+  # because the corpus is seeded first.
+  fuzz-smoke:
+    name: Fuzz (smoke)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: rs
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install nightly
+        run: rustup toolchain install nightly --profile minimal
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rs
+
+      - name: Install cargo-fuzz
+        run: cargo install cargo-fuzz --locked
+
+      - name: Seed corpus
+        run: |
+          cargo run --example seed-corpus --features testing -- fuzz/corpus/decoders
+          cargo run --example seed-corpus --features testing -- fuzz/corpus/control_frame
+
+      - name: Fuzz decoders
+        run: cargo +nightly fuzz run decoders -- -max_total_time=60
+
+      - name: Fuzz control frame stream
+        run: cargo +nightly fuzz run control_frame -- -max_total_time=60
+
+      - name: Upload crashes
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fuzz-artifacts
+          path: rs/fuzz/artifacts/
+
   go:
     name: Go
     runs-on: ubuntu-latest
