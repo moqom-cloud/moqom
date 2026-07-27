@@ -26,7 +26,7 @@ variable "director_image" {
 
 variable "dns_domain" {
   type        = string
-  description = "Zone apex with a trailing dot, e.g. dev.moqom.example. Null skips DNS entirely and clients dial the relay's address directly."
+  description = "Zone apex with a trailing dot, e.g. dev.cloud.moqom.example. Null skips DNS entirely and clients dial the relay's address directly."
   default     = null
 }
 

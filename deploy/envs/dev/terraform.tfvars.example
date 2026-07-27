@@ -7,7 +7,7 @@ relay_image    = "us-docker.pkg.dev/moqom-dev/moqom-dev/moqom-relay:latest"
 control_image  = "us-docker.pkg.dev/moqom-dev/moqom-dev/moqom-control:latest"
 director_image = "us-docker.pkg.dev/moqom-dev/moqom-dev/moqom-director:latest"
 
-dns_domain            = "dev.moqom.example."
+dns_domain            = "dev.cloud.moqom.example."
 recording_bucket_name = "moqom-dev-recordings-example"
 
 github_owner        = "moqom"
