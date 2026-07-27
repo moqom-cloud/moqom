@@ -1,0 +1,17 @@
+project_id            = "moqom-admin"
+region                = "us-central1"
+state_bucket_name     = "moqom-tfstate-example"
+state_bucket_location = "US"
+
+state_admins = [
+  "group:sre@example.com",
+]
+
+state_writers = [
+  "serviceAccount:moqom-ci-deployer@moqom-admin.iam.gserviceaccount.com",
+]
+
+labels = {
+  component = "bootstrap"
+  managed   = "terraform"
+}

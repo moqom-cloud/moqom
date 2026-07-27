@@ -10,10 +10,11 @@ mapping, and end-to-end encryption our decisions instead of someone else's.
 
 ## Status
 
-Phase 0. `moqom-proto` covers the object model, the control-message envelope
-with six messages, and the data plane — object datagrams and subgroup streams.
-Nothing connects to anything yet: there is no transport, so bytes are correct
-but stationary. See the plan for the full build order.
+Phase 0. `moqom-proto` covers the object model, the data plane — object
+datagrams and subgroup streams — and every control message in draft-19 except
+the fetch object framing used for VOD playback. Nothing connects to anything
+yet: there is no transport, so bytes are correct but stationary. See the plan
+for the full build order.
 
 ## Layout
 
@@ -54,8 +55,8 @@ desynchronises everything after it. A field is silently dropped on decode, which
 a round-trip test can never see because it only ever replays values the encoder
 produced.
 
-Six control messages are written and roughly twelve remain, plus the data plane.
-So the contract is stated once, in `rs/moqom-proto/src/testing.rs`, and enforced
+Eighteen control messages and two data-plane mappings share the same handful of
+failure modes, so the contract is stated once, in `rs/moqom-proto/src/testing.rs`, and enforced
 uniformly. Adding a wire type means implementing `Codec` and adding one line to
 `assert_all_decoder_contracts`; it then inherits every check, and an omission is
 visible in one place instead of being a hazard you had to remember.

@@ -1,0 +1,71 @@
+#cloud-config
+
+write_files:
+  - path: /etc/sysctl.d/60-moqom-relay.conf
+    permissions: "0644"
+    owner: root
+    content: |
+      # QUIC does its loss recovery, pacing, and congestion control in
+      # userspace, so the kernel's only job on the receive path is to not lose
+      # datagrams between the NIC and the socket. The Container-Optimized OS
+      # defaults are sized for a handful of TCP flows; a relay handles small
+      # packets at a high rate from thousands of peers, and the first symptom of
+      # an undersized receive buffer is packet loss that the sender interprets
+      # as congestion and responds to by sending less.
+      net.core.rmem_max = 33554432
+      net.core.wmem_max = 33554432
+      net.core.rmem_default = 8388608
+      net.core.wmem_default = 8388608
+      net.core.netdev_max_backlog = 65536
+      net.core.somaxconn = 8192
+
+      # UDP memory accounting in pages, not bytes.
+      net.ipv4.udp_mem = 262144 524288 1048576
+      net.ipv4.udp_rmem_min = 262144
+      net.ipv4.udp_wmem_min = 262144
+
+  - path: /etc/systemd/system/moqom-relay.service
+    permissions: "0644"
+    owner: root
+    content: |
+      [Unit]
+      Description=MOQOM relay
+      Wants=gcr-online.target docker.service
+      After=gcr-online.target docker.service
+
+      [Service]
+      Type=simple
+      Restart=always
+      RestartSec=5
+      Environment=HOME=/home/chronos
+      ExecStartPre=/usr/bin/docker-credential-gcr configure-docker --registries=${registry_host}
+      ExecStartPre=-/usr/bin/docker rm -f moqom-relay
+      # Host networking, not a port mapping. Docker's userland proxy adds a hop
+      # and a copy per datagram, and SO_REUSEPORT sharding across accept
+      # threads — the standard way to scale a QUIC server past one core — only
+      # works against the host's own stack.
+      ExecStart=/usr/bin/docker run --rm --name moqom-relay \
+        --network host \
+        --ulimit nofile=1048576:1048576 \
+        --ulimit memlock=-1:-1 \
+        --log-driver=json-file --log-opt max-size=64m --log-opt max-file=3 \
+        --env MOQOM_RELAY_UDP_PORT=${udp_port} \
+        --env MOQOM_RELAY_HEALTH_PORT=${health_check_port} \
+%{ for key, value in container_env ~}
+        --env ${key}=${value} \
+%{ endfor ~}
+        ${image}
+      # SIGTERM means drain: stop answering the serving health check, refuse new
+      # sessions, send GOAWAY, and let the ones in flight finish. The relay is
+      # responsible for that sequence; systemd only bounds how long it waits.
+      ExecStop=/usr/bin/docker stop --time=${stop_timeout_sec} moqom-relay
+      TimeoutStopSec=${stop_timeout_sec + 15}
+      KillSignal=SIGTERM
+
+      [Install]
+      WantedBy=multi-user.target
+
+runcmd:
+  - sysctl --system
+  - systemctl daemon-reload
+  - systemctl enable --now moqom-relay.service
