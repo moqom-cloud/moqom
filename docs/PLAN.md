@@ -111,8 +111,17 @@ todos:
       - path: samples/ios/project.yml
         contains: 'iOS: "26\.0"'
   - id: ios-realityview
-    content: "Move the RealityKit tap from ARView.renderCallbacks.postProcess to RealityView.renderingEffects.customPostProcessing. The 26 floor makes the SwiftUI-native hook unconditional and the UIKit-era one is what the SDK still implements, so the sample reaches RealityKit through a UIViewRepresentable it should not need. Same handoff shape -- source texture, target texture, command buffer -- so SceneCapture.submit is unchanged; the obligation to write targetColorTexture or render nothing carries over verbatim."
-    status: pending
+    content: "Add the RealityView.renderingEffects.customPostProcessing tap, which the 26 floor makes unconditional, as SceneCaptureEffect conforming to PostProcessEffect. Same handoff shape as the UIKit hook -- source texture, target texture, command buffer -- so SceneCapture.submit is unchanged and the obligation to write targetColorTexture or render nothing carries over verbatim."
+    status: completed
+    # Not a replacement, which is what this item originally said. ARView is not
+    # deprecated on the 26 SDKs and RealityView is SwiftUI-only, so dropping the
+    # UIKit hook would cost UIKit hosts support rather than shed a legacy path.
+    # The two are different UI frameworks, not different OS versions.
+    evidence:
+      - path: sdk/ios/Sources/MoqomKit/Platform/RealityKitCapture.swift
+        contains: 'customPostProcessing'
+      - path: sdk/ios/Sources/MoqomKit/Platform/RealityKitCapture.swift
+        contains: 'struct SceneCaptureEffect: PostProcessEffect'
   - id: visionos-sdk
     content: "Build the visionOS SDK: broadcast via RealityRenderer driving a parallel scene with an explicit broadcast camera entity rendering into an IOSurface-backed CVPixelBuffer, and viewing via VTDecompressionSession into a LowLevelTexture wrapped as a TextureResource inside a RealityView. Design the scene API around the broadcast camera from the start. Verify RealityRenderer on device early, not in the simulator."
     status: pending
