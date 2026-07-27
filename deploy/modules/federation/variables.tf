@@ -27,6 +27,19 @@ variable "github" {
     ["refs/heads/main"]; empty allows any ref in the listed repositories.
   EOT
   default     = null
+
+  # An owner that does not match the repositories is accepted by the API and
+  # then matches nothing, because the provider's attribute condition and the
+  # service account's principalSet are keyed on different halves of the same
+  # fact. The result is a workflow that cannot authenticate and no log anywhere
+  # saying why. Cheaper to reject here.
+  validation {
+    condition = var.github == null ? true : alltrue([
+      for repo in var.github.repositories :
+      startswith(repo, "${var.github.owner}/")
+    ])
+    error_message = "Every entry in github.repositories must be \"<owner>/<name>\" using github.owner as the owner. A repository under a different owner can never satisfy the provider's attribute condition."
+  }
 }
 
 variable "deployer_roles" {

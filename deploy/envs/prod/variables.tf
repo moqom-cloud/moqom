@@ -60,7 +60,7 @@ variable "director_image" {
 
 variable "dns_domain" {
   type        = string
-  description = "Zone apex with a trailing dot, e.g. cloud.moqom.example. Not optional in production: without it there is no steering and every client is pinned to whichever address it was given."
+  description = "Zone apex with a trailing dot, e.g. moqom.cloud. Not optional in production: without it there is no steering and every client is pinned to whichever address it was given."
 }
 
 variable "recording_bucket_name" {

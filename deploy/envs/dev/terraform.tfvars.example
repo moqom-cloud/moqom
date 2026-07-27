@@ -7,10 +7,14 @@ relay_image    = "us-docker.pkg.dev/moqom-dev/moqom-dev/moqom-relay:latest"
 control_image  = "us-docker.pkg.dev/moqom-dev/moqom-dev/moqom-control:latest"
 director_image = "us-docker.pkg.dev/moqom-dev/moqom-dev/moqom-director:latest"
 
-dns_domain            = "dev.cloud.moqom.example."
-recording_bucket_name = "moqom-dev-recordings-example"
+dns_domain = "dev.moqom.cloud."
 
-github_owner        = "moqom"
-github_repositories = ["moqom/moqom"]
+# Globally unique across all of GCP, not just this project. Add a suffix if it
+# collides with something unrelated.
+recording_bucket_name = "moqom-dev-recordings"
 
-notification_emails = ["sre@example.com"]
+# The org, not the repository owner you might guess from the product name.
+github_owner        = "moqom-cloud"
+github_repositories = ["moqom-cloud/moqom"]
+
+notification_emails = ["sre@moqom.cloud"]

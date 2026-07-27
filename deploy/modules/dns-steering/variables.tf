@@ -10,7 +10,7 @@ variable "zone_name" {
 
 variable "record_name" {
   type        = string
-  description = "Fully qualified record name with a trailing dot, e.g. edge.cloud.moqom.example."
+  description = "Fully qualified record name with a trailing dot, e.g. edge.moqom.cloud."
 }
 
 variable "endpoints" {

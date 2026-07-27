@@ -33,16 +33,23 @@ relay_image    = "us-docker.pkg.dev/moqom-prod/moqom/moqom-relay@sha256:00000000
 control_image  = "us-docker.pkg.dev/moqom-prod/moqom/moqom-control@sha256:0000000000000000000000000000000000000000000000000000000000000000"
 director_image = "us-docker.pkg.dev/moqom-prod/moqom/moqom-director@sha256:0000000000000000000000000000000000000000000000000000000000000000"
 
-dns_domain = "cloud.moqom.example."
+dns_domain = "moqom.cloud."
 
-recording_bucket_name     = "moqom-prod-recordings-example"
+# Bucket names are globally unique across all of GCP, not per project, so this
+# one may already be taken by someone unrelated. Add a suffix rather than
+# assuming it is free.
+recording_bucket_name     = "moqom-prod-recordings"
 recording_bucket_location = "US"
 recording_retention_days  = 365
 
-github_owner        = "moqom"
-github_repositories = ["moqom/moqom"]
+# Must match the GitHub org exactly. The provider's attribute condition compares
+# this string to the `repository_owner` claim, and a mismatch is accepted by the
+# API and then never matches anything, which surfaces as an authentication
+# failure with nothing in any log to explain it.
+github_owner        = "moqom-cloud"
+github_repositories = ["moqom-cloud/moqom"]
 github_deploy_refs  = ["refs/heads/main"]
 
 byoc_aws_accounts = {}
 
-notification_emails = ["sre@example.com"]
+notification_emails = ["sre@moqom.cloud"]

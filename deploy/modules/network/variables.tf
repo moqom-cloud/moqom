@@ -111,7 +111,7 @@ variable "dns_zone_name" {
 
 variable "dns_domain" {
   type        = string
-  description = "Fully qualified DNS name for the zone, with trailing dot, e.g. cloud.moqom.example. Ignored unless `create_dns_zone`."
+  description = "Fully qualified DNS name for the zone, with trailing dot, e.g. moqom.cloud. Ignored unless `create_dns_zone`."
   default     = ""
 }
 
