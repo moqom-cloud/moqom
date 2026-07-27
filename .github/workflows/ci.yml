@@ -129,21 +129,33 @@ jobs:
         working-directory: samples/ios
         run: xcodegen generate
 
-      # No signing: a simulator build needs none, and the runner has no team.
-      # This compiles the iOS-only branches without needing a certificate.
+      # Booted explicitly rather than letting xcodebuild pick, so a runner image
+      # that ships a different set of devices fails here with a clear message
+      # instead of somewhere inside the test run.
+      - name: Boot a simulator
+        id: sim
+        run: |
+          udid=$(xcrun simctl list devices available --json \
+            | python3 -c "import json,sys; d=json.load(sys.stdin)['devices']; print(next(dev['udid'] for rt in sorted(d, reverse=True) if 'iOS' in rt for dev in d[rt] if 'iPhone' in dev['name']))")
+          echo "udid=$udid" >> "$GITHUB_OUTPUT"
+          xcrun simctl boot "$udid"
+          xcrun simctl bootstatus "$udid" -b
+
+      # The only place the SwiftUI layer runs. No signing: a simulator needs
+      # none, and the runner has no team.
       #
       # pipefail is load-bearing. Without it the pipeline reports xcbeautify's
       # exit code, xcodebuild's failure is discarded, and the job goes green on
       # a broken build -- which is worse than having no job at all.
-      - name: Build the sample for the simulator
+      - name: Run the sample's UI tests
         working-directory: samples/ios
         shell: bash
         run: |
           set -o pipefail
-          xcodebuild build \
+          xcodebuild test \
             -project MoqomRoom.xcodeproj \
-            -scheme MoqomRoom \
-            -destination 'generic/platform=iOS Simulator' \
+            -scheme MoqomRoomUITests \
+            -destination "platform=iOS Simulator,id=${{ steps.sim.outputs.udid }}" \
             CODE_SIGNING_ALLOWED=NO \
             | xcbeautify --renderer github-actions
         env:
