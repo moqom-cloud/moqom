@@ -15,7 +15,14 @@ datagrams and subgroup streams — and every control message in draft-19 except
 the fetch object framing used for VOD playback. Nothing connects to anything
 yet. `moqom-transport` accepts sessions over both QUIC and WebTransport on one
 UDP port, but nothing above it speaks MOQT over them, so the bytes are correct
-and now movable rather than moving. See the plan for the full build order.
+and now movable rather than moving.
+
+[`docs/PLAN.md`](docs/PLAN.md) is the full design and build order — what is
+built, what is next, and the reasoning behind the decisions that are hard to
+reverse. It is checked against this repository on every push, so an item marked
+done has files on disk to show for it and an item marked pending does not.
+[`docs/PLAN-CHECK.md`](docs/PLAN-CHECK.md) explains how that works and what to
+do when it fails.
 
 ## Layout
 
@@ -27,6 +34,8 @@ schemas/     FlatBuffers schemas for catalog, data, and agent tracks
 agents/      Reference AI agents
 samples/     Quickstarts, reference app, platform showcases
 deploy/      Terraform
+docs/        The plan, and the rules that keep it true
+tools/       Repository-level checks
 vendor/      Vendored dependencies (quinn, verified unmodified in CI)
 ```
 

@@ -98,6 +98,25 @@ jobs:
       - name: Verify
         run: ./vendor/verify-quinn.sh
 
+  # The plan is a document, so nothing about it fails to compile. Checking it
+  # against the tree is what keeps it from quietly becoming fiction -- in both
+  # directions, since an item stuck on "pending" after the work landed misleads
+  # exactly as much as one marked done that was never built.
+  plan:
+    name: Plan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+
+      - run: pip install pyyaml
+
+      - name: Check the plan against the tree
+        run: python3 tools/plan-check.py
+
   # Terraform is the one layer where a mistake is discovered by a failed apply
   # against a real project, which is the most expensive place to find one.
   # Formatting and schema validation are cheap and catch a useful fraction of it
