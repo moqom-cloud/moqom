@@ -1,0 +1,360 @@
+package token
+
+import (
+	"crypto/ed25519"
+	"encoding/base64"
+	"encoding/json"
+	"errors"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/moqom-cloud/moqom/go/internal/control"
+)
+
+func testKey(t *testing.T) (Key, *Verifier) {
+	t.Helper()
+	key, err := GenerateKey()
+	if err != nil {
+		t.Fatalf("generating a key: %v", err)
+	}
+	public, ok := key.Private.Public().(ed25519.PublicKey)
+	if !ok {
+		t.Fatal("generated key is not Ed25519")
+	}
+	return key, NewVerifier("moqom", map[string]ed25519.PublicKey{key.ID: public})
+}
+
+func claimsFor(grants control.Grants) Claims {
+	return Claims{
+		Issuer:       "moqom",
+		Subject:      "alice",
+		Audience:     "acme",
+		Confirmation: Confirmation{Thumbprint: "MpXqvQAmv7Y3Kk9dHnJpLwRtUvXyZaBcDeFgHiJkLmN"},
+		MOQT:         ScopeFrom(grants, "room-42", false, false),
+	}
+}
+
+func TestRoundTrip(t *testing.T) {
+	key, verifier := testKey(t)
+	now := time.Date(2026, 7, 27, 12, 0, 0, 0, time.UTC)
+	grants := control.Grants{Publish: control.PublishCamera, Moderation: control.CapChatGroup}
+
+	minted, expires, err := Mint(key, claimsFor(grants), 5*time.Minute, now)
+	if err != nil {
+		t.Fatalf("minting: %v", err)
+	}
+	if !expires.Equal(now.Add(5 * time.Minute)) {
+		t.Errorf("expiry is %s, want %s", expires, now.Add(5*time.Minute))
+	}
+
+	claims, err := verifier.Verify(minted, now)
+	if err != nil {
+		t.Fatalf("verifying: %v", err)
+	}
+
+	recovered, err := claims.MOQT.Grants()
+	if err != nil {
+		t.Fatalf("reading grants: %v", err)
+	}
+	if recovered != grants {
+		t.Errorf("grants came back as %+v, want %+v", recovered, grants)
+	}
+
+	// The device is derived, never carried, so a token cannot name a device its
+	// key does not imply -- which is what makes a device ban match it.
+	identity, err := claims.Identity()
+	if err != nil {
+		t.Fatalf("deriving identity: %v", err)
+	}
+	if identity.Username != "alice" {
+		t.Errorf("username is %q", identity.Username)
+	}
+	if len(identity.Device) != control.DeviceIDLength {
+		t.Errorf("device is %q, want %d characters", identity.Device, control.DeviceIDLength)
+	}
+	if !strings.HasPrefix(claims.Confirmation.Thumbprint, identity.Device) {
+		t.Error("the device is not a prefix of the thumbprint it was derived from")
+	}
+}
+
+// The classic JWS forgery: change `alg` to something the verifier will accept on
+// weaker terms. A verifier that reads the algorithm out of the token and dispatches
+// on it can be told to use "none", or to verify an HMAC with the public key as the
+// shared secret. Both validate. Pinning one algorithm is the fix.
+func TestAlgorithmConfusionIsRefused(t *testing.T) {
+	key, verifier := testKey(t)
+	now := time.Now()
+
+	minted, _, err := Mint(key, claimsFor(control.Grants{}), time.Minute, now)
+	if err != nil {
+		t.Fatalf("minting: %v", err)
+	}
+	parts := strings.Split(minted, ".")
+
+	for _, algorithm := range []string{"none", "HS256", "RS256", ""} {
+		forged := encodeSegment(t, header{Algorithm: algorithm, Type: tokenType, KeyID: key.ID})
+		_, err := verifier.Verify(forged+"."+parts[1]+"."+parts[2], now)
+		if !errors.Is(err, ErrUnsupported) {
+			t.Errorf("alg=%q gave %v, want ErrUnsupported", algorithm, err)
+		}
+	}
+}
+
+// A token minted for some other purpose in the same deployment must not be
+// replayable at a relay, so the type is checked as well as the algorithm.
+func TestForeignTokenTypeIsRefused(t *testing.T) {
+	key, verifier := testKey(t)
+	now := time.Now()
+
+	minted, _, err := Mint(key, claimsFor(control.Grants{}), time.Minute, now)
+	if err != nil {
+		t.Fatalf("minting: %v", err)
+	}
+	parts := strings.Split(minted, ".")
+	forged := encodeSegment(t, header{Algorithm: algorithm, Type: "JWT", KeyID: key.ID})
+
+	if _, err := verifier.Verify(forged+"."+parts[1]+"."+parts[2], now); !errors.Is(err, ErrUnsupported) {
+		t.Errorf("a non-MOQT token gave %v, want ErrUnsupported", err)
+	}
+}
+
+// Editing the claims must invalidate the signature. This is the property
+// everything else rests on, so it is asserted directly rather than assumed.
+func TestTamperedClaimsFailVerification(t *testing.T) {
+	key, verifier := testKey(t)
+	now := time.Now()
+
+	minted, _, err := Mint(key, claimsFor(control.Grants{Publish: control.PublishAudio}), time.Minute, now)
+	if err != nil {
+		t.Fatalf("minting: %v", err)
+	}
+	parts := strings.Split(minted, ".")
+
+	var claims Claims
+	decoded, err := base64.RawURLEncoding.DecodeString(parts[1])
+	if err != nil {
+		t.Fatalf("decoding claims: %v", err)
+	}
+	if err := json.Unmarshal(decoded, &claims); err != nil {
+		t.Fatalf("parsing claims: %v", err)
+	}
+
+	// Promote themselves to owner, which is the escalation an attacker wants.
+	claims.MOQT.Owner = true
+	claims.MOQT.Capabilities = uint32(control.CapAll)
+	tampered := encodeSegment(t, claims)
+
+	if _, err := verifier.Verify(parts[0]+"."+tampered+"."+parts[2], now); !errors.Is(err, ErrSignature) {
+		t.Errorf("a self-promotion gave %v, want ErrSignature", err)
+	}
+}
+
+func TestUnknownKeyIsRefused(t *testing.T) {
+	key, _ := testKey(t)
+	_, otherVerifier := testKey(t)
+	now := time.Now()
+
+	minted, _, err := Mint(key, claimsFor(control.Grants{}), time.Minute, now)
+	if err != nil {
+		t.Fatalf("minting: %v", err)
+	}
+	if _, err := otherVerifier.Verify(minted, now); !errors.Is(err, ErrUnknownKey) {
+		t.Errorf("a token from an unknown key gave %v, want ErrUnknownKey", err)
+	}
+}
+
+// Rotation needs an overlap: the retiring key must stay verifiable until the last
+// token it signed has expired, or rolling a key is an outage.
+func TestBothKeysVerifyDuringRotation(t *testing.T) {
+	retiring, err := GenerateKey()
+	if err != nil {
+		t.Fatalf("generating: %v", err)
+	}
+	incoming, err := GenerateKey()
+	if err != nil {
+		t.Fatalf("generating: %v", err)
+	}
+	verifier := NewVerifier("moqom", map[string]ed25519.PublicKey{
+		retiring.ID: retiring.Private.Public().(ed25519.PublicKey),
+		incoming.ID: incoming.Private.Public().(ed25519.PublicKey),
+	})
+	now := time.Now()
+
+	for _, key := range []Key{retiring, incoming} {
+		minted, _, err := Mint(key, claimsFor(control.Grants{}), time.Minute, now)
+		if err != nil {
+			t.Fatalf("minting with %s: %v", key.ID, err)
+		}
+		if _, err := verifier.Verify(minted, now); err != nil {
+			t.Errorf("a token from %s did not verify: %v", key.ID, err)
+		}
+	}
+}
+
+func TestExpiryIsEnforcedAndSkewIsBounded(t *testing.T) {
+	key, verifier := testKey(t)
+	now := time.Date(2026, 7, 27, 12, 0, 0, 0, time.UTC)
+
+	minted, expires, err := Mint(key, claimsFor(control.Grants{}), time.Minute, now)
+	if err != nil {
+		t.Fatalf("minting: %v", err)
+	}
+
+	// Just past expiry, inside the skew allowance: still accepted, because that
+	// is two machines disagreeing about the time.
+	if _, err := verifier.Verify(minted, expires.Add(clockSkew/2)); err != nil {
+		t.Errorf("a token inside the skew allowance was refused: %v", err)
+	}
+	// Well past it: refused. Skew tolerance is not an extension.
+	if _, err := verifier.Verify(minted, expires.Add(clockSkew*2)); !errors.Is(err, ErrExpired) {
+		t.Errorf("an expired token gave %v, want ErrExpired", err)
+	}
+}
+
+// A lifetime beyond the cap is refused rather than clamped. Quietly issuing
+// something weaker than asked for is how a caller ends up believing it has an
+// hour-long token and refreshing every hour.
+func TestOverlongLifetimeIsRefusedNotClamped(t *testing.T) {
+	key, _ := testKey(t)
+	now := time.Now()
+
+	if _, _, err := Mint(key, claimsFor(control.Grants{}), 24*time.Hour, now); !errors.Is(err, control.ErrInvalid) {
+		t.Errorf("a day-long lifetime gave %v, want ErrInvalid", err)
+	}
+	if _, _, err := Mint(key, claimsFor(control.Grants{}), MaxLifetime, now); err != nil {
+		t.Errorf("the maximum lifetime was refused: %v", err)
+	}
+}
+
+func TestTokenNeedsSubjectAndDevice(t *testing.T) {
+	key, _ := testKey(t)
+	now := time.Now()
+
+	anonymous := claimsFor(control.Grants{})
+	anonymous.Subject = ""
+	if _, _, err := Mint(key, anonymous, time.Minute, now); !errors.Is(err, control.ErrInvalid) {
+		t.Error("a token with no subject was minted")
+	}
+
+	unbound := claimsFor(control.Grants{})
+	unbound.Confirmation.Thumbprint = ""
+	if _, _, err := Mint(key, unbound, time.Minute, now); !errors.Is(err, control.ErrInvalid) {
+		t.Error("a token with no device binding was minted")
+	}
+}
+
+// An unrecognised capability bit is refused on both paths. Accepted and dropped,
+// a token from a newer control plane would grant less than it says, with no error
+// anywhere to explain why a power went missing.
+func TestUnknownCapabilityBitsAreRefused(t *testing.T) {
+	key, verifier := testKey(t)
+	now := time.Now()
+
+	future := claimsFor(control.Grants{})
+	future.MOQT.Capabilities = uint32(control.CapKick) | (1 << 31)
+
+	if _, _, err := Mint(key, future, time.Minute, now); !errors.Is(err, ErrUnsupported) {
+		t.Errorf("minting with an unknown bit gave %v, want ErrUnsupported", err)
+	}
+
+	// And on the way in, for a token minted elsewhere.
+	valid := claimsFor(control.Grants{})
+	minted, _, err := Mint(key, valid, time.Minute, now)
+	if err != nil {
+		t.Fatalf("minting: %v", err)
+	}
+	parts := strings.Split(minted, ".")
+	var claims Claims
+	decoded, _ := base64.RawURLEncoding.DecodeString(parts[1])
+	if err := json.Unmarshal(decoded, &claims); err != nil {
+		t.Fatalf("parsing: %v", err)
+	}
+	claims.MOQT.Capabilities = 1 << 31
+	resigned, _, err := Mint(key, claims, time.Minute, now)
+	if err == nil {
+		if _, err := verifier.Verify(resigned, now); !errors.Is(err, ErrUnsupported) {
+			t.Errorf("verifying an unknown bit gave %v, want ErrUnsupported", err)
+		}
+	}
+}
+
+func TestMalformedTokensAreRejectedNotPanicked(t *testing.T) {
+	_, verifier := testKey(t)
+	now := time.Now()
+
+	for _, malformed := range []string{
+		"",
+		"not-a-token",
+		"one.two",
+		"one.two.three.four",
+		"!!!.###.$$$",
+		strings.Repeat("a", 10000),
+	} {
+		if _, err := verifier.Verify(malformed, now); err == nil {
+			t.Errorf("%q verified", truncate(malformed))
+		}
+	}
+}
+
+// A token from another deployment that happens to share a key identifier must not
+// be accepted, so the issuer is checked rather than merely recorded.
+func TestForeignIssuerIsRefused(t *testing.T) {
+	key, _ := testKey(t)
+	verifier := NewVerifier("moqom", map[string]ed25519.PublicKey{
+		key.ID: key.Private.Public().(ed25519.PublicKey),
+	})
+	now := time.Now()
+
+	foreign := claimsFor(control.Grants{})
+	foreign.Issuer = "somebody-else"
+	minted, _, err := Mint(key, foreign, time.Minute, now)
+	if err != nil {
+		t.Fatalf("minting: %v", err)
+	}
+	if _, err := verifier.Verify(minted, now); !errors.Is(err, ErrMalformed) {
+		t.Errorf("a token from another issuer gave %v, want a rejection", err)
+	}
+}
+
+func TestPublicJWKIsWellFormed(t *testing.T) {
+	key, _ := testKey(t)
+
+	encoded, err := key.PublicJWK()
+	if err != nil {
+		t.Fatalf("rendering the JWK: %v", err)
+	}
+	var jwk map[string]string
+	if err := json.Unmarshal([]byte(encoded), &jwk); err != nil {
+		t.Fatalf("the JWK is not JSON: %v", err)
+	}
+	if jwk["kty"] != "OKP" || jwk["crv"] != "Ed25519" {
+		t.Errorf("unexpected key type: %v", jwk)
+	}
+	if jwk["kid"] != key.ID {
+		t.Errorf("the JWK names key %q, want %q", jwk["kid"], key.ID)
+	}
+	raw, err := base64.RawURLEncoding.DecodeString(jwk["x"])
+	if err != nil {
+		t.Fatalf("the public key is not base64url: %v", err)
+	}
+	if len(raw) != ed25519.PublicKeySize {
+		t.Errorf("the public key is %d bytes, want %d", len(raw), ed25519.PublicKeySize)
+	}
+}
+
+func encodeSegment(t *testing.T, value any) string {
+	t.Helper()
+	encoded, err := json.Marshal(value)
+	if err != nil {
+		t.Fatalf("encoding: %v", err)
+	}
+	return base64.RawURLEncoding.EncodeToString(encoded)
+}
+
+func truncate(value string) string {
+	if len(value) <= 32 {
+		return value
+	}
+	return value[:32] + "..."
+}

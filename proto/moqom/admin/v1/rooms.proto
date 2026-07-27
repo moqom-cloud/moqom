@@ -1,0 +1,367 @@
+// Rooms, who is in them, and what is watching them.
+//
+// A room is a database record, not a derivation from whoever happens to be
+// publishing. That is the difference between a room that survives its host's
+// tunnel and one that dissolves: participants and relay sessions are soft state
+// layered on the record, and losing all of them loses nobody's room.
+
+syntax = "proto3";
+
+package moqom.admin.v1;
+
+import "google/protobuf/timestamp.proto";
+import "moqom/admin/v1/common.proto";
+
+option go_package = "github.com/moqom-cloud/moqom-go/admin/adminpb;adminpb";
+
+service Rooms {
+  rpc CreateRoom(CreateRoomRequest) returns (Room);
+  rpc GetRoom(GetRoomRequest) returns (Room);
+  rpc ListRooms(ListRoomsRequest) returns (ListRoomsResponse);
+
+  // Change policy on a live room.
+  //
+  // Tightening applies to everyone immediately, including participants already
+  // publishing; loosening does not retroactively permit what was recorded under
+  // the stricter policy. Residency is the exception and cannot be changed at
+  // all — see `RoomPolicy.residency_zone`.
+  rpc UpdateRoomPolicy(UpdateRoomPolicyRequest) returns (Room);
+
+  // End the room for everyone.
+  //
+  // Every session is ejected with the given code, so clients can say why rather
+  // than going dark. Idempotent: closing a closed room returns it unchanged.
+  rpc CloseRoom(CloseRoomRequest) returns (Room);
+
+  rpc ListParticipants(ListParticipantsRequest) returns (ListParticipantsResponse);
+  rpc GetParticipant(GetParticipantRequest) returns (Participant);
+
+  // Attach an observer that is not a participant.
+  //
+  // Recorders, safety classifiers, and analytics are subscribers with no
+  // publish rights, and they are disclosed as room state rather than hidden:
+  // being recorded is something the room is told about. They are structurally
+  // incapable of appearing in the roster, because a roster entry is proof of a
+  // namespace announcement and a watchdog never announces one.
+  rpc AttachWatchdog(AttachWatchdogRequest) returns (Watchdog);
+  rpc DetachWatchdog(DetachWatchdogRequest) returns (Watchdog);
+  rpc ListWatchdogs(ListWatchdogsRequest) returns (ListWatchdogsResponse);
+}
+
+// What phase a room is in.
+enum RoomLifecycle {
+  ROOM_LIFECYCLE_UNSPECIFIED = 0;
+  ROOM_LIFECYCLE_SCHEDULED = 1;
+  ROOM_LIFECYCLE_LIVE = 2;
+  // The owner is absent and the longest-tenured cohost holds moderation powers
+  // temporarily. Not an ownership transfer: it is reclaimed on the owner's
+  // return, and `Grants.is_owner` never moves.
+  ROOM_LIFECYCLE_ACTING_HOST = 3;
+  ROOM_LIFECYCLE_ENDED = 4;
+}
+
+// Whether recording is permitted, required, or refused.
+enum RecordingPolicy {
+  RECORDING_POLICY_UNSPECIFIED = 0;
+  RECORDING_POLICY_ALLOWED = 1;
+  // A room that cannot start without a recorder attached. For regulated
+  // customers whose obligation is to have the tape, not to be allowed one.
+  RECORDING_POLICY_REQUIRED = 2;
+  // Attaching a recording watchdog is refused, including by the tenant's own
+  // backend.
+  RECORDING_POLICY_PROHIBITED = 3;
+}
+
+message AgeGate {
+  // Minimum age in years. Zero for no gate.
+  uint32 minimum_age = 1;
+
+  // Whether a self-declared age is enough or the tenant's verification is
+  // required. Verification is the tenant's to perform; MOQOM only records that
+  // the room demands it and refuses sessions whose token does not assert it.
+  bool require_verification = 2;
+}
+
+message RoomPolicy {
+  AgeGate age_gate = 1;
+  RecordingPolicy recording = 2;
+
+  // Where this room's data may live, including derived data — inference
+  // outputs, recordings, and moderation evidence, which is the part usually
+  // missed.
+  //
+  // Set at creation and immutable afterwards. Not because changing it is hard
+  // but because it is a lie: data already written cannot be recalled from
+  // another jurisdiction by editing a field.
+  string residency_zone = 3;
+
+  // Zero for no limit. Counted in devices rather than people, because that is
+  // what consumes relay resources.
+  uint32 max_participants = 4;
+
+  // How many participants may publish video at once. A client-side decode
+  // budget as much as a policy, which is why it defaults to 8 rather than to
+  // something ambitious.
+  uint32 stage_slots = 5;
+
+  // How many watchdogs may attach. Also 8 by default, and also a real limit:
+  // each one is a subscriber the relay fans out to.
+  uint32 watchdog_limit = 6;
+}
+
+message Room {
+  string tenant = 1;
+  string room = 2;
+
+  // The MOQT namespace prefix, `(tenant, "r", room)`, rendered slash-separated.
+  //
+  // Returned rather than left to the caller to construct, because the tuple
+  // layout is protocol and a backend guessing at it is a backend that breaks
+  // when the layout changes.
+  string namespace = 3;
+
+  RoomPolicy policy = 4;
+  RoomLifecycle lifecycle = 5;
+
+  // Set when `lifecycle` is `SCHEDULED`.
+  google.protobuf.Timestamp starts_at = 6;
+
+  google.protobuf.Timestamp created_at = 7;
+  google.protobuf.Timestamp ended_at = 8;
+
+  // Set when `lifecycle` is `ACTING_HOST`.
+  Identity acting_host = 9;
+
+  // Devices currently in the room, which is not the number of people. Cheap
+  // enough to include on every read; `ListParticipants` is the one that costs.
+  uint32 participant_count = 10;
+
+  // People currently in the room, counting a person on three devices once.
+  uint32 distinct_user_count = 11;
+
+  bool is_recording = 12;
+}
+
+// Everything a moderator interface needs about one device in a room.
+message Participant {
+  Identity identity = 1;
+  Grants grants = 2;
+  Presence presence = 3;
+
+  // Which media this participant has chosen not to send. Reported, not
+  // enforced: a self-mute is the client's decision and the room is told about
+  // it so other clients can show it.
+  repeated MediaKind self_muted = 4;
+
+  // Which media a moderator has stopped, for everybody. Relay-enforced, so it
+  // holds whether or not the client cooperates, and survives a reconnect.
+  repeated MediaKind forced_muted_for_everyone = 5;
+
+  // Which media the audience cannot hear but the other hosts can. A
+  // subscription scope rather than a second copy of the track, which is what
+  // makes "cohosts can still talk to each other" free.
+  repeated MediaKind forced_muted_for_audience = 6;
+
+  bool is_spotlighted = 7;
+
+  // True while this participant is backstage — announced under the `bs` prefix,
+  // outside the one viewers subscribe to. Going live is a namespace change, not
+  // a renegotiation.
+  bool is_backstage = 8;
+
+  google.protobuf.Timestamp joined_at = 9;
+
+  // Which relay is holding this session. Operational detail, useful when a
+  // support question is really a question about one machine.
+  string relay_id = 10;
+}
+
+enum WatchdogKind {
+  WATCHDOG_KIND_UNSPECIFIED = 0;
+  WATCHDOG_KIND_RECORDING = 1;
+  WATCHDOG_KIND_SAFETY = 2;
+  WATCHDOG_KIND_ANALYTICS = 3;
+  WATCHDOG_KIND_COMPLIANCE = 4;
+  WATCHDOG_KIND_CUSTOM = 5;
+}
+
+enum WatchdogOperator {
+  WATCHDOG_OPERATOR_UNSPECIFIED = 0;
+  WATCHDOG_OPERATOR_PLATFORM = 1;
+  WATCHDOG_OPERATOR_TENANT = 2;
+  WATCHDOG_OPERATOR_THIRD_PARTY = 3;
+}
+
+// Whether a watchdog is working, which is not whether it is present.
+//
+// Separate from `Presence` because the questions differ: a participant that
+// stops sending has left, a recorder that stops recording is a failure someone
+// has to be told about — especially in a room whose policy is
+// `RECORDING_POLICY_REQUIRED`.
+enum WatchdogHealth {
+  WATCHDOG_HEALTH_UNSPECIFIED = 0;
+  WATCHDOG_HEALTH_ATTACHED = 1;
+  WATCHDOG_HEALTH_DEGRADED = 2;
+  WATCHDOG_HEALTH_FAILED = 3;
+}
+
+message Watchdog {
+  string id = 1;
+  WatchdogKind kind = 2;
+
+  // Free text when `kind` is `CUSTOM`; ignored otherwise.
+  string custom_kind = 3;
+
+  WatchdogOperator operated_by = 4;
+
+  // Named when `operated_by` is `THIRD_PARTY`, so the room can disclose who is
+  // watching rather than only that something is.
+  string operator_name = 5;
+
+  // Shown to clients. This is what a room says about being recorded, so it is
+  // worth writing for a person rather than for a log.
+  string descriptor = 6;
+
+  // The namespace prefix this watchdog subscribes under, which bounds what it
+  // can see. A recorder scoped to one participant cannot quietly widen to the
+  // room.
+  string scope = 7;
+
+  WatchdogHealth health = 8;
+  google.protobuf.Timestamp attached_at = 9;
+
+  // Whether this watchdog's fan-out is charged to the tenant. Platform safety
+  // classifiers are not; a tenant's own recorder is.
+  bool is_billable = 10;
+
+  // Subscribe to one rung only. A classifier usually needs 360p, and letting it
+  // take 1080p because nothing stopped it is how observation gets expensive.
+  string pinned_layer = 11;
+}
+
+message CreateRoomRequest {
+  string tenant = 1;
+
+  // The room's identifier within the tenant. Supplied by the caller rather than
+  // generated, because a customer's rooms already have names in their own
+  // system and a second identifier means a mapping table.
+  string room = 2;
+
+  RoomPolicy policy = 3;
+
+  // The initial owner. Optional: a room may be created before anyone joins, and
+  // ownership assigned when the host's token is minted.
+  string owner_username = 4;
+
+  // Set to create a room in `SCHEDULED` rather than `LIVE`.
+  google.protobuf.Timestamp starts_at = 5;
+
+  ActorContext actor = 6;
+}
+
+message GetRoomRequest {
+  string tenant = 1;
+  string room = 2;
+}
+
+message ListRoomsRequest {
+  string tenant = 1;
+
+  // Empty for every lifecycle.
+  repeated RoomLifecycle lifecycle = 2;
+
+  uint32 page_size = 3;
+  string page_token = 4;
+}
+
+message ListRoomsResponse {
+  repeated Room rooms = 1;
+  string next_page_token = 2;
+}
+
+message UpdateRoomPolicyRequest {
+  string tenant = 1;
+  string room = 2;
+  RoomPolicy policy = 3;
+
+  // Which fields of `policy` to apply. Absent means all of them, which is a
+  // read-modify-write and will clobber a concurrent change.
+  repeated string update_mask = 4;
+
+  ActorContext actor = 5;
+}
+
+message CloseRoomRequest {
+  string tenant = 1;
+  string room = 2;
+
+  // Told to every client as the reason its stream ended.
+  ModerationCode code = 3;
+
+  ActorContext actor = 4;
+}
+
+message ListParticipantsRequest {
+  string tenant = 1;
+  string room = 2;
+
+  // Include participants who are backstage. Excluded by default, because the
+  // common question is "who is in the room" and backstage is deliberately not.
+  bool include_backstage = 3;
+
+  // Include participants whose presence is `LEFT` but whose record is still
+  // within the room's retention. Useful for "who was here when this happened".
+  bool include_departed = 4;
+
+  uint32 page_size = 5;
+  string page_token = 6;
+}
+
+message ListParticipantsResponse {
+  repeated Participant participants = 1;
+  string next_page_token = 2;
+}
+
+message GetParticipantRequest {
+  string tenant = 1;
+  string room = 2;
+
+  // A device is required here. Asking about a person rather than a device is
+  // `ListParticipants` with a filter, because the answer is a list.
+  Identity identity = 3;
+}
+
+message AttachWatchdogRequest {
+  string tenant = 1;
+  string room = 2;
+
+  WatchdogKind kind = 3;
+  string custom_kind = 4;
+  WatchdogOperator operated_by = 5;
+  string operator_name = 6;
+  string descriptor = 7;
+
+  // Namespace prefix to observe. Empty for the whole room.
+  string scope = 8;
+
+  string pinned_layer = 9;
+  bool is_billable = 10;
+
+  ActorContext actor = 11;
+}
+
+message DetachWatchdogRequest {
+  string tenant = 1;
+  string room = 2;
+  string watchdog_id = 3;
+  ActorContext actor = 4;
+}
+
+message ListWatchdogsRequest {
+  string tenant = 1;
+  string room = 2;
+}
+
+message ListWatchdogsResponse {
+  repeated Watchdog watchdogs = 1;
+}

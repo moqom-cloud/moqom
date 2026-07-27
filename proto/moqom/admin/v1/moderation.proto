@@ -1,0 +1,303 @@
+// Moderator and administrative actions.
+//
+// Two properties shape this whole file.
+//
+// The first is that an action must land now. A kick that takes effect when the
+// target's token next expires is not a kick; it is a delay with a security hole
+// in it. So every verb here writes control-plane state *and* pushes a directive
+// to the relays holding the affected sessions, and the response is not returned
+// until that push is accepted.
+//
+// The second is that an action must be attributable. Every call returns the
+// `ModerationEntry` it produced, which is the same record the log serves and the
+// same record an appeal is heard against. A backend that discards the response
+// still cannot escape the entry.
+
+syntax = "proto3";
+
+package moqom.admin.v1;
+
+import "google/protobuf/duration.proto";
+import "google/protobuf/timestamp.proto";
+import "moqom/admin/v1/common.proto";
+
+option go_package = "github.com/moqom-cloud/moqom-go/admin/adminpb;adminpb";
+
+service Moderation {
+  // Remove from the room now, without a lasting record.
+  //
+  // The distinction from `Ban` is rejoining: a kicked participant may come
+  // straight back, which is the right response to a bad moment rather than a bad
+  // actor. For "and stay out", use `Ban`.
+  rpc Kick(KickRequest) returns (ModerationEntry);
+
+  // Refuse future sessions, and end current ones.
+  //
+  // By account, by device, or by address, for a duration or forever, scoped to a
+  // room or to the tenant. Enforced in relay state and rechecked on every
+  // subscribe and publish, so a ban issued while the target is briefly offline
+  // still lands when they reconnect.
+  rpc Ban(BanRequest) returns (ModerationEntry);
+
+  // Lift a ban before it expires.
+  rpc Unban(UnbanRequest) returns (ModerationEntry);
+
+  // Stop someone's media without asking their client to cooperate.
+  //
+  // `MUTE_SCOPE_EVERYONE` is relay-enforced and survives reconnection.
+  // `MUTE_SCOPE_AUDIENCE` narrows the subscription scope instead, so the other
+  // hosts still hear them — no second encode, no second track.
+  rpc ForceMute(ForceMuteRequest) returns (ModerationEntry);
+  rpc Unmute(UnmuteRequest) returns (ModerationEntry);
+
+  // Change what someone may publish and moderate.
+  //
+  // Promotion is additive and rides a token reissue. Demotion is subtractive and
+  // does not wait for one: a demoted cohost who keeps publishing until their
+  // token expires is a hole, so the relay is told directly.
+  //
+  // Refused unless the actor's own capability set is a superset of what is being
+  // granted, and `CAPABILITY_APPOINT_MODERATORS` is never delegated by anyone
+  // but an owner.
+  rpc SetGrants(SetGrantsRequest) returns (ModerationEntry);
+
+  // Put one participant on everyone's main tile, or clear it.
+  rpc Spotlight(SpotlightRequest) returns (ModerationEntry);
+
+  // What was done, by whom, to whom, and why.
+  //
+  // Reading it requires `CAPABILITY_READ_MODERATION_LOG`, which is deliberately
+  // not implied by the power to act: the people who can ban and the people who
+  // can audit bans are not always the same people.
+  rpc ListModerationLog(ListModerationLogRequest) returns (ListModerationLogResponse);
+}
+
+enum BanScope {
+  BAN_SCOPE_UNSPECIFIED = 0;
+  BAN_SCOPE_ROOM = 1;
+  BAN_SCOPE_TENANT = 2;
+}
+
+enum MuteScope {
+  MUTE_SCOPE_UNSPECIFIED = 0;
+  // Nobody receives it, including the other hosts.
+  MUTE_SCOPE_EVERYONE = 1;
+  // The audience does not receive it; hosts and cohosts still do.
+  MUTE_SCOPE_AUDIENCE = 2;
+}
+
+// What a ban is keyed on.
+//
+// Three keys because evasion is easy against any one of them: an account ban is
+// beaten by a new account, a device ban by a factory reset, an address ban by a
+// mobile network's NAT pool. They are also unequally blunt — an address is
+// shared by a household or a campus, so an IP ban is the one most likely to
+// catch someone innocent, and it is last for that reason.
+message BanSubject {
+  oneof key {
+    // Every device signed in as this account.
+    string username = 1;
+
+    // One device, by the identity's device field. Survives a new account on the
+    // same hardware, which is what makes it the useful one against a repeat
+    // offender.
+    Identity device = 2;
+
+    // An address or CIDR prefix. Blunt: prefer the others, and expect
+    // collateral.
+    string ip_prefix = 3;
+  }
+}
+
+message KickRequest {
+  string tenant = 1;
+  string room = 2;
+  ParticipantRef target = 3;
+
+  // Sent to the client so it can say why. `MODERATION_CODE_OPERATOR_ACTION`
+  // when a human decided and no category fits.
+  ModerationCode code = 4;
+
+  ActorContext actor = 5;
+}
+
+message BanRequest {
+  string tenant = 1;
+
+  // Required for `BAN_SCOPE_ROOM`, ignored for `BAN_SCOPE_TENANT`.
+  string room = 2;
+
+  BanScope scope = 3;
+  BanSubject subject = 4;
+
+  // Unset for permanent. A permanent ban is the default because it is what the
+  // word means; a duration is the softer choice and should be the deliberate
+  // one.
+  google.protobuf.Duration duration = 5;
+
+  ModerationCode code = 6;
+  ActorContext actor = 7;
+}
+
+message UnbanRequest {
+  string tenant = 1;
+  string room = 2;
+  BanScope scope = 3;
+  BanSubject subject = 4;
+  ActorContext actor = 5;
+}
+
+message ForceMuteRequest {
+  string tenant = 1;
+  string room = 2;
+  ParticipantRef target = 3;
+
+  // Which media to stop. Empty means all of it.
+  repeated MediaKind media = 4;
+
+  MuteScope scope = 5;
+
+  // Unset to hold until explicitly lifted.
+  google.protobuf.Duration duration = 6;
+
+  ActorContext actor = 7;
+}
+
+message UnmuteRequest {
+  string tenant = 1;
+  string room = 2;
+  ParticipantRef target = 3;
+
+  // Empty for all media.
+  repeated MediaKind media = 4;
+
+  // Which mute to lift. A participant can be under both an everyone-mute and an
+  // audience-mute at once, and lifting the wrong one looks like the call did
+  // nothing.
+  MuteScope scope = 5;
+
+  ActorContext actor = 6;
+}
+
+message SetGrantsRequest {
+  string tenant = 1;
+  string room = 2;
+  ParticipantRef target = 3;
+
+  // The complete resulting grants, not a delta.
+  //
+  // Absolute because a delta cannot be made idempotent: "add cohost" applied
+  // twice is ambiguous about intent, while "these are their grants" applied
+  // twice is not. Use `preset` for the common bundles.
+  Grants grants = 4;
+
+  // Expand a preset into `grants.moderation`, replacing whatever is there.
+  // `grants.publish` is still taken from `grants`, since a preset says nothing
+  // about publishing.
+  CapabilityPreset preset = 5;
+
+  ActorContext actor = 6;
+}
+
+message SpotlightRequest {
+  string tenant = 1;
+  string room = 2;
+
+  // Unset to clear the spotlight.
+  ParticipantRef target = 3;
+
+  ActorContext actor = 4;
+}
+
+// One line of the audit trail.
+//
+// Deliberately denormalised: the actor's name, the target's identity, and the
+// reason are copied in rather than referenced, because an audit record that
+// changes meaning when a room is deleted or a display name is edited is not an
+// audit record.
+message ModerationEntry {
+  string id = 1;
+  string tenant = 2;
+  string room = 3;
+
+  google.protobuf.Timestamp at = 4;
+
+  // Which verb was used.
+  ModerationVerb verb = 5;
+
+  // The service account that made the call. Filled by the server from the
+  // credentials, never from the request.
+  string service_account = 6;
+
+  // The human the action was on behalf of, if any.
+  string on_behalf_of = 7;
+
+  // Who it was done to. One of these is set depending on the verb — `ban` may
+  // target an address, which is nobody's identity.
+  ParticipantRef target = 8;
+  BanSubject ban_subject = 9;
+
+  ModerationCode code = 10;
+  string reason = 11;
+
+  // When the effect lapses. Unset for permanent or instantaneous actions.
+  google.protobuf.Timestamp expires_at = 12;
+
+  // The verb's parameters, kept as a subset of the request so an interface can
+  // render "muted audio for the audience for 10 minutes" without a join.
+  repeated MediaKind media = 13;
+  MuteScope mute_scope = 14;
+  BanScope ban_scope = 15;
+  Grants grants = 16;
+
+  // Whether the relays holding affected sessions confirmed the directive.
+  //
+  // False means the record exists and enforcement is incomplete — a relay was
+  // unreachable at the time. It is surfaced rather than hidden because a
+  // moderator who is told a kick succeeded and finds the person still talking
+  // will not trust the tool again. The control plane retries; the state is
+  // reported meanwhile.
+  bool enforced = 17;
+
+  // Set when this entry came from a classifier rather than a person, naming the
+  // model and version that decided.
+  string decided_by_model = 18;
+}
+
+enum ModerationVerb {
+  MODERATION_VERB_UNSPECIFIED = 0;
+  MODERATION_VERB_KICK = 1;
+  MODERATION_VERB_BAN = 2;
+  MODERATION_VERB_UNBAN = 3;
+  MODERATION_VERB_FORCE_MUTE = 4;
+  MODERATION_VERB_UNMUTE = 5;
+  MODERATION_VERB_SET_GRANTS = 6;
+  MODERATION_VERB_SPOTLIGHT = 7;
+  MODERATION_VERB_CLOSE_ROOM = 8;
+  MODERATION_VERB_ATTACH_WATCHDOG = 9;
+  MODERATION_VERB_DETACH_WATCHDOG = 10;
+  MODERATION_VERB_UPDATE_ROOM_POLICY = 11;
+}
+
+message ListModerationLogRequest {
+  string tenant = 1;
+
+  // Empty for tenant-wide, which is what an appeals queue wants.
+  string room = 2;
+
+  google.protobuf.Timestamp since = 3;
+  google.protobuf.Timestamp until = 4;
+
+  // Filter to one target, in either form.
+  ParticipantRef target = 5;
+
+  repeated ModerationVerb verb = 6;
+
+  uint32 page_size = 7;
+  string page_token = 8;
+}
+
+message ListModerationLogResponse {
+  repeated ModerationEntry entries = 1;
+  string next_page_token = 2;
+}

@@ -1,0 +1,336 @@
+// The relay's link to the control plane.
+//
+// Internal: no SDK is generated from this and no customer calls it. It exists
+// because moderation has to *land*, and the control plane cannot make that
+// happen by writing a row — someone has to close the QUIC connection of the
+// person who was just banned.
+//
+// # Why the relay dials out
+//
+// The obvious arrangement is the opposite one: the control plane holds a
+// registry of relays and calls the one holding the session. It is rejected for a
+// deployment reason and a failure reason.
+//
+// Deployment: relays run in a managed instance group behind a UDP load balancer
+// and the control plane runs on Cloud Run. Outbound from the group to Cloud Run
+// is a URL; inbound to an individual instance is a second ingress path, a second
+// certificate, and a firewall rule per instance. The direction that needs no new
+// attack surface is the one the relay opens.
+//
+// Failure: a relay that has lost the control plane knows it immediately, because
+// its own stream broke. In the other arrangement the relay learns nothing and
+// keeps serving a room whose bans it can no longer receive.
+//
+// # What flows
+//
+// Up: which sessions exist and who they belong to. Down: what to do about them,
+// plus the keys to verify tokens with. The relay holds no database and asks no
+// questions on the media path — a session is authorised once at setup against a
+// snapshot it already has, because a round trip per SUBSCRIBE would put the
+// control plane between a publisher and a subscriber, which is the one thing the
+// architecture forbids.
+
+syntax = "proto3";
+
+package moqom.relay.v1;
+
+import "google/protobuf/duration.proto";
+import "google/protobuf/timestamp.proto";
+import "moqom/admin/v1/common.proto";
+import "moqom/admin/v1/tokens.proto";
+
+option go_package = "github.com/moqom-cloud/moqom/go/internal/relaypb;relaypb";
+
+service RelayLink {
+  // The single long-lived stream between one relay and the control plane.
+  //
+  // Bidirectional rather than two unary APIs because the interesting property is
+  // liveness: while this stream is up, the relay is enforcing current state, and
+  // when it drops, both sides know at once. A relay that cannot reattach within
+  // its grace period stops accepting new sessions — see `Reattach.grace`.
+  rpc Attach(stream RelayMessage) returns (stream ControlMessage);
+}
+
+message RelayMessage {
+  oneof body {
+    Hello hello = 1;
+    SessionOpened session_opened = 2;
+    SessionClosed session_closed = 3;
+    SessionChanged session_changed = 4;
+    DirectiveResult directive_result = 5;
+    Heartbeat heartbeat = 6;
+    SnapshotRequest snapshot_request = 7;
+  }
+}
+
+// Ask for a room's current state.
+//
+// The relay pulls as well as being pushed to, and the pull is what bounds the
+// damage when a push cannot arrive. A control plane running more than one replica
+// has relays attached to different ones, so a moderation call handled by replica B
+// cannot directly reach a relay attached to replica A. Since bans are durable, the
+// consequence is delay rather than non-enforcement -- and the delay is bounded by
+// how often the relay asks. See `Welcome.snapshot_interval`.
+message SnapshotRequest {
+  string tenant = 1;
+  string room = 2;
+}
+
+message ControlMessage {
+  oneof body {
+    Welcome welcome = 1;
+    RoomSnapshot room_snapshot = 2;
+    Directive directive = 3;
+    VerificationKeys verification_keys = 4;
+  }
+}
+
+message Hello {
+  // Stable across restarts of one relay instance, so the control plane can tell
+  // a restart from a new machine.
+  string relay_id = 1;
+
+  string region = 2;
+  string version = 3;
+
+  // Sessions this relay is already serving, sent on reattach after a broken
+  // stream. Without it the control plane's view of who is where would be a
+  // guess until every session happened to change.
+  repeated SessionState existing = 4;
+}
+
+message Welcome {
+  // Confirms the relay is registered and its sessions are accounted for.
+  google.protobuf.Timestamp at = 1;
+
+  // How long this relay may keep serving after losing the stream.
+  //
+  // Nonzero on purpose. Refusing everything the instant the control plane
+  // becomes unreachable turns one component's outage into a total one, and the
+  // exposure is bounded: the relay keeps enforcing the state it already has, so
+  // what it can miss is a *new* ban, not an existing one. When the grace period
+  // lapses it stops accepting new sessions and keeps existing ones, because
+  // ejecting a room full of people is a worse answer to a control-plane
+  // deployment than serving them with slightly stale policy.
+  google.protobuf.Duration grace = 2;
+
+  // How often the relay should re-ask for the snapshot of each room it serves.
+  //
+  // This is the upper bound on how stale enforcement can be when a directive
+  // could not be pushed -- a control plane with several replicas, or a stream
+  // that broke between the write and the push. Lower is safer and costs a
+  // request per room per interval; zero means never, which is only correct in a
+  // single-replica deployment.
+  google.protobuf.Duration snapshot_interval = 3;
+}
+
+// One session, as the relay sees it.
+message SessionState {
+  // Unique within this relay, not globally. Paired with `relay_id` where the
+  // control plane needs a global handle.
+  string session_id = 1;
+
+  string tenant = 2;
+  string room = 3;
+  moqom.admin.v1.Identity identity = 4;
+
+  // What the token said they may do. The relay enforces this and does not
+  // consult the control plane about it.
+  moqom.admin.v1.Grants grants = 5;
+
+  bool backstage = 6;
+
+  // The address the session came from, for address bans and for abuse
+  // investigation. Not shown to other participants.
+  string remote_address = 7;
+
+  google.protobuf.Timestamp opened_at = 8;
+
+  // When the session's token expires. The relay closes the session then unless
+  // it has been revalidated.
+  google.protobuf.Timestamp token_expires_at = 9;
+}
+
+message SessionOpened {
+  SessionState session = 1;
+}
+
+message SessionClosed {
+  string session_id = 1;
+
+  enum Cause {
+    CAUSE_UNSPECIFIED = 0;
+    // The client went away cleanly.
+    CAUSE_CLIENT_CLOSED = 1;
+    // The connection died. The participant may be back inside the reconnect
+    // window, so this is not a departure yet.
+    CAUSE_TRANSPORT_LOST = 2;
+    CAUSE_TOKEN_EXPIRED = 3;
+    // A directive from the control plane did this, and the control plane
+    // already knows why.
+    CAUSE_EJECTED = 4;
+    CAUSE_RELAY_SHUTDOWN = 5;
+    // The session asked for something it had no right to.
+    CAUSE_PROTOCOL_VIOLATION = 6;
+  }
+  Cause cause = 2;
+
+  google.protobuf.Timestamp at = 3;
+}
+
+// Something about a live session changed without it closing.
+message SessionChanged {
+  string session_id = 1;
+
+  // Set when the session started or stopped publishing a track.
+  string track = 2;
+  bool publishing = 3;
+
+  // Set when the session moved between backstage and the room proper.
+  bool backstage_changed = 4;
+  bool backstage = 5;
+}
+
+// Everything the relay must know to serve a room without asking again.
+//
+// Sent when a relay reports its first session in a room, and resent whenever the
+// state it contains changes in a way that is not covered by a `Directive`.
+message RoomSnapshot {
+  string tenant = 1;
+  string room = 2;
+
+  // Whether the room is closed. A relay refuses new sessions to a closed room
+  // rather than asking.
+  bool closed = 3;
+
+  // Bans in force for this room, including the tenant-wide ones that apply to
+  // it. Sent in full rather than as a delta because a relay that missed a delta
+  // would be silently permissive, which is the wrong direction to fail.
+  repeated Ban bans = 4;
+
+  // Force-mutes in force, so a reconnecting participant comes back muted. A mute
+  // that a reconnect clears is not a mute.
+  repeated Mute mutes = 5;
+
+  // Grants the control plane has changed since the affected tokens were minted.
+  // These override the token's own claims, which is what makes a demotion take
+  // effect without waiting for a reissue.
+  repeated GrantOverride grant_overrides = 6;
+
+  uint32 max_participants = 7;
+}
+
+message Ban {
+  oneof key {
+    string username = 1;
+    moqom.admin.v1.Identity device = 2;
+    string ip_prefix = 3;
+  }
+
+  // Unset for permanent.
+  google.protobuf.Timestamp expires_at = 4;
+
+  moqom.admin.v1.ModerationCode code = 5;
+}
+
+message Mute {
+  moqom.admin.v1.Identity identity = 1;
+  repeated moqom.admin.v1.MediaKind media = 2;
+
+  // True when hosts may still receive it. The relay implements this as a
+  // subscription scope, not as a second track.
+  bool audience_only = 3;
+
+  google.protobuf.Timestamp expires_at = 4;
+}
+
+message GrantOverride {
+  moqom.admin.v1.Identity identity = 1;
+  moqom.admin.v1.Grants grants = 2;
+}
+
+// Do this now.
+message Directive {
+  // Echoed in `DirectiveResult`. The control plane holds the moderation call
+  // open until the result arrives, so a moderator's tool can tell them whether
+  // it worked.
+  string directive_id = 1;
+
+  string tenant = 2;
+  string room = 3;
+
+  oneof action {
+    Eject eject = 10;
+    ApplyMute apply_mute = 11;
+    ApplyGrants apply_grants = 12;
+    CloseRoom close_room = 13;
+    // Add or remove a ban on a room this relay is already serving, without
+    // resending the whole snapshot.
+    UpdateBan update_ban = 14;
+  }
+}
+
+message Eject {
+  // Every session matching this. A `ParticipantRef` with no device reaches all
+  // of that person's devices, which is what a kick usually means.
+  moqom.admin.v1.ParticipantRef target = 1;
+
+  moqom.admin.v1.ModerationCode code = 2;
+}
+
+message ApplyMute {
+  moqom.admin.v1.ParticipantRef target = 1;
+  repeated moqom.admin.v1.MediaKind media = 2;
+  bool audience_only = 3;
+
+  // False to lift it.
+  bool muted = 4;
+
+  google.protobuf.Timestamp expires_at = 5;
+}
+
+message ApplyGrants {
+  moqom.admin.v1.ParticipantRef target = 1;
+  moqom.admin.v1.Grants grants = 2;
+}
+
+message CloseRoom {
+  moqom.admin.v1.ModerationCode code = 1;
+}
+
+message UpdateBan {
+  Ban ban = 1;
+
+  // False to lift it.
+  bool active = 2;
+}
+
+message DirectiveResult {
+  string directive_id = 1;
+
+  // How many sessions the directive matched. Zero is not a failure — the target
+  // may be on another relay, or may have already gone — but it is the number a
+  // moderator's tool needs to say "no active sessions" rather than "done".
+  uint32 affected_sessions = 2;
+
+  // Set when the relay could not carry it out. An empty message means success.
+  string error = 3;
+}
+
+message Heartbeat {
+  google.protobuf.Timestamp at = 1;
+  uint32 session_count = 2;
+
+  // Rough load, for the director's steering decisions later. Not used yet.
+  uint32 subscription_count = 3;
+}
+
+// The keys to verify client tokens with, pushed on attach and on rotation.
+//
+// Pushed rather than fetched so a relay never has to make a blocking call
+// during a handshake. A key it does not recognise means refusing the session,
+// which is why the retiring key must stay in this list until the last token it
+// signed has expired.
+message VerificationKeys {
+  repeated moqom.admin.v1.VerificationKey keys = 1;
+}

@@ -1,0 +1,12 @@
+// Two modules, one tree, until the SDK moves to its own repository.
+//
+// The control plane is BUSL-1.1 and the SDK is Apache-2.0, so they cannot be one
+// module; the SDK's path names a public repository it does not live in yet, so
+// nothing here can resolve it over the network. A workspace is what makes both
+// true at once during development.
+go 1.23
+
+use (
+	./go
+	./sdk/go
+)

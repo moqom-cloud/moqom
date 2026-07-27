@@ -1,0 +1,214 @@
+// Vocabulary shared by every admin service.
+//
+// These names are not new. They are the ones `MoqomKit` already uses, and the
+// reason to repeat them rather than improve on them is that a backend and a
+// phone talking about the same room have to mean the same thing by "cohost",
+// "muted", and "away". Where this file and the Swift SDK disagree, the Swift
+// SDK is right and this is a bug.
+
+syntax = "proto3";
+
+package moqom.admin.v1;
+
+option go_package = "github.com/moqom-cloud/moqom-go/admin/adminpb;adminpb";
+
+// Who a participant is.
+//
+// A username is the identity; a device is which of that person's phones. There
+// is no numeric user ID anywhere in MOQOM and no place to add one — the string
+// the customer already has is the identity, which is the whole reason a
+// migration off Agora does not need a mapping table.
+message Identity {
+  // The account. Matches the token's `sub`, NFC-normalised, at most 4096 UTF-8
+  // bytes.
+  string username = 1;
+
+  // Which device. Derived from the device key's JWK thumbprint, so it is stable
+  // across reinstalls only if the key is.
+  string device = 2;
+}
+
+// Who to act on.
+//
+// A device is optional and its absence is meaningful: `username` alone reaches
+// every device that person is signed in on, which is almost always what a kick
+// or a ban means. Naming one device is for the narrower case — a compromised
+// laptop, one phone misbehaving — and getting these two confused is how a ban
+// fails to land.
+message ParticipantRef {
+  string username = 1;
+
+  // Empty for every device of `username`.
+  string device = 2;
+}
+
+// What someone is allowed to publish.
+//
+// Orthogonal to `Capability` on purpose: publishing rights and moderation
+// rights compose freely, and collapsing them into one ladder of roles is what
+// forces the false choice between "a moderator who cannot speak" and "a speaker
+// who can ban".
+//
+// A grant is permission, never an action. Granting `PUBLISH_SCOPE_VIDEO` must
+// never turn a camera on.
+enum PublishScope {
+  PUBLISH_SCOPE_UNSPECIFIED = 0;
+  PUBLISH_SCOPE_AUDIO = 1;
+  PUBLISH_SCOPE_VIDEO = 2;
+  PUBLISH_SCOPE_SCREEN_SHARE = 3;
+  PUBLISH_SCOPE_DATA = 4;
+}
+
+// A moderation power.
+//
+// Deliberately a set and never a level. Levels force an ordering between powers
+// that have none — "ban permanently" and "promote to cohost" are incomparable —
+// and the ordering that actually matters is the partial one: an actor may act on
+// a target only when the actor's set is a strict *superset* of the target's. So
+// two moderators with identical powers cannot act on each other, which is the
+// property a level scheme keeps getting wrong.
+//
+// `mod` and `super mod` are presets over this set, not entries in it. See
+// `CapabilityPreset`.
+//
+// Enforcement is not uniform, and the difference is why the field exists on
+// both a token and a database row. Stage and room powers are checked by the
+// relay, so they must be in the token; chat and meta powers are checked by the
+// control plane, so they need not be. The token encoding uses a bitmask whose
+// positions are fixed by `MoqomKit`'s `Capability.rawValue` — those positions
+// are protocol, this enum's numbers are not.
+enum Capability {
+  CAPABILITY_UNSPECIFIED = 0;
+
+  // Chat. Control-plane enforced.
+  CAPABILITY_DELETE_MESSAGE = 1;
+  CAPABILITY_TIMEOUT_USER = 2;
+  CAPABILITY_BAN_FROM_CHAT = 3;
+  CAPABILITY_SET_CHAT_MODE = 4;
+  CAPABILITY_MANAGE_FILTERS = 5;
+
+  // Stage. Relay enforced, so these ride in the token.
+  CAPABILITY_PROMOTE_TO_GUEST = 10;
+  CAPABILITY_PROMOTE_TO_COHOST = 11;
+  CAPABILITY_DEMOTE = 12;
+  CAPABILITY_FORCE_MUTE = 13;
+  CAPABILITY_SPOTLIGHT = 14;
+  CAPABILITY_MANAGE_QUEUE = 15;
+  CAPABILITY_LOCK_STAGE = 16;
+
+  // Room.
+  CAPABILITY_KICK = 20;
+  CAPABILITY_BAN_FROM_ROOM = 21;
+  CAPABILITY_BAN_FROM_TENANT = 22;
+  CAPABILITY_CLOSE_ROOM = 23;
+  CAPABILITY_CHANGE_ROOM_POLICY = 24;
+  CAPABILITY_MANAGE_WATCHDOGS = 25;
+
+  // Meta. Control-plane enforced, and never delegated by anyone but an owner.
+  CAPABILITY_APPOINT_MODERATORS = 30;
+  CAPABILITY_READ_MODERATION_LOG = 31;
+  CAPABILITY_HANDLE_APPEALS = 32;
+}
+
+// A named bundle of capabilities, for the common cases.
+//
+// Presets exist because "make them a moderator" is what an integrator wants to
+// say, and expanding one is a convenience the server performs rather than a
+// role it stores: what is stored is always the resulting set. A tenant that
+// wants a different bundle sends the set.
+enum CapabilityPreset {
+  CAPABILITY_PRESET_UNSPECIFIED = 0;
+  // Nothing. A viewer.
+  CAPABILITY_PRESET_NONE = 1;
+  // Chat only.
+  CAPABILITY_PRESET_MODERATOR = 2;
+  // Chat and stage.
+  CAPABILITY_PRESET_SUPER_MODERATOR = 3;
+  // Everything. Note that this is still not ownership: see `Grants.is_owner`.
+  CAPABILITY_PRESET_OWNER = 4;
+}
+
+// What a participant may publish and moderate.
+message Grants {
+  repeated PublishScope publish = 1;
+  repeated Capability moderation = 2;
+
+  // Ownership, which is not a capability.
+  //
+  // It is a row in a table rather than a bit in a token because it is the one
+  // thing that must not be grantable: an owner cannot be demoted, cannot be
+  // acted on by any capability set however complete, and ownership never
+  // transfers automatically. Succession promotes an *acting host* instead, and
+  // that grant is reclaimed when the owner returns.
+  bool is_owner = 3;
+}
+
+// A kind of media, for mutes and for layer questions.
+enum MediaKind {
+  MEDIA_KIND_UNSPECIFIED = 0;
+  MEDIA_KIND_AUDIO = 1;
+  MEDIA_KIND_VIDEO = 2;
+  MEDIA_KIND_SCREEN_SHARE = 3;
+}
+
+// Whether someone is here, published on the room's control track.
+//
+// Published rather than inferred from silence, because every client would
+// otherwise infer it differently and none of them could tell a tunnel from a
+// hang-up.
+enum Presence {
+  PRESENCE_UNSPECIFIED = 0;
+  PRESENCE_CONNECTED = 1;
+  // Transport lost, inside the window where it is expected back. Subscriptions
+  // are held open and nobody is told to rediscover anything.
+  PRESENCE_RECONNECTING = 2;
+  // Gone long enough to say so, not long enough to be treated as having left.
+  PRESENCE_AWAY = 3;
+  // Suspended by the OS rather than by the network. Distinct from `AWAY`
+  // because the cause is known and the return is usually immediate.
+  PRESENCE_BACKGROUNDED = 4;
+  PRESENCE_LEFT = 5;
+}
+
+// Why a session was ended, when a moderator ended it.
+//
+// The code is sent to the client so it can say something true before the stream
+// goes dark. A stream that simply stops is indistinguishable from a crashed app,
+// and the support ticket that follows is expensive.
+enum ModerationCode {
+  MODERATION_CODE_UNSPECIFIED = 0;
+  MODERATION_CODE_ADULT_CONTENT = 1;
+  MODERATION_CODE_VIOLENCE = 2;
+  MODERATION_CODE_HARASSMENT = 3;
+  MODERATION_CODE_SELF_HARM = 4;
+  MODERATION_CODE_COPYRIGHT = 5;
+  MODERATION_CODE_AGE_VERIFICATION_REQUIRED = 6;
+  MODERATION_CODE_TENANT_POLICY = 7;
+  // A human decided, and no policy category covers it.
+  MODERATION_CODE_OPERATOR_ACTION = 8;
+}
+
+// Who is asking, and why.
+//
+// The service account is established by the credentials on the call and is
+// never read from here — a client that could name its own actor could forge an
+// audit trail. What this carries is the *human* the backend is acting for, which
+// is the part the server cannot know: a kick issued by a customer's own
+// moderation console is attributable to that moderator, not to the API key.
+message ActorContext {
+  // The moderator this action is on behalf of. Empty for an action the backend
+  // took on its own account, such as an automated safety verdict.
+  string on_behalf_of = 1;
+
+  // Free text, stored on the moderation entry and shown in appeals. Worth
+  // insisting on internally even though the server does not require it.
+  string reason = 2;
+
+  // Deduplication key for retries.
+  //
+  // Every mutating call takes one. Moderation actions are the operations most
+  // likely to be retried by a queue that has already delivered them, and the
+  // second delivery of "ban for 24 hours" must not extend the ban. A repeat
+  // within the retention window returns the original result unchanged.
+  string idempotency_key = 3;
+}

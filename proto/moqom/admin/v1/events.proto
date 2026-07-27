@@ -1,0 +1,176 @@
+// What is happening in a room, as a stream.
+//
+// This is the Go SDK's substitute for being in the room. A Rust backend can
+// subscribe to the room's control track and see this as media; a Go backend
+// cannot, because giving Go a MOQT implementation would mean a third
+// independent codec for one wire format. So the control plane republishes the
+// same facts over gRPC, and the cost of the translation is one hop of latency
+// on events that are not on the media path anyway.
+//
+// Delivery is at-least-once and ordered per room. Every event carries a
+// sequence number that is contiguous within a room, so a consumer that records
+// the last one it handled can resume exactly where it stopped — and can tell
+// that it missed something, which a timestamp cannot.
+
+syntax = "proto3";
+
+package moqom.admin.v1;
+
+import "google/protobuf/timestamp.proto";
+import "moqom/admin/v1/common.proto";
+import "moqom/admin/v1/moderation.proto";
+import "moqom/admin/v1/rooms.proto";
+
+option go_package = "github.com/moqom-cloud/moqom-go/admin/adminpb;adminpb";
+
+service Events {
+  // Follow one room, or every room in a tenant.
+  //
+  // The stream stays open until the caller stops reading or the room ends. A
+  // server restart closes it, and the client resumes from its cursor rather than
+  // from the present, so a deploy does not silently swallow the events that
+  // happened during it.
+  rpc StreamRoomEvents(StreamRoomEventsRequest) returns (stream RoomEvent);
+}
+
+message StreamRoomEventsRequest {
+  string tenant = 1;
+
+  // Empty to follow every room in the tenant, which is what a moderation queue
+  // wants and what a per-room integration should not use.
+  string room = 2;
+
+  // Resume after this sequence number.
+  //
+  // Zero starts at the present. That is the right default for a dashboard and
+  // the wrong one for anything that must not miss an event, which is why the
+  // number is on every event: a consumer that persists it can start correctly
+  // after a crash it did not plan for.
+  uint64 after_sequence = 3;
+
+  // Only these kinds. Empty for all of them.
+  repeated RoomEventKind kind = 4;
+}
+
+enum RoomEventKind {
+  ROOM_EVENT_KIND_UNSPECIFIED = 0;
+  ROOM_EVENT_KIND_PARTICIPANT_JOINED = 1;
+  ROOM_EVENT_KIND_PARTICIPANT_LEFT = 2;
+  ROOM_EVENT_KIND_PRESENCE_CHANGED = 3;
+  ROOM_EVENT_KIND_GRANTS_CHANGED = 4;
+  ROOM_EVENT_KIND_MUTE_CHANGED = 5;
+  ROOM_EVENT_KIND_SPOTLIGHT_CHANGED = 6;
+  ROOM_EVENT_KIND_PUBLISH_STARTED = 7;
+  ROOM_EVENT_KIND_PUBLISH_STOPPED = 8;
+  ROOM_EVENT_KIND_WATCHDOG_CHANGED = 9;
+  ROOM_EVENT_KIND_LIFECYCLE_CHANGED = 10;
+  ROOM_EVENT_KIND_MODERATION_APPLIED = 11;
+}
+
+message RoomEvent {
+  string tenant = 1;
+  string room = 2;
+
+  // Contiguous within a room and never reused. A gap means events were lost,
+  // and that is worth alerting on rather than papering over.
+  uint64 sequence = 3;
+
+  google.protobuf.Timestamp at = 4;
+
+  RoomEventKind kind = 5;
+
+  oneof body {
+    ParticipantJoined participant_joined = 10;
+    ParticipantLeft participant_left = 11;
+    PresenceChanged presence_changed = 12;
+    GrantsChanged grants_changed = 13;
+    MuteChanged mute_changed = 14;
+    SpotlightChanged spotlight_changed = 15;
+    PublishChanged publish_changed = 16;
+    WatchdogChanged watchdog_changed = 17;
+    LifecycleChanged lifecycle_changed = 18;
+
+    // The same record `Moderation` returned to whoever called it. Emitted here
+    // too so a backend that did not issue the action still learns of it —
+    // including actions taken by a safety classifier or by another operator's
+    // console.
+    ModerationEntry moderation_applied = 19;
+  }
+}
+
+message ParticipantJoined {
+  Participant participant = 1;
+
+  // True when this is the person's first device in the room. A room that shows
+  // "alice joined" three times because she has three devices is a room whose
+  // integrator was not given this flag.
+  bool first_device = 2;
+}
+
+message ParticipantLeft {
+  Identity identity = 1;
+
+  // Whether they were removed rather than leaving. The moderation entry that
+  // did it is emitted separately; this is here so a simple consumer does not
+  // have to correlate.
+  bool was_removed = 2;
+
+  // Set when `was_removed`.
+  ModerationCode code = 3;
+
+  bool last_device = 4;
+}
+
+message PresenceChanged {
+  Identity identity = 1;
+  Presence from = 2;
+  Presence to = 3;
+}
+
+message GrantsChanged {
+  Identity identity = 1;
+  Grants from = 2;
+  Grants to = 3;
+}
+
+message MuteChanged {
+  Identity identity = 1;
+
+  // The participant's mute state after the change, in full rather than as a
+  // delta: there are four independent axes and reconstructing them from deltas
+  // is a bug waiting to be written once per consumer.
+  repeated MediaKind self_muted = 2;
+  repeated MediaKind forced_muted_for_everyone = 3;
+  repeated MediaKind forced_muted_for_audience = 4;
+}
+
+message SpotlightChanged {
+  // Unset when the spotlight was cleared.
+  Identity identity = 1;
+}
+
+message PublishChanged {
+  Identity identity = 1;
+
+  // The track, as a full name. What started or stopped, in the room's own
+  // vocabulary rather than a summary of it.
+  string track = 2;
+
+  bool started = 3;
+}
+
+message WatchdogChanged {
+  Watchdog watchdog = 1;
+
+  // True when the watchdog left rather than changed state. A recorder detaching
+  // is the event a compliance consumer is waiting for.
+  bool detached = 2;
+}
+
+message LifecycleChanged {
+  RoomLifecycle from = 1;
+  RoomLifecycle to = 2;
+
+  // Set when `to` is `ACTING_HOST`.
+  Identity acting_host = 3;
+}

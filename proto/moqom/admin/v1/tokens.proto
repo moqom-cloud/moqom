@@ -1,0 +1,138 @@
+// Minting the tokens a client joins with.
+//
+// This is the call a backend makes most, and the one that decides who anybody
+// is. A customer's server authenticates its user however it already does, then
+// asks for a token naming that user, that device, that room, and exactly the
+// rights they should have. MOQOM never sees the customer's password database
+// and never needs to.
+//
+// The signing key never leaves the control plane. That is the difference from
+// the SDK-side token builders this replaces, where the tenant's signing secret
+// is shipped into every backend that mints and leaks with any one of them.
+
+syntax = "proto3";
+
+package moqom.admin.v1;
+
+import "google/protobuf/duration.proto";
+import "google/protobuf/timestamp.proto";
+import "moqom/admin/v1/common.proto";
+
+option go_package = "github.com/moqom-cloud/moqom-go/admin/adminpb;adminpb";
+
+service Tokens {
+  rpc MintClientToken(MintClientTokenRequest) returns (MintClientTokenResponse);
+
+  // The public keys relays and clients verify tokens with.
+  //
+  // Served rather than configured so a key can be rotated without a deploy: a
+  // new key is published here, tokens start being signed with it, and the old
+  // one is withdrawn once every token it signed has expired.
+  rpc ListVerificationKeys(ListVerificationKeysRequest) returns (ListVerificationKeysResponse);
+}
+
+message MintClientTokenRequest {
+  string tenant = 1;
+
+  // The account this token speaks for. The customer's own identifier — MOQOM
+  // has no opinion about its shape beyond it being a string.
+  string username = 2;
+
+  // The device's public key thumbprint, base64url of the SHA-256 JWK
+  // thumbprint.
+  //
+  // The client generates the key in its secure element and never exports it, so
+  // this is the only part of the device identity a backend ever handles. The
+  // `device` field of every `Identity` for this session is derived from it, so
+  // a device ban and this value are the same fact.
+  string device_thumbprint = 3;
+
+  // Which room. Empty mints a token good for the tenant's discovery surface but
+  // no room, which is what a client needs before it has chosen one.
+  string room = 4;
+
+  // What they may do. Subject to the same superset rule as `SetGrants`: a
+  // service account cannot mint a token more powerful than its own scope.
+  Grants grants = 5;
+
+  // Expand a preset into the moderation half of `grants`.
+  CapabilityPreset preset = 6;
+
+  // How long the token is good for.
+  //
+  // Short by default and short on purpose: a token is the one credential that
+  // leaves the building, and until DPoP proof-of-possession lands (see
+  // `TokenBinding`) a stolen one is replayable by whoever holds it. An hour is
+  // the ceiling; the client refreshes rather than holding a long one.
+  google.protobuf.Duration lifetime = 7;
+
+  // Join backstage rather than the room proper. The token names the `bs`
+  // namespace, and going live later is a namespace change rather than a new
+  // token.
+  bool backstage = 8;
+
+  // Attest that this user's age has been verified, for rooms whose policy
+  // demands it. The tenant performs the verification; this asserts it happened.
+  bool age_verified = 9;
+}
+
+message MintClientTokenResponse {
+  // The token, in the compact form the client passes in MOQT Setup Options.
+  string token = 1;
+
+  google.protobuf.Timestamp expires_at = 2;
+
+  // The identity this token will present as, with the device already derived
+  // from the thumbprint. Returned so a backend can record what it handed out
+  // without reimplementing the derivation.
+  Identity identity = 3;
+
+  // Which key signed it, matching a `VerificationKey.key_id`.
+  string key_id = 4;
+}
+
+// How a token is tied to the holder.
+enum TokenBinding {
+  TOKEN_BINDING_UNSPECIFIED = 0;
+
+  // Bearer. Whoever holds the token is the user, so a leaked token is a leaked
+  // account until it expires. This is what is implemented today, and the reason
+  // lifetimes are short.
+  TOKEN_BINDING_BEARER = 1;
+
+  // Proof of possession: the client signs a challenge with the device key on
+  // every session, so the token is useless without the secure element that
+  // holds the private half. This is the target, and what `device_thumbprint`
+  // and the `cnf/jkt` claim already exist to support.
+  TOKEN_BINDING_DPOP = 2;
+}
+
+message ListVerificationKeysRequest {
+  string tenant = 1;
+}
+
+message VerificationKey {
+  string key_id = 1;
+
+  // The algorithm, as a JOSE identifier. `EdDSA` over Ed25519 today: small
+  // signatures, fast verification on a relay's hot path, and no curve
+  // parameters to get wrong.
+  string algorithm = 2;
+
+  // The public key as a JWK.
+  string jwk = 3;
+
+  google.protobuf.Timestamp not_before = 4;
+
+  // When this key stops signing. It must remain published until every token it
+  // signed has expired, or rotation becomes an outage.
+  google.protobuf.Timestamp retires_at = 5;
+}
+
+message ListVerificationKeysResponse {
+  repeated VerificationKey keys = 1;
+
+  // What binding this deployment issues. A client that wants to refuse bearer
+  // tokens can find out here rather than by inspecting one.
+  TokenBinding binding = 2;
+}
