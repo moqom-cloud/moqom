@@ -1,0 +1,57 @@
+# Rust
+target/
+**/*.rs.bk
+*.pdb
+
+# Go
+go/bin/
+*.test
+*.out
+
+# Node
+node_modules/
+dist/
+.vite/
+*.tsbuildinfo
+
+# Apple
+.DS_Store
+xcuserdata/
+*.xcuserstate
+DerivedData/
+*.xcworkspace/xcshareddata/IDEWorkspaceChecks.plist
+Pods/
+
+# Terraform
+.terraform/
+*.tfstate
+*.tfstate.*
+*.tfvars
+!*.tfvars.example
+.terraform.lock.hcl
+
+# Secrets and local config
+.env
+.env.*
+!.env.example
+*.pem
+*.p8
+*.p12
+*.mobileprovision
+service-account*.json
+
+# Editors
+.idea/
+*.swp
+.vscode/*
+!.vscode/extensions.json
+
+# Build artifacts
+*.xcframework
+*.aar
+*.wasm
+pkg/
+
+# Local scratch
+/tmp/
+/scratch/
