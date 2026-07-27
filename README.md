@@ -13,8 +13,9 @@ mapping, and end-to-end encryption our decisions instead of someone else's.
 Phase 0. `moqom-proto` covers the object model, the data plane — object
 datagrams and subgroup streams — and every control message in draft-19 except
 the fetch object framing used for VOD playback. Nothing connects to anything
-yet: there is no transport, so bytes are correct but stationary. See the plan
-for the full build order.
+yet. `moqom-transport` accepts sessions over both QUIC and WebTransport on one
+UDP port, but nothing above it speaks MOQT over them, so the bytes are correct
+and now movable rather than moving. See the plan for the full build order.
 
 ## Layout
 
