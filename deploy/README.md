@@ -173,6 +173,31 @@ fleet of N relays needs one certificate distributed to N machines, which is a
 distribution problem rather than an issuance problem, and Secret Manager is the
 distribution mechanism. Whatever runs ACME writes here.
 
+### Delegating the zone will take email with it
+
+`dns_domain` is the apex, `moqom.cloud.`, so pointing the registrar at the
+nameservers Cloud DNS hands out makes Cloud DNS authoritative for the *whole*
+domain — not just the `api.` and `edge.` records Terraform creates. Everything
+else currently answered at the registrar stops existing the moment delegation
+moves, and mail is the part that matters:
+
+```
+moqom.cloud.  MX   10 mx.hover.com.cust.hostedemail.com.
+moqom.cloud.  TXT  "v=spf1 include:_spf.hostedemail.com ~all"
+```
+
+Copy those into the zone *before* changing nameservers, along with any DKIM
+selector the mail host publishes. Losing them costs more than ordinary
+downtime, because `notification_emails` points at a mailbox on this domain: the
+alerting that would tell you something is wrong is delivered to the address the
+mistake just disabled. Inbound mail also fails silently from the sender's side
+for a while, since resolvers keep serving the old MX until the TTL expires.
+
+The alternative is to leave the apex delegated to the registrar and give
+Terraform a subdomain instead — `dns_domain = "net.moqom.cloud."` — which keeps
+mail entirely out of the blast radius at the cost of a longer hostname on every
+client. Worth taking if nobody is going to own the zone carefully.
+
 ## The database has no passwords
 
 The control plane authenticates to Postgres with IAM: `cloudsql.iam_authentication`

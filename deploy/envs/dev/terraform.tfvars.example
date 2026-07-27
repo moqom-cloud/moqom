@@ -17,4 +17,4 @@ recording_bucket_name = "moqom-dev-recordings"
 github_owner        = "moqom-cloud"
 github_repositories = ["moqom-cloud/moqom"]
 
-notification_emails = ["sre@moqom.cloud"]
+notification_emails = ["elliott@moqom.cloud"]

@@ -52,4 +52,4 @@ github_deploy_refs  = ["refs/heads/main"]
 
 byoc_aws_accounts = {}
 
-notification_emails = ["sre@moqom.cloud"]
+notification_emails = ["elliott@moqom.cloud"]
