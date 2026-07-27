@@ -71,7 +71,8 @@ todos:
     status: pending
   - id: relay
     content: "Implement moqom-relay: session state machine, subscription matching over tuple namespaces, group cache for late joiners, fan-out with deduplication, and priority scheduling that maps MOQT's 8-bit publisher and subscriber priority onto quinn's set_priority. Audio above video, base layer above enhancement layer, live edge above late-joiner catchup."
-    status: pending
+    status: in_progress
+    remaining: "Sessions hold: SETUP over both QUIC and WebTransport on one port, PUBLISH_NAMESPACE and its withdrawal, SUBSCRIBE_NAMESPACE with suffix-relative announcements, SUBSCRIBE forwarded upstream, and subgroup fan-out that rewrites the track alias per downstream session. Verified two ways -- integration tests with a Rust client, and three tests in MoqomKit that publish and subscribe through the binary over a socket, which is the first differential check against an independently written codec. Four things are missing and one of them is the point of a relay: upstream subscriptions are not deduplicated, so two viewers of one track cause two SUBSCRIBEs to the publisher and the bandwidth saving that justifies the hop is not there yet. Then there is no group cache, so no FETCH and no late-joiner catch-up; no congestion-aware scheduling, so a slow subscriber back-pressures the publisher instead of being dropped a layer, which is the wrong direction and what moqom-cc is for; and no authorisation at all -- tokens in Setup Options are parsed and ignored, so anyone who can reach the port can publish under any namespace. Not safe to expose to the internet until that last one lands."
     evidence:
       - rs/moqom-relay/Cargo.toml
       - rs/moqom-relay/src/lib.rs
@@ -91,7 +92,7 @@ todos:
   - id: ios-sdk
     content: "Build the iOS SDK: UniFFI bindings over moqom-client packaged as an XCFramework, a RealityKit capture layer on customPostProcessing with no pre-26 fallback, a Metal RGB-to-NV12 compute pass writing into the VTCompressionSession pool, HEVC with low-latency rate control plus temporal SVC and LTR, and an AVSampleBufferDisplayLayer viewer. Secure Enclave key generation for device identity."
     status: in_progress
-    remaining: "The shared logic is done and tested: namespaces, identity, the session state machine, the room model with its four kinds of mute and its capability subset rule, and render-aware layer selection. 103 tests, Swift 6 language mode, complete strict concurrency. The SwiftUI layer now runs too -- three UI tests drive join, go-live and leave on a simulator in CI. What is written but has never executed is everything touching hardware: the VideoToolbox encoder, the Metal scene capture, the RealityKit tap, AVCaptureSession, and display-layer rendering, none of which a simulator exercises. Broadcast still publishes a per-frame descriptor rather than encoded bytes, which keeps group numbering and priority testable off-device but is a placeholder that would be easy to mistake for a real payload. An earlier probe claiming this SDK had neither customPostProcessing nor NetworkConnection<QUIC> was measuring the Command Line Tools SDK, which is macOS-only; against iPhoneOS 26.2 both are present, and the 26 floor makes them reachable without a single availability check anywhere in the SDK."
+    remaining: "The media path is now end to end: draft-19 is implemented in Swift as MoqomWire (a port of moqom-proto, not a binding -- there is no C ABI, and Network.framework's QUIC removes the reason to ship a Rust runtime on the client), MoqtSession speaks it over an injectable QUIC carrier, NetworkQUICCarrier supplies one from NetworkConnection<QUIC>, and MemoryCarrier supplies one from a buffer so the session is tested without a socket. Encoded bytes reach the wire: the frame descriptor placeholder is gone, replaced by a packetiser that carries capture time and temporal layer as MOQT object properties, and by a depacketiser that drops pre-keyframe objects, counts holes, and takes parameter sets from the catalog. Audio, SFrame end-to-end encryption over CryptoKit, the catalog track, and a delay-gradient bandwidth estimator all landed with it. FETCH is implemented in both directions -- standalone and joining, with gap markers where the publisher no longer holds what was asked for -- and reconnection now acts rather than being modelled: the carrier reports its own loss, the retry driver backs off, and a returning publisher re-announces and republishes its catalog while the room rebinds subscriptions without the application laying out again. 329 tests in 56 suites, Swift 6 language mode, complete strict concurrency, plus four UI tests that drive join, go-live, audio and leave on a simulator in CI -- the sample publishes a rendered pattern through the real pipeline rather than an empty relay, so a whole-pipeline failure shows up on the tile. Three of those tests are interop: they start moqom-relay, pin the certificate it prints, connect over Network.framework's QUIC, and check setup, announcement propagation, and objects arriving under a rewritten alias. That is the first evidence the two codecs read draft-19 the same way, and it is skipped unless MOQOM_RELAY_BIN is set, so a green run without it is not evidence of interop. What has still never executed is the camera, the Metal scene capture, the RealityKit tap, and VideoToolbox actually compressing a frame; the simulator has an encoder for both codecs and a low-latency one for neither, which the SDK now falls back around and reports. Packets now reach the loopback interface but no further, so loss, reordering, and a path that changes mid-session remain unmeasured. An earlier probe claiming this SDK had neither customPostProcessing nor NetworkConnection<QUIC> was measuring the Command Line Tools SDK, which is macOS-only; against iPhoneOS 26.2 both are present, and the 26 floor makes them reachable without a single availability check anywhere in the SDK."
     # Lives in moqom-swift, not here. SwiftPM resolves a git dependency by
     # looking for Package.swift at the repository root and cannot be pointed at
     # a subdirectory, so a package nested in this monorepo is not consumable by
@@ -108,7 +109,23 @@ todos:
       - repo: moqom-swift
         path: Sources/MoqomKit/Platform/*.swift
       - repo: moqom-swift
+        path: Sources/MoqomWire/*.swift
+      - repo: moqom-swift
+        path: Sources/MoqomKit/Transport/MoqtSession.swift
+      - repo: moqom-swift
+        path: Sources/MoqomKit/Transport/NetworkQUICCarrier.swift
+      - repo: moqom-swift
+        path: Sources/MoqomKit/Security/SFrame.swift
+      - repo: moqom-swift
+        path: Sources/MoqomKit/Catalog/Catalog.swift
+      - repo: moqom-swift
+        path: Sources/MoqomKit/Subscribe/Depacketiser.swift
+      - repo: moqom-swift
+        path: Sources/MoqomKit/Subscribe/BandwidthEstimator.swift
+      - repo: moqom-swift
         path: Tests/MoqomKitTests/*.swift
+      - repo: moqom-swift
+        path: Tests/MoqomWireTests/*.swift
       - repo: moqom-swift
         path: Samples/MoqomRoom/project.yml
       - repo: moqom-swift
@@ -320,10 +337,10 @@ todos:
     evidence:
       - rs/moqom-ingest/Cargo.toml
   - id: obs-plugin
-    content: "Native OBS output plugin, gated on upstream PR #12911 (service auto-discovery, milestoned OBS 33) - until it merges, a plugin-registered service does not appear in the Stream settings dropdown and requires a forked OBS. Engage moq-dev/obs first; contributing there and helping land #12911 likely beats a parallel implementation. Structure as a C++ shim over moqom-client's C ABI. Force bf=0 and repeat_headers=true, declare avc3/hev1, initialize tracks lazily on first packet since obs_encoder_get_extra_data returns nothing until then, and apply one global PTS offset for AAC priming. Budget real time for FFI callback lifetime. Implement get_congestion for the UI indicator and use obs_output_add_packet_callback's encoder_packet_time for latency telemetry. Notarize on macOS from day one."
+    content: "Native OBS output plugin in its own public repo, moqom-obs, GPL-2.0-or-later. Not a preference: a plugin links libobs, the OBS Project treats that as a combined work, and distributing it obliges us to publish GPL-licensed source -- which a private repo whose other half is BUSL-1.1 cannot do. Only Apache-2.0 MOQOM code may cross the boundary, so it links the stock-controller build of moqom-client's C ABI; see obs-cc-loop. Apache-2.0 is GPLv3-compatible and not GPLv2-compatible, so the distributed binary is a GPLv3 combined work even though libobs is v2-or-later -- counsel should confirm before first release. Build on obs-plugintemplate's CMake and its per-platform packaging rather than our own. Gated on upstream PR #12911 (service auto-discovery, milestoned OBS 33) - until it merges, a plugin-registered service does not appear in the Stream settings dropdown and requires a forked OBS. Engage moq-dev/obs first; contributing there and helping land #12911 likely beats a parallel implementation. Structure as a C++ shim over moqom-client's C ABI. Force bf=0 and repeat_headers=true, declare avc3/hev1, initialize tracks lazily on first packet since obs_encoder_get_extra_data returns nothing until then, and apply one global PTS offset for AAC priming. Budget real time for FFI callback lifetime. Implement get_congestion for the UI indicator and use obs_output_add_packet_callback's encoder_packet_time for latency telemetry. Notarize on macOS from day one."
     status: pending
   - id: obs-cc-loop
-    content: "Close the congestion loop into OBS, the thing no RTMP or WHIP path can do: leave OBS's own dynamic bitrate off (it infers bandwidth from how long a blocking socket write takes, with a 200ms trigger, 4s ramp, and a hard cap at the start bitrate), run moqom-cc against real QUIC RTT, loss, ECN, cwnd, and pacing, and drive obs_encoder_update, which applies at the next frame. Gate on OBS_ENCODER_CAP_DYN_BITRATE and fall back to selective discard via packet drop_priority. Rate-limit to ~200ms and read-modify-write the settings object."
+    content: "Close the congestion loop into OBS, the thing no RTMP or WHIP path can do: leave OBS's own dynamic bitrate off (it infers bandwidth from how long a blocking socket write takes, with a 200ms trigger, 4s ramp, and a hard cap at the start bitrate), read real QUIC RTT, loss, ECN, cwnd, and pacing, and drive obs_encoder_update, which applies at the next frame. Gate on OBS_ENCODER_CAP_DYN_BITRATE and fall back to selective discard via packet drop_priority. Rate-limit to ~200ms and read-modify-write the settings object. Note what this cannot be: moqom-cc is BUSL-1.1 and ships as a prebuilt binary, which is not distributable inside a GPL combined work, so the OBS build runs a stock controller behind quinn's Controller trait. The loop is the mechanism and it works with any controller -- cwnd and RTT come from quinn, not from moqom-cc -- but OBS gets the generic controller while our own clients get the tuned one. That is a real strategic cost on the widest reach channel we have, and the alternatives are to relicense or dual-license moqom-cc, or to accept it."
     status: pending
   - id: cf-interop
     content: "Deferred: add a second wire dialect so Cloudflare's 330+ city footprint can serve as a fan-out tier where we have no presence. Estimated 3-6 weeks and 3-5k LOC against their current moqt-16, but they are actively developing draft-18 and closing, so reassess in six weeks before building - waiting likely costs less. Prerequisite is the request-identity abstraction in moqom-proto, which is a day-one decision. Develop against interop-relay.cloudflare.mediaoverquic.com, which is unauthenticated; production now requires provisioning. Do not build moq-lite."
@@ -1101,9 +1118,7 @@ schemas/
   agent.fbs         agent output tracks: captions, verdicts, recommendations
   control.fbs       room control: stage events, roster, watchdogs, terminal events
 sdk/
-  swift/            iOS + visionOS (shared core, separate capture backends)
   kotlin/ web/ desktop/
-  obs/              C++ shim over moqom-client's C ABI: output + service
 samples/
   quickstart/       <30 lines to publish, <30 to subscribe, per platform
   reference/        one creator app on iOS, Android, web - built in CI
@@ -1112,6 +1127,35 @@ samples/
 deploy/
   terraform/gcp/ terraform/aws/
 ```
+
+### What lives outside this repo, and why
+
+The default is the monorepo, because a protocol still moving through drafts
+wants the codec, the relay, and the SDKs to change in one commit. Something
+leaves only when keeping it here breaks it. Two things do.
+
+| Repository | License | Why it cannot live here |
+| --- | --- | --- |
+| `moqom-swift` | Apache-2.0 | SwiftPM resolves a git dependency by looking for `Package.swift` at the repository *root* and cannot be pointed at a subdirectory, so a nested package is not consumable by URL at all. Verified, not assumed. |
+| `moqom-obs` | GPL-2.0-or-later | An OBS plugin links `libobs` and is a combined work under the GPL, so its source must be public and GPL-licensed. This repo is private and its relay half is BUSL-1.1. |
+
+Neither is an architectural preference. One is a package manager's resolution
+rule and the other is a license boundary, and both would still apply to a
+project that wanted everything in one place.
+
+The distinction that matters for effects: `moqom-fx` is the effects *runtime* —
+the frame contract, the tier-1 shader interpreter, the deadline watchdog — and
+it is client core, so it stays in `rs/`. Individual effects are not code we
+link. A tier-1 effect is WGSL plus a parameter schema that our runtime executes,
+and a tier-2 effect is a third-party native binary under contract. Both are
+authored and versioned by whoever ships them, which is what makes their
+repository question answer itself.
+
+Host integrations follow OBS rather than the SDKs. Each one links a host we do
+not control, inherits that host's license and release cadence, and wants to
+track the host's versions rather than ours — the argument that puts the OBS
+plugin outside is the same argument for the next one, so treat a new host
+integration as a new repository by default.
 
 ## V1 vertical slice
 

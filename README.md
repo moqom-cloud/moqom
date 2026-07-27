@@ -10,18 +10,25 @@ mapping, and end-to-end encryption our decisions instead of someone else's.
 
 ## Status
 
-Phase 0. `moqom-proto` covers the object model, the data plane — object
+Media moves. `moqom-proto` covers the object model, the data plane — object
 datagrams and subgroup streams — and every control message in draft-19 except
-the fetch object framing used for VOD playback. Nothing connects to anything
-yet. `moqom-transport` accepts sessions over both QUIC and WebTransport on one
-UDP port, but nothing above it speaks MOQT over them, so the bytes are correct
-and now movable rather than moving.
+the fetch object framing used for VOD playback. `moqom-transport` accepts
+sessions over both QUIC and WebTransport on one UDP port, and `moqom-relay` now
+speaks MOQT over them: setup, namespace announcement and withdrawal, prefix
+watching, subscription, and subgroup fan-out with alias rewriting.
+
+What the relay is not yet: authorising anything (tokens are parsed and ignored),
+deduplicating upstream subscriptions, holding a cache to answer fetches from, or
+scheduling under congestion. `rs/moqom-relay/src/lib.rs` lists the gaps and says
+which matter; none of it is ready to face the internet.
 
 [`MoqomKit`](https://github.com/moqom-cloud/moqom-swift) covers the client logic
 that does not touch hardware — rooms, roles and capabilities, the session state
-machine, render-aware layer selection — under Swift 6 strict concurrency, tested
-against an in-memory loopback relay. The capture and encode path is written and
-compiles but has never executed, because that needs a device.
+machine, render-aware layer selection, fetch, reconnection — under Swift 6 strict
+concurrency. Three of its tests publish and subscribe through `moqom-relay` over
+a real socket, which is the first evidence that the two codecs read the draft the
+same way. The capture and encode path is written and compiles but has never
+executed, because that needs a device.
 
 [`docs/PLAN.md`](docs/PLAN.md) is the full design and build order — what is
 built, what is next, and the reasoning behind the decisions that are hard to
@@ -51,19 +58,34 @@ Go sits between a publisher and a subscriber.
 
 ## Other repositories
 
-| Repository | What |
-| --- | --- |
-| [`moqom-swift`](https://github.com/moqom-cloud/moqom-swift) | `MoqomKit`, the Apple-platform SDK, and the `MoqomRoom` sample |
+| Repository | License | What |
+| --- | --- | --- |
+| [`moqom-swift`](https://github.com/moqom-cloud/moqom-swift) | Apache-2.0 | `MoqomKit`, the Apple-platform SDK, and the `MoqomRoom` sample |
+| `moqom-obs` *(not yet created)* | GPL-2.0-or-later | The OBS output plugin |
 
-The Swift SDK is not here for a mechanical reason rather than an architectural
-one: SwiftPM resolves a git dependency by looking for `Package.swift` at the
-repository *root* and cannot be pointed at a subdirectory, so a package nested
-in this tree is not consumable by URL at all. Android and web have no such
-constraint — Gradle and npm resolve published artifacts and do not care where
-the source lives — so those SDKs stay in `sdk/`.
+The default is to keep things here — a protocol still moving through drafts
+wants the codec, the relay, and the SDKs changing in one commit. Something
+leaves only when staying breaks it, and so far two things do.
 
+**Swift, because of SwiftPM.** It resolves a git dependency by looking for
+`Package.swift` at the repository *root* and cannot be pointed at a
+subdirectory, so a package nested in this tree is not consumable by URL at all.
+Android and web have no such constraint — Gradle and npm resolve published
+artifacts and do not care where the source lives — so those SDKs stay in `sdk/`.
 The `MoqomRoom` sample moved with it, because a sample that can only depend on a
 released version stops being an integration test.
+
+**OBS, because of the GPL.** A plugin links `libobs` and is a combined work, so
+its source must be public and GPL-licensed — which this repository, private and
+half BUSL-1.1, cannot be. Only Apache-2.0 code may cross that boundary; see
+[LICENSING.md](LICENSING.md#the-gpl-boundary-plugins-for-hosts-we-do-not-own)
+for what that costs. The same reasoning applies to the next host integration,
+so treat one as a new repository by default.
+
+Effects are not in this category. `moqom-fx` is the runtime — frame contract,
+shader interpreter, watchdog — and is client core, so it stays in `rs/`. An
+individual effect is WGSL and a parameter schema we execute, or a third-party
+binary under contract, and is versioned by whoever ships it.
 
 ## Development
 
@@ -116,10 +138,12 @@ living in an artifact nobody opens again.
 
 **What none of this catches: misreading the draft.** A rule misread the same way
 in both the encoder and the decoder is self-consistent, and every check here
-passes. Only differential testing against an independent implementation, or
-third-party vectors, closes that gap — which is why interop against `moq-rs` and
-`moxygen` is a milestone rather than a nice-to-have, and why it is scheduled for
-as soon as `moqom-transport` can hold a session open.
+passes. Only differential testing against an independent implementation closes
+that gap. The first of it exists: `MoqomKit`'s codec was written separately from
+this one, and its interop suite runs a Swift publisher and a Swift subscriber
+through `moqom-relay` over a socket. Two implementations that agree is a weaker
+claim than two written from the draft by different people, so interop against
+`moq-rs` and `moxygen` remains a milestone rather than a nice-to-have.
 
 ## Design notes
 

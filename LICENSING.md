@@ -8,6 +8,7 @@ product is source-available.
 |---|---|
 | Protocol, client core, SDKs, schemas, samples, agent protocol | Apache-2.0 |
 | Relay, control plane, director, ingest, `moqom-cc` | BUSL-1.1 → Apache-2.0 |
+| Host plugins that link a GPL host (OBS) | GPL, in their own repos |
 
 Full texts are in [`LICENSES/`](LICENSES/). Every crate declares its own
 `license` field; **a crate without one is a bug**, since the workspace spans
@@ -64,6 +65,42 @@ Two consequences to design around rather than discover later:
 2. Prebuilt binaries are needed for every client target: iOS, iOS simulator,
    macOS, Android on four ABIs, WASM, and desktop. That is a real release-
    engineering burden and it starts the day the crate exists.
+
+## The GPL boundary: plugins for hosts we do not own
+
+An OBS plugin links `libobs`. The OBS Project's position is that this makes the
+plugin a combined work under the GPL, so distributing one obliges us to publish
+its source under a GPL-compatible license. `libobs` is GPL-2.0-**or-later** with
+no linking exception.
+
+That has three consequences, and the first two are hard constraints rather than
+preferences:
+
+1. **The plugin lives in its own public repository.** GPL source availability is
+   an obligation to everyone who receives a binary, which a private monorepo
+   cannot satisfy — and this repository's other half is BUSL-1.1, which is not a
+   free license and must never end up inside a GPL work.
+2. **Only Apache-2.0 MOQOM code may cross the boundary.** The plugin links the
+   C ABI of `moqom-client`, which is Apache-2.0. It must *not* link `moqom-cc`,
+   whose whole point is being a BUSL prebuilt binary. This is exactly the case
+   that consequence 1 above was written for: the plugin is the Apache-2.0-only
+   build with a stock controller substituted behind `quinn`'s `Controller`
+   trait. The substitutability requirement stops being hypothetical here.
+3. **The distributed binary is likely GPLv3, not GPLv2.** Apache-2.0 is
+   compatible with GPLv3 and is *not* compatible with GPLv2, because of its
+   patent-termination and indemnity terms. Since `libobs` is v2-or-later it can
+   be taken as v3, so the combination resolves — but at v3. Counsel should
+   confirm this before first release rather than after.
+
+The strategic cost is worth naming plainly, because it is easy to discover late:
+OBS is the widest distribution channel in the plan, and under these rules it
+ships without the controller that is supposed to differentiate us. The ways out
+are to relicense or dual-license `moqom-cc`, or to accept that OBS gets stock
+congestion control. Deciding that is not a licensing question.
+
+None of the above applies to a host with a permissive license. The rule is not
+"plugins are GPL" — it is that a plugin inherits the license of whatever it
+links, and we do not choose that.
 
 ## Contributor License Agreement
 
