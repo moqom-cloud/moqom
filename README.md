@@ -10,9 +10,10 @@ mapping, and end-to-end encryption our decisions instead of someone else's.
 
 ## Status
 
-Phase 0. `moqom-proto` has variable-length integers and the streaming-decode
-contract; nothing connects to anything yet. See the plan for the full build
-order.
+Phase 0. `moqom-proto` covers the object model, the control-message envelope
+with six messages, and the data plane — object datagrams and subgroup streams.
+Nothing connects to anything yet: there is no transport, so bytes are correct
+but stationary. See the plan for the full build order.
 
 ## Layout
 
