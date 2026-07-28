@@ -149,18 +149,50 @@ func (m MuteState) Effective() MediaKind {
 
 // Participant is one device in a room.
 type Participant struct {
-	Identity     Identity
-	Grants       Grants
-	Presence     Presence
-	Mute         MuteState
-	Spotlighted  bool
-	Backstage    bool
+	Identity    Identity
+	Grants      Grants
+	Presence    Presence
+	Mute        MuteState
+	Spotlighted bool
+	Backstage   bool
+
+	// ArrivedVia is the username whose following brought them here, empty when
+	// nobody did.
+	//
+	// Written once, on the session that first put this device in the room, and
+	// deliberately not refreshed from later ones. A viewer reconnects and renews
+	// tokens for as long as they stay, and taking the newest token's word for it
+	// would let a refresh move somebody between audiences halfway through -- so a
+	// cohost's count would drift downwards over a long stream for no reason
+	// anybody could find. See Participant.Attribute.
+	ArrivedVia string
+
 	JoinedAt     time.Time
 	LastSeenAt   time.Time
 	RelayID      string
 	SessionID    string
 	RemoteAddr   string
 	PublishedNow []string
+}
+
+// Attribute records who brought this participant, if nobody has yet.
+//
+// First writer wins, which is the whole point: provenance is a fact about an
+// arrival, and this participant arrived once however many sessions they go on to
+// open. Reports whether it took, so a caller can tell a genuine first attribution
+// from a reconnect carrying the same claim again.
+func (p *Participant) Attribute(via string) bool {
+	if via == "" || p.ArrivedVia != "" {
+		return false
+	}
+	// Somebody cannot bring themselves. Cheap to check and worth checking here as
+	// well as at mint, because this is the last point before the number is
+	// counted.
+	if via == p.Identity.Username {
+		return false
+	}
+	p.ArrivedVia = via
+	return true
 }
 
 // Room is the record a room actually is.

@@ -105,6 +105,33 @@ type Claims struct {
 
 	// MOQT is the part the relay reads.
 	MOQT Scope `json:"moqt"`
+
+	// ArrivedVia is the username whose following this holder came in through,
+	// empty when they arrived by themselves.
+	//
+	// Provenance, not authorisation. It grants nothing, withholds nothing, and no
+	// decision about what the holder may do reads it -- which is what makes it
+	// safe for the relay to parse leniently while the scope above is parsed
+	// strictly.
+	//
+	// It is in the token rather than passed at join because it must be
+	// unforgeable and it must survive. Unforgeable, because these counts divide
+	// revenue between cohosts, and a client that could assert its own provenance
+	// could inflate somebody's audience for free. Surviving, because a viewer
+	// reconnects and refreshes tokens for hours: provenance is a fact about the
+	// arrival, so it has to be reasserted with every credential rather than
+	// remembered in one server's memory, and a signed claim is the only carrier
+	// that reaches a relay in a different region without a lookup on the join
+	// path.
+	//
+	// A username rather than an Identity, because a following belongs to a person
+	// and not to one of their phones.
+	//
+	// Adding this was a compatible change for the relay and an incompatible one
+	// here: the decoder below refuses unknown claims, so a control plane older
+	// than this field rejects a token carrying it. Rolling out the verifier ahead
+	// of the minter is the order that has no window.
+	ArrivedVia string `json:"via,omitempty"`
 }
 
 type Confirmation struct {
@@ -255,6 +282,18 @@ func Mint(key Key, claims Claims, lifetime time.Duration, now time.Time) (string
 	}
 	if _, err := claims.MOQT.Grants(); err != nil {
 		return "", time.Time{}, err
+	}
+	// Refused rather than dropped. A caller that asked for attribution and got a
+	// token without it would produce a viewer counted as organic, and the
+	// discrepancy would surface as a cohost disputing a revenue split months
+	// later with nothing left to reconstruct.
+	if claims.ArrivedVia == claims.Subject {
+		return "", time.Time{}, fmt.Errorf(
+			"%w: token is attributed to its own subject %q", control.ErrInvalid, claims.Subject)
+	}
+	if claims.ArrivedVia != "" && claims.MOQT.Room == "" {
+		return "", time.Time{}, fmt.Errorf(
+			"%w: token is attributed to %q but names no room", control.ErrInvalid, claims.ArrivedVia)
 	}
 
 	expires := now.Add(lifetime).Truncate(time.Second)

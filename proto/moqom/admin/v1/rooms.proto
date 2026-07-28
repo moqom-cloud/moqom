@@ -140,6 +140,15 @@ message Room {
   uint32 distinct_user_count = 11;
 
   bool is_recording = 12;
+
+  // How the audience divides between the cohosts who brought it.
+  //
+  // Included here rather than behind a call of its own because it is a handful of
+  // integers however large the room is, and because the question it answers --
+  // "is this collaboration working" -- is asked at the same moment as everything
+  // else on this message. Empty for a room nobody was brought to, and for a
+  // tenant that does not attribute arrivals.
+  repeated Audience audiences = 13;
 }
 
 // Everything a moderator interface needs about one device in a room.
@@ -174,6 +183,37 @@ message Participant {
   // Which relay is holding this session. Operational detail, useful when a
   // support question is really a question about one machine.
   string relay_id = 10;
+
+  // The username whose following brought them, from the token they joined with.
+  // Empty when they arrived on their own.
+  //
+  // Set once, on the first session of a stay, and kept across reconnects. A
+  // viewer who drops off the network and comes back is the same arrival, and
+  // re-deriving this from the new token would let a refresh quietly move
+  // somebody between audiences.
+  string arrived_via = 11;
+}
+
+// How many viewers each cohost brought to a room.
+//
+// The aggregate of `Participant.arrived_via` over everybody currently in the
+// room. Served as counts rather than as a way to list an audience: a room may
+// hold a million viewers, and the useful question at that scale is how the
+// audience divides, not who is in it.
+message Audience {
+  // The cohost whose following these viewers came through. Empty for the ones
+  // who found the room themselves, which is a cohort in its own right -- the
+  // organic reach every cohost's contribution is measured against.
+  string via = 1;
+
+  int64 viewers = 2;
+
+  // What `viewers` was rounded to. One is exact.
+  //
+  // Reported rather than implied, because a count of a busy room is quantised to
+  // keep it from changing several times a second, and a consumer that assumed
+  // exactness would publish a precise-looking number that is not.
+  int64 resolution = 3;
 }
 
 enum WatchdogKind {

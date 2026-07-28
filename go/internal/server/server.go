@@ -317,6 +317,9 @@ func (c *core) counts(ctx context.Context, tenant, room string) (roomCounts, err
 		devices:   uint32(len(page.Participants)),
 		people:    uint32(len(people)),
 		recording: recording,
+		// Over the same page the counts above come from, so the audience division
+		// and the totals beside it cannot describe two different moments.
+		audiences: control.Audiences(page.Participants),
 	}, nil
 }
 

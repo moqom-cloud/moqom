@@ -67,6 +67,11 @@ type tcase struct {
 	Tenant   string `json:"tenant"`
 	Username string `json:"username"`
 	Device   string `json:"device"`
+
+	// Who brought this holder, for the cases that have provenance. Omitted where
+	// there is none, so the fixture distinguishes "arrived alone" from "this
+	// fixture predates attribution".
+	ArrivedVia string `json:"arrived_via,omitempty"`
 }
 
 func buildFixture(t *testing.T) fixture {
@@ -97,16 +102,27 @@ func buildFixture(t *testing.T) fixture {
 		id       string
 		username string
 		room     string
+		via      string
 	}{
-		{"plain", "fixture-1", "ada", "room-42"},
+		{"plain", "fixture-1", "ada", "room-42", ""},
 		// Not ASCII, and not the same bytes as a decomposed spelling of the same
 		// name. If the two implementations disagreed about normalisation this
 		// would be a user the relay files under a different key than the control
 		// plane bans.
-		{"unicode username", "fixture-2", "ada\u0301", "room-42"},
+		{"unicode username", "fixture-2", "ada\u0301", "room-42", ""},
 		// A username with the separator the rendered form of an identity uses,
 		// to prove nothing anywhere is parsing "user/device" back apart.
-		{"username with a slash", "fixture-3", "ada/laptop", "room-42"},
+		{"username with a slash", "fixture-3", "ada/laptop", "room-42", ""},
+		// Attributed to a cohost. The claim is optional, so without a case that
+		// carries one the fixture proves only that both sides can ignore it.
+		{"brought by a cohost", "fixture-4", "ada", "room-42", "bea"},
+		// Attributed to a name that is neither ASCII nor free of the separator an
+		// identity renders with. Provenance is matched against usernames, so if
+		// the two sides did not agree on these bytes the cohort would read as
+		// attributed on one and organic on the other. Minting does not normalise
+		// -- the request handler does, before it gets here -- so this pins the
+		// encoding rather than the canonicalisation.
+		{"brought by an awkward name", "fixture-5", "ada", "room-42", "be\u0301a/phone"},
 	} {
 		signed, _, err := Mint(key, Claims{
 			Issuer:       built.Issuer,
@@ -118,6 +134,7 @@ func buildFixture(t *testing.T) fixture {
 				control.Grants{Publish: control.PublishCamera},
 				spec.room, false, false,
 			),
+			ArrivedVia: spec.via,
 		}, 10*time.Minute, interopNow)
 		if err != nil {
 			t.Fatalf("minting %s: %v", spec.name, err)
@@ -128,11 +145,12 @@ func buildFixture(t *testing.T) fixture {
 			t.Fatalf("deriving the device: %v", err)
 		}
 		built.Cases = append(built.Cases, tcase{
-			Name:     spec.name,
-			Token:    signed,
-			Tenant:   "acme",
-			Username: spec.username,
-			Device:   device,
+			Name:       spec.name,
+			Token:      signed,
+			Tenant:     "acme",
+			Username:   spec.username,
+			Device:     device,
+			ArrivedVia: spec.via,
 		})
 	}
 	return built
@@ -207,6 +225,10 @@ func TestInteropFixture(t *testing.T) {
 		}
 		if claims.Audience != c.Tenant {
 			t.Errorf("%s: fixture says tenant %s, token carries %s", c.Name, c.Tenant, claims.Audience)
+		}
+		if claims.ArrivedVia != c.ArrivedVia {
+			t.Errorf("%s: fixture says brought by %q, token carries %q",
+				c.Name, c.ArrivedVia, claims.ArrivedVia)
 		}
 	}
 }

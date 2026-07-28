@@ -300,6 +300,7 @@ func roomToProto(room control.Room, counts roomCounts) *adminpb.Room {
 		ParticipantCount:  counts.devices,
 		DistinctUserCount: counts.people,
 		IsRecording:       counts.recording,
+		Audiences:         audiencesToProto(counts.audiences),
 	}
 }
 
@@ -311,6 +312,22 @@ type roomCounts struct {
 	devices   uint32
 	people    uint32
 	recording bool
+	audiences []control.Audience
+}
+
+func audiencesToProto(cohorts []control.Audience) []*adminpb.Audience {
+	if len(cohorts) == 0 {
+		return nil
+	}
+	converted := make([]*adminpb.Audience, 0, len(cohorts))
+	for _, cohort := range cohorts {
+		converted = append(converted, &adminpb.Audience{
+			Via:        cohort.Via,
+			Viewers:    int64(cohort.Viewers),
+			Resolution: int64(cohort.Resolution),
+		})
+	}
+	return converted
 }
 
 var presenceByDomain = map[control.Presence]adminpb.Presence{
@@ -333,6 +350,7 @@ func participantToProto(participant control.Participant) *adminpb.Participant {
 		IsBackstage:            participant.Backstage,
 		JoinedAt:               timeToProto(participant.JoinedAt),
 		RelayId:                participant.RelayID,
+		ArrivedVia:             participant.ArrivedVia,
 	}
 }
 

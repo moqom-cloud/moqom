@@ -75,6 +75,17 @@ func (s *tokensService) MintClientToken(
 		}
 	}
 
+	// Normalised the same way the subject is, because it is compared against
+	// usernames: attribution to "Bea" that never matches the participant named
+	// "bea" is a cohort that silently reads as organic.
+	arrivedVia := request.GetArrivedVia()
+	if arrivedVia != "" {
+		arrivedVia, err = control.NormaliseUsername(arrivedVia)
+		if err != nil {
+			return nil, statusFor(fmt.Errorf("arrived_via: %w", err))
+		}
+	}
+
 	claims := token.Claims{
 		Issuer:       s.core.issuer,
 		Subject:      username,
@@ -86,6 +97,7 @@ func (s *tokensService) MintClientToken(
 			request.GetBackstage(),
 			request.GetAgeVerified(),
 		),
+		ArrivedVia: arrivedVia,
 	}
 
 	signing := s.core.keys[0]

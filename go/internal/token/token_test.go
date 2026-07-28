@@ -1,6 +1,7 @@
 package token
 
 import (
+	"bytes"
 	"crypto/ed25519"
 	"encoding/base64"
 	"encoding/json"
@@ -357,4 +358,95 @@ func truncate(value string) string {
 		return value
 	}
 	return value[:32] + "..."
+}
+
+func TestProvenanceSurvivesTheRoundTripAndIsSigned(t *testing.T) {
+	key, verifier := testKey(t)
+	now := time.Date(2026, 7, 27, 12, 0, 0, 0, time.UTC)
+
+	claims := claimsFor(control.Grants{})
+	claims.ArrivedVia = "bea"
+
+	minted, _, err := Mint(key, claims, time.Minute, now)
+	if err != nil {
+		t.Fatalf("minting: %v", err)
+	}
+	verified, err := verifier.Verify(minted, now)
+	if err != nil {
+		t.Fatalf("verifying: %v", err)
+	}
+	if verified.ArrivedVia != "bea" {
+		t.Errorf("provenance should survive, got %q", verified.ArrivedVia)
+	}
+
+	// The property the whole design rests on: these counts divide revenue between
+	// cohosts, so a holder who could edit their own provenance could inflate
+	// somebody's audience for nothing.
+	segments := strings.Split(minted, ".")
+	var edited Claims
+	if err := decodeJSON(segments[1], &edited); err != nil {
+		t.Fatalf("decoding claims: %v", err)
+	}
+	edited.ArrivedVia = "ana"
+	forged, err := encodeJSON(edited)
+	if err != nil {
+		t.Fatalf("re-encoding: %v", err)
+	}
+	if _, err := verifier.Verify(segments[0]+"."+forged+"."+segments[2], now); !errors.Is(err, ErrSignature) {
+		t.Errorf("a rewritten provenance claim should fail the signature, got %v", err)
+	}
+}
+
+func TestProvenanceIsRefusedWhenItCannotMeanAnything(t *testing.T) {
+	key, _ := testKey(t)
+	now := time.Date(2026, 7, 27, 12, 0, 0, 0, time.UTC)
+
+	// Attributed to itself: nobody brings themselves, and counting it would put a
+	// cohost in their own audience.
+	itself := claimsFor(control.Grants{})
+	itself.ArrivedVia = itself.Subject
+	if _, _, err := Mint(key, itself, time.Minute, now); !errors.Is(err, control.ErrInvalid) {
+		t.Errorf("a self-attributed token should be refused, got %v", err)
+	}
+
+	// Attributed but naming no room: there is no audience for it to belong to.
+	roomless := claimsFor(control.Grants{})
+	roomless.MOQT = ScopeFrom(control.Grants{}, "", false, false)
+	roomless.ArrivedVia = "bea"
+	if _, _, err := Mint(key, roomless, time.Minute, now); !errors.Is(err, control.ErrInvalid) {
+		t.Errorf("attribution with no room should be refused, got %v", err)
+	}
+
+	// Refused rather than quietly dropped, which is the same rule the lifetime
+	// follows: issuing something weaker than requested is how a fact gets lost
+	// with nobody to notice.
+}
+
+func TestATokenWithNoProvenanceIsNormal(t *testing.T) {
+	key, verifier := testKey(t)
+	now := time.Date(2026, 7, 27, 12, 0, 0, 0, time.UTC)
+
+	minted, _, err := Mint(key, claimsFor(control.Grants{}), time.Minute, now)
+	if err != nil {
+		t.Fatalf("minting: %v", err)
+	}
+	verified, err := verifier.Verify(minted, now)
+	if err != nil {
+		t.Fatalf("verifying: %v", err)
+	}
+	if verified.ArrivedVia != "" {
+		t.Errorf("nobody brought them, got %q", verified.ArrivedVia)
+	}
+	// And the claim is absent from the wire rather than present and empty, so a
+	// token for a viewer who arrived alone is no larger than it was. Checked
+	// against the decoded claims, since the compact form is base64 and would
+	// contain the substring by coincidence or not at all.
+	segments := strings.Split(minted, ".")
+	body, err := base64.RawURLEncoding.DecodeString(segments[1])
+	if err != nil {
+		t.Fatalf("claims are not base64url: %v", err)
+	}
+	if bytes.Contains(body, []byte(`"via"`)) {
+		t.Errorf("an empty provenance claim should be omitted, got %s", body)
+	}
 }

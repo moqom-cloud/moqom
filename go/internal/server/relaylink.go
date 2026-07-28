@@ -345,6 +345,19 @@ func (s *relayLinkService) adoptSession(
 		participant.Grants = grants
 	}
 
+	// Who brought them, and why the order here matters. A record that already
+	// answers this wins over the token in hand, because this may be the third
+	// session of one stay -- a viewer whose train went into a tunnel, or whose
+	// token simply expired and was renewed. Taking the newest token's word would
+	// let a refresh that omitted the claim quietly move somebody out of a cohost's
+	// audience, and the loss would show up as a count drifting down over a long
+	// stream with nothing to explain it. Attribute is first-writer-wins, so
+	// calling it in this order is the whole rule.
+	if existing, err := s.core.store.GetParticipant(ctx, ref.tenant, ref.room, participant.Identity); err == nil {
+		participant.Attribute(existing.ArrivedVia)
+	}
+	participant.Attribute(session.GetArrivedVia())
+
 	if err := s.core.store.SaveParticipant(ctx, ref.tenant, ref.room, participant); err != nil {
 		slog.WarnContext(ctx, "could not record a participant",
 			"relay", connection.id, "room", ref.room, "error", err)

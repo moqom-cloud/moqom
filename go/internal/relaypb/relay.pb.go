@@ -629,8 +629,18 @@ type SessionState struct {
 	// When the session's token expires. The relay closes the session then unless
 	// it has been revalidated.
 	TokenExpiresAt *timestamppb.Timestamp `protobuf:"bytes,9,opt,name=token_expires_at,json=tokenExpiresAt,proto3" json:"token_expires_at,omitempty"`
-	unknownFields  protoimpl.UnknownFields
-	sizeCache      protoimpl.SizeCache
+	// The username whose following this session came in through, from the token's
+	// `via` claim. Empty when nobody brought them.
+	//
+	// Reported by the relay rather than remembered by the control plane because
+	// the two are not necessarily talking to each other: a viewer's token is
+	// minted by whichever replica answered, and their session lands on whichever
+	// relay is nearest. The claim is what carries the fact across that gap, and
+	// it arrives again on every reconnect, so a session that survives a train
+	// tunnel keeps its provenance without anything having to remember it.
+	ArrivedVia    string `protobuf:"bytes,10,opt,name=arrived_via,json=arrivedVia,proto3" json:"arrived_via,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *SessionState) Reset() {
@@ -724,6 +734,13 @@ func (x *SessionState) GetTokenExpiresAt() *timestamppb.Timestamp {
 		return x.TokenExpiresAt
 	}
 	return nil
+}
+
+func (x *SessionState) GetArrivedVia() string {
+	if x != nil {
+		return x.ArrivedVia
+	}
+	return ""
 }
 
 type SessionOpened struct {
@@ -1898,7 +1915,7 @@ const file_moqom_relay_v1_relay_proto_rawDesc = "" +
 	"\aWelcome\x12*\n" +
 	"\x02at\x18\x01 \x01(\v2\x1a.google.protobuf.TimestampR\x02at\x12/\n" +
 	"\x05grace\x18\x02 \x01(\v2\x19.google.protobuf.DurationR\x05grace\x12F\n" +
-	"\x11snapshot_interval\x18\x03 \x01(\v2\x19.google.protobuf.DurationR\x10snapshotInterval\"\x83\x03\n" +
+	"\x11snapshot_interval\x18\x03 \x01(\v2\x19.google.protobuf.DurationR\x10snapshotInterval\"\xa4\x03\n" +
 	"\fSessionState\x12\x1d\n" +
 	"\n" +
 	"session_id\x18\x01 \x01(\tR\tsessionId\x12\x16\n" +
@@ -1909,7 +1926,10 @@ const file_moqom_relay_v1_relay_proto_rawDesc = "" +
 	"\tbackstage\x18\x06 \x01(\bR\tbackstage\x12%\n" +
 	"\x0eremote_address\x18\a \x01(\tR\rremoteAddress\x127\n" +
 	"\topened_at\x18\b \x01(\v2\x1a.google.protobuf.TimestampR\bopenedAt\x12D\n" +
-	"\x10token_expires_at\x18\t \x01(\v2\x1a.google.protobuf.TimestampR\x0etokenExpiresAt\"G\n" +
+	"\x10token_expires_at\x18\t \x01(\v2\x1a.google.protobuf.TimestampR\x0etokenExpiresAt\x12\x1f\n" +
+	"\varrived_via\x18\n" +
+	" \x01(\tR\n" +
+	"arrivedVia\"G\n" +
 	"\rSessionOpened\x126\n" +
 	"\asession\x18\x01 \x01(\v2\x1c.moqom.relay.v1.SessionStateR\asession\"\xcd\x02\n" +
 	"\rSessionClosed\x12\x1d\n" +

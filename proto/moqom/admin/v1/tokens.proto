@@ -74,6 +74,27 @@ message MintClientTokenRequest {
   // Attest that this user's age has been verified, for rooms whose policy
   // demands it. The tenant performs the verification; this asserts it happened.
   bool age_verified = 9;
+
+  // The username whose following brought this user to the room, when the tenant
+  // knows. Empty when they found it themselves, which is the common case and a
+  // number worth having rather than a gap to apologise for.
+  //
+  // Only the tenant can supply this. MOQOM sees a viewer arrive with a token; it
+  // has no way to know they tapped a notification about a particular cohost, or
+  // followed a link that cohost posted. So it is asserted at mint time, signed
+  // into the token, and thereafter unforgeable by the client -- which matters,
+  // because when two cohosts bring their own followings to one room these counts
+  // are what a revenue split is argued over.
+  //
+  // Capture it from the start even if nothing reads it yet. Provenance is a fact
+  // about the moment somebody arrived, and unlike almost everything else here it
+  // cannot be recomputed later from what was stored: a viewer who joined through
+  // a cohost's link is indistinguishable, an hour afterwards, from one who did
+  // not.
+  //
+  // Rejected if it names the user themselves, or if no `room` is given, since
+  // neither can mean anything.
+  string arrived_via = 10;
 }
 
 message MintClientTokenResponse {

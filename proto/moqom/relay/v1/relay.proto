@@ -149,6 +149,17 @@ message SessionState {
   // When the session's token expires. The relay closes the session then unless
   // it has been revalidated.
   google.protobuf.Timestamp token_expires_at = 9;
+
+  // The username whose following this session came in through, from the token's
+  // `via` claim. Empty when nobody brought them.
+  //
+  // Reported by the relay rather than remembered by the control plane because
+  // the two are not necessarily talking to each other: a viewer's token is
+  // minted by whichever replica answered, and their session lands on whichever
+  // relay is nearest. The claim is what carries the fact across that gap, and
+  // it arrives again on every reconnect, so a session that survives a train
+  // tunnel keeps its provenance without anything having to remember it.
+  string arrived_via = 10;
 }
 
 message SessionOpened {
