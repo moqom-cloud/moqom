@@ -205,9 +205,22 @@ func (k Key) PublicJWK() (string, error) {
 // deployments that somehow share a key agree on its name, and a key cannot be
 // republished under a second identifier as if it were a rotation.
 func GenerateKey() (Key, error) {
-	public, private, err := ed25519.GenerateKey(rand.Reader)
+	_, private, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
 		return Key{}, err
+	}
+	return KeyFrom(private)
+}
+
+// KeyFrom names a key that already exists, as when one is loaded from a secret.
+//
+// Same derivation as GenerateKey, which is the point: a key has one identifier no
+// matter which side of a restart it was created on, so a deployment that reloads its
+// secrets keeps verifying the tokens it signed before.
+func KeyFrom(private ed25519.PrivateKey) (Key, error) {
+	public, ok := private.Public().(ed25519.PublicKey)
+	if !ok {
+		return Key{}, errors.New("key is not Ed25519")
 	}
 	digest := sha256.Sum256(public)
 	return Key{

@@ -21,7 +21,7 @@ todos:
   - id: proto
     content: "Implement moqom-proto: sans-io draft-19 codec covering varints, the object data model (Track/Group/Subgroup/Object), control messages (SETUP, SUBSCRIBE, PUBLISH, ANNOUNCE, FETCH, TRACK_STATUS), subgroup stream framing, and datagrams. Make the object-to-transport mapping a deliberate latency decision from the start: datagrams for small latency-critical objects (audio, small frames) to match RTP's no-head-of-line-blocking property, streams for large objects where ordering and flow control earn their keep. Mapping everything onto streams is a concrete way to end up slower than WebRTC. Include property-based round-trip tests and a cargo-fuzz target on the decoder."
     status: in_progress
-    remaining: "FETCH_HEADER and fetch object framing; the draft-19 10.2 parameter registry (AUTHORIZATION_TOKEN and its alias cache, the location and priority filters, delivery timeouts, FORWARD, LARGEST_OBJECT); differential testing against moq-rs or moxygen."
+    remaining: "The draft-19 10.2 parameter registry (AUTHORIZATION_TOKEN and its alias cache, the location and priority filters, delivery timeouts, FORWARD, LARGEST_OBJECT); differential testing against moq-rs or moxygen. Fetch framing landed with the relay cache: FETCH_HEADER, the delta-coded record encoding, and both end-of-range markers, ported from the Swift implementation so the two agree on the parts the draft leaves ambiguous -- whether a marker's IDs are absolute (they are, or a partial cache cannot describe its own holes) and whether a range's end is inclusive (FetchEnd carries the off-by-one once, since the prose and the field description disagree)."
     evidence:
       - rs/moqom-proto/src/varint.rs
       - rs/moqom-proto/src/model/ids.rs
@@ -33,6 +33,7 @@ todos:
       - rs/moqom-proto/src/control/messages/namespace.rs
       - rs/moqom-proto/src/data/datagram.rs
       - rs/moqom-proto/src/data/subgroup.rs
+      - rs/moqom-proto/src/data/fetch.rs
       - rs/moqom-proto/src/testing.rs
       - rs/fuzz/fuzz_targets/decoders.rs
   - id: transport
@@ -72,15 +73,57 @@ todos:
   - id: relay
     content: "Implement moqom-relay: session state machine, subscription matching over tuple namespaces, group cache for late joiners, fan-out with deduplication, and priority scheduling that maps MOQT's 8-bit publisher and subscriber priority onto quinn's set_priority. Audio above video, base layer above enhancement layer, live edge above late-joiner catchup."
     status: in_progress
-    remaining: "Sessions hold: SETUP over both QUIC and WebTransport on one port, PUBLISH_NAMESPACE and its withdrawal, SUBSCRIBE_NAMESPACE with suffix-relative announcements, SUBSCRIBE forwarded upstream, and subgroup fan-out that rewrites the track alias per downstream session. Verified two ways -- integration tests with a Rust client, and three tests in MoqomKit that publish and subscribe through the binary over a socket, which is the first differential check against an independently written codec. Four things are missing and one of them is the point of a relay: upstream subscriptions are not deduplicated, so two viewers of one track cause two SUBSCRIBEs to the publisher and the bandwidth saving that justifies the hop is not there yet. Then there is no group cache, so no FETCH and no late-joiner catch-up; no congestion-aware scheduling, so a slow subscriber back-pressures the publisher instead of being dropped a layer, which is the wrong direction and what moqom-cc is for; and no authorisation at all -- tokens in Setup Options are parsed and ignored, so anyone who can reach the port can publish under any namespace. Not safe to expose to the internet until that last one lands."
+    remaining: "Sessions hold: SETUP over both QUIC and WebTransport on one port, PUBLISH_NAMESPACE and its withdrawal, SUBSCRIBE_NAMESPACE with suffix-relative announcements, SUBSCRIBE forwarded upstream, and subgroup fan-out that rewrites the track alias per downstream session. Verified two ways -- integration tests with a Rust client, and three tests in MoqomKit that publish and subscribe through the binary over a socket, which is the first differential check against an independently written codec. The group cache landed with FETCH over it, in both the standalone and joining forms, which is what makes a late joiner warm-start on the group in progress and a client that dropped its connection able to ask for what it missed rather than wait for the next keyframe. Caching is a tee off the forward path rather than a stage in it: forwarding stays a byte pump that never parses an object, the cache parses a copy, and a stream it cannot parse costs a cache miss instead of a dropped forward -- so E2EE and retention stay compatible. Retention is bounded by group count and by byte budgets per track and per process, evicting whole groups because half a group is undecodable, and configurable down to nothing for operators who must not store media. Three things are still missing and one of them is the point of a relay: upstream subscriptions are not deduplicated, so two viewers of one track cause two SUBSCRIBEs to the publisher and the bandwidth saving that justifies the hop is not there yet. Then there is no congestion-aware scheduling, so a slow subscriber back-pressures the publisher instead of being dropped a layer, which is the wrong direction and what moqom-cc is for; and no authorisation at all -- tokens in Setup Options are parsed and ignored, so anyone who can reach the port can publish under any namespace. Not safe to expose to the internet until that last one lands."
     evidence:
       - rs/moqom-relay/Cargo.toml
       - rs/moqom-relay/src/lib.rs
+      - rs/moqom-relay/src/cache.rs
+      - path: rs/moqom-relay/tests/relay.rs
+        contains: 'a_client_that_missed_objects_can_ask_for_them'
   - id: control-plane
     content: "Build the Go control plane: tenant and user models with string user IDs, device registration binding a P-256 JWK thumbprint, CAT/CWT token minting with the moqt claim and cnf/jkt binding, DPoP proof verification, moqt-reval revalidation, and a stream registry with a discovery API. Expose gRPC to the relay."
-    status: pending
+    status: in_progress
+    remaining: "Runs, and the parts a backend touches are done: the domain model mirrors MoqomKit's capability bits, mute scopes and namespace layout field for field; four gRPC services cover rooms, moderation, tokens and events; a store interface has a conformance suite that both implementations must pass; and moderation follows one order everywhere -- authorise, deduplicate, write, dispatch, record -- because a relay that ejects somebody before the write lands lets them reconnect unbanned. A test caught the sharp edge of that ordering: replaying somebody else's idempotency key skipped a scope check placed after the deduplication lookup, which meant a room moderator could widen their own ban to the whole tenant. The check moved ahead of it. Four things are missing and two of them are load-bearing. Tokens are Ed25519-signed and bearer-bound, not CAT/CWT with cnf/jkt, so a stolen token is replayable until it expires and the short lifetime is the only mitigation -- the thumbprint the device is derived from is already carried, so DPoP is the next step rather than a redesign. The store is in memory only, so a restart loses every room, ban and audit entry; the interface and its conformance suite exist precisely so Postgres is an implementation rather than a rewrite. Service accounts are a JSON file, which cannot rotate or revoke. And no relay has ever attached: RelayLink is implemented and tested against a fake relay, so directives are known to leave the control plane and unknown to arrive anywhere."
     evidence:
-      - go/cmd/control/main.go
+      - go/cmd/moqom-control/main.go
+      - go/internal/control/capability.go
+      - go/internal/control/identity.go
+      - go/internal/store/store.go
+      - go/internal/store/storetest/storetest.go
+      - go/internal/token/token.go
+      - go/internal/server/rooms.go
+      - go/internal/server/moderation.go
+      - go/internal/server/events.go
+      - go/internal/server/relaylink.go
+      - proto/moqom/admin/v1/rooms.proto
+      - proto/moqom/relay/v1/relay.proto
+      - path: go/internal/control/capability.go
+        contains: 'CapAppointModerators'
+      - path: go/internal/server/moderation.go
+        contains: 'extra control.Capability'
+  - id: backend-sdk
+    content: "Ship server-side SDKs in Go and Rust so a customer's backend can mint tokens, run rooms, moderate them, and follow what happens in them without a MOQT stack in its dependency graph. One contract, two idiomatic surfaces: sentinel errors and errors.Is in Go, an error enum in Rust, idempotency keys generated per logical call rather than per attempt so a queue redelivering 'ban for 24 hours' does not extend the ban, and attribution the caller cannot forge -- the service account comes from the connection, and only the human it is acting for is per-call. Both must agree with the control plane about what a capability bit means, which is a cross-language claim and therefore needs a cross-language test."
+    status: in_progress
+    remaining: "Both SDKs cover the admin surface -- rooms and watchdogs, moderation, token minting, verification keys, and the event stream -- and both are tested against the real control plane rather than only against a stub: tools/interop.sh builds moqom-control and runs each SDK's calls through it, including sending all twenty-one capabilities and all four publish scopes one at a time and reading them back, which is the only way to catch two rows of a mapping table pointing at the same wire value. What is missing: the Rust SDK does not yet speak MOQT, so a recorder, a safety classifier or an agent written in Rust can administer a room but cannot receive a frame from it -- that is the remaining half of this item and it depends on the relay authorising anything. Neither SDK is published; the Rust crate is publish = false and the Go module resolves through a replace directive, because the interfaces will move while the relay is being wired to the control plane. Idempotency is honoured on the way in but keys are stored in memory with the rest of the state, so it survives a retry and not a restart."
+    evidence:
+      - sdk/go/moqom.go
+      - sdk/go/moderation.go
+      - sdk/go/tokens.go
+      - sdk/go/events.go
+      - sdk/go/moqom_test.go
+      - sdk/go/LICENSE
+      - sdk/rust/moqom-sdk/src/client.rs
+      - sdk/rust/moqom-sdk/src/moderation.rs
+      - sdk/rust/moqom-sdk/src/events.rs
+      - sdk/rust/moqom-sdk/tests/admin.rs
+      - sdk/rust/moqom-sdk/tests/interop.rs
+      - sdk/rust/moqom-sdk/LICENSE
+      - go/internal/server/sdk_test.go
+      - tools/interop.sh
+      - path: sdk/rust/moqom-sdk/tests/interop.rs
+        contains: 'capabilities_mean_the_same_thing_on_both_sides'
+      - path: go/internal/server/sdk_test.go
+        contains: 'Capabilit'
   - id: events
     content: "Build the event layer with no external broker. Live events (cluster metadata, origin discovery, presence, viewer counts) ride MOQOM tracks with a root node for discovery and leaves announcing broadcasts. Durable events (stream lifecycle, billing, webhooks, audit) go through a Postgres outbox table written in the same transaction as the state change, drained by a Go worker with idempotency keys."
     status: pending
@@ -92,7 +135,7 @@ todos:
   - id: ios-sdk
     content: "Build the iOS SDK: UniFFI bindings over moqom-client packaged as an XCFramework, a RealityKit capture layer on customPostProcessing with no pre-26 fallback, a Metal RGB-to-NV12 compute pass writing into the VTCompressionSession pool, HEVC with low-latency rate control plus temporal SVC and LTR, and an AVSampleBufferDisplayLayer viewer. Secure Enclave key generation for device identity."
     status: in_progress
-    remaining: "The media path is now end to end: draft-19 is implemented in Swift as MoqomWire (a port of moqom-proto, not a binding -- there is no C ABI, and Network.framework's QUIC removes the reason to ship a Rust runtime on the client), MoqtSession speaks it over an injectable QUIC carrier, NetworkQUICCarrier supplies one from NetworkConnection<QUIC>, and MemoryCarrier supplies one from a buffer so the session is tested without a socket. Encoded bytes reach the wire: the frame descriptor placeholder is gone, replaced by a packetiser that carries capture time and temporal layer as MOQT object properties, and by a depacketiser that drops pre-keyframe objects, counts holes, and takes parameter sets from the catalog. Audio, SFrame end-to-end encryption over CryptoKit, the catalog track, and a delay-gradient bandwidth estimator all landed with it. FETCH is implemented in both directions -- standalone and joining, with gap markers where the publisher no longer holds what was asked for -- and reconnection now acts rather than being modelled: the carrier reports its own loss, the retry driver backs off, and a returning publisher re-announces and republishes its catalog while the room rebinds subscriptions without the application laying out again. 329 tests in 56 suites, Swift 6 language mode, complete strict concurrency, plus four UI tests that drive join, go-live, audio and leave on a simulator in CI -- the sample publishes a rendered pattern through the real pipeline rather than an empty relay, so a whole-pipeline failure shows up on the tile. Three of those tests are interop: they start moqom-relay, pin the certificate it prints, connect over Network.framework's QUIC, and check setup, announcement propagation, and objects arriving under a rewritten alias. That is the first evidence the two codecs read draft-19 the same way, and it is skipped unless MOQOM_RELAY_BIN is set, so a green run without it is not evidence of interop. What has still never executed is the camera, the Metal scene capture, the RealityKit tap, and VideoToolbox actually compressing a frame; the simulator has an encoder for both codecs and a low-latency one for neither, which the SDK now falls back around and reports. Packets now reach the loopback interface but no further, so loss, reordering, and a path that changes mid-session remain unmeasured. An earlier probe claiming this SDK had neither customPostProcessing nor NetworkConnection<QUIC> was measuring the Command Line Tools SDK, which is macOS-only; against iPhoneOS 26.2 both are present, and the 26 floor makes them reachable without a single availability check anywhere in the SDK."
+    remaining: "The media path is now end to end: draft-19 is implemented in Swift as MoqomWire (a port of moqom-proto, not a binding -- there is no C ABI, and Network.framework's QUIC removes the reason to ship a Rust runtime on the client), MoqtSession speaks it over an injectable QUIC carrier, NetworkQUICCarrier supplies one from NetworkConnection<QUIC>, and MemoryCarrier supplies one from a buffer so the session is tested without a socket. Encoded bytes reach the wire: the frame descriptor placeholder is gone, replaced by a packetiser that carries capture time and temporal layer as MOQT object properties, and by a depacketiser that drops pre-keyframe objects, counts holes, and takes parameter sets from the catalog. Audio, SFrame end-to-end encryption over CryptoKit, the catalog track, and a delay-gradient bandwidth estimator all landed with it. FETCH is implemented in both directions -- standalone and joining, with gap markers where the publisher no longer holds what was asked for -- and reconnection now acts rather than being modelled: the carrier reports its own loss, the retry driver backs off, and a returning publisher re-announces and republishes its catalog while the room rebinds subscriptions without the application laying out again. Raw media taps landed on both directions: captured frames and post-cancellation PCM on the way to the encoders, and decoded pictures and PCM per participant on the way back, each behind a bounded buffer that drops rather than stalls and a cadence that can decline the decode entirely. 461 tests in 75 suites, Swift 6 language mode, complete strict concurrency, plus five UI tests that drive join, go-live, audio, the audio-room layout switch and leave on a simulator in CI -- the sample publishes a rendered pattern through the real pipeline rather than an empty relay, so a whole-pipeline failure shows up on the tile. Three of those tests are interop: they start moqom-relay, pin the certificate it prints, connect over Network.framework's QUIC, and check setup, announcement propagation, and objects arriving under a rewritten alias. That is the first evidence the two codecs read draft-19 the same way, and it is skipped unless MOQOM_RELAY_BIN is set, so a green run without it is not evidence of interop. What has still never executed is the camera, the Metal scene capture, the RealityKit tap, and VideoToolbox actually compressing a frame; the simulator has an encoder for both codecs and a low-latency one for neither, which the SDK now falls back around and reports. Packets now reach the loopback interface but no further, so loss, reordering, and a path that changes mid-session remain unmeasured. An earlier probe claiming this SDK had neither customPostProcessing nor NetworkConnection<QUIC> was measuring the Command Line Tools SDK, which is macOS-only; against iPhoneOS 26.2 both are present, and the 26 floor makes them reachable without a single availability check anywhere in the SDK."
     # Lives in moqom-swift, not here. SwiftPM resolves a git dependency by
     # looking for Package.swift at the repository root and cannot be pointed at
     # a subdirectory, so a package nested in this monorepo is not consumable by
@@ -122,6 +165,12 @@ todos:
         path: Sources/MoqomKit/Subscribe/Depacketiser.swift
       - repo: moqom-swift
         path: Sources/MoqomKit/Subscribe/BandwidthEstimator.swift
+      - repo: moqom-swift
+        path: Sources/MoqomKit/Media/MediaTap.swift
+      - repo: moqom-swift
+        path: Sources/MoqomKit/Media/Decoding.swift
+      - repo: moqom-swift
+        path: Sources/MoqomKit/Platform/VideoDecoder.swift
       - repo: moqom-swift
         path: Tests/MoqomKitTests/*.swift
       - repo: moqom-swift
@@ -249,7 +298,7 @@ todos:
     content: "Build one reference app - a small creator livestreaming product with cohosting, promotion, moderation, effects, and live captions - across iOS, Android, and web, rather than three disconnected demos, so the samples exercise the actual wedge and surface real API friction. Native UI per platform with shared design tokens for color, type, spacing, and motion; SwiftUI that feels like SwiftUI, Compose that feels like Compose. Modern stacks specifically: Swift 6 strict concurrency with @Observable and Swift Testing; Kotlin with coroutines, Flow, Compose, and Material 3, using Camera2 with AImageReader rather than CameraX because CameraX's CPU-usage buffers break the zero-copy path (comment the tradeoff in the sample); TypeScript strict with Vite and React 19 on WebGPU/WebCodecs/WebTransport directly. Effects must come through the public moqom-fx tier-1 plugin API - if the sample needs a private path, the API is wrong. Accessibility is in scope from the start: VoiceOver, TalkBack, Dynamic Type, reduced motion, and live captions demonstrated rather than described. Samples live in the monorepo and build in CI, so an SDK change that breaks them fails the build and they function as integration tests instead of rotting."
     status: pending
   - id: samples-wearable
-    content: "Build the wearable companion, which nobody else bothers with: Apple Watch and Wear OS as remote controls for start/stop, live stats, moderation actions, and reactions - they cannot broadcast video but they are good controllers. The strongest version publishes heart rate as a data track during a fitness broadcast, demonstrating data tracks and the agent plane in one gesture. Add Android XR as a head-mounted viewer target alongside visionOS, since it runs Android apps and the Kotlin SDK largely carries over. Do not plan engineering around camera glasses as a broadcast source: Meta Ray-Ban livestreams only to Meta properties with no third-party SDK and Snap Spectacles require Lens Studio, so treat those as partnership conversations; Android-based glasses like Xreal and Rokid are reachable through the ordinary Android SDK."
+    content: "Build the wearable companion, which nobody else bothers with: Apple Watch and Wear OS as remote controls for start/stop, live stats, moderation actions, and reactions - they cannot broadcast video but they are good controllers. The strongest version publishes heart rate as a data track during a fitness broadcast, demonstrating data tracks and the agent plane in one gesture. Add Android XR as a head-mounted viewer target alongside visionOS, since it runs Android apps and the Kotlin SDK largely carries over. Camera glasses are now partly reachable and should be planned for by access model rather than by brand: Meta's Wearables Device Access Toolkit gives a companion app the Ray-Ban camera (microphone only at 8 kHz over HFP), Snap's Specs NDK gives on-device C++ with camera access subject to egress checks, Android XR glasses reach hardware via ProjectedContext, and Xreal and Rokid are ordinary Android; what remains closed is livestreaming out of Meta's own capture path, which is a partnership conversation."
     status: pending
   - id: capabilities
     content: "Model moderator privileges as a capability set with named presets, never a level hierarchy - levels force false orderings between incomparable powers like 'ban permanently' and 'promote to cohost'. Capability groups: chat (delete message, timeout, chat ban, slow mode, filters), stage (promote to guest, promote to cohost, demote, force-mute, spotlight, queue, lock), room (kick, room ban, tenant ban, close, policy, recording), meta (appoint moderators, read moderation log and evidence, handle appeals). 'mod' and 'super mod' are presets over that set - mod is chat, super mod is chat plus stage - and tenants define their own. Acting on another participant requires a strict superset of their capabilities, which is the partial order levels were approximating: a mod cannot demote a peer, a super mod can demote a mod, and specialised mods cannot act on each other. Never self-elevate; a grant is always a subset of the granter's set; 'appoint moderators' is owner-held by default since a super mod appointing super mods is a one-step room takeover. Split enforcement by capability: stage and force-mute ride a compact bitmask in the token checked by the relay with no hot-path lookup, while chat, ban, policy, and appeals are checked in the control plane against Postgres. Short token expiry gives per-broadcast moderator appointments free; the attributed moderation log doubles as the defense against moderator abuse and the owner can read it."
@@ -323,6 +372,61 @@ todos:
   - id: thermal-policy
     content: "Implement the thermal and quality tier policy: collapse ProcessInfo.thermalState and low-power mode into one tier every subsystem reads, pin ASR to the Neural Engine so the GPU stays free for hardware encode, serialize behind the ~2 concurrent ANE request ceiling, gate ASR on voice activity detection, and degrade in stages with hysteresis - neural effects shed first, then segmentation to shader-only, then per-frame vision, ASR last, then fall back to a server agent. Acceptance criterion is zero thermal throttling on a continuous 15-minute broadcast at 22C ambient with one effect active."
     status: pending
+  - id: audio-graph
+    content: "One audio graph per client, because echo cancellation is a relationship between capture and playback rather than a property of capture. The canceller subtracts a reference -- what went out of the speaker -- from what came in, so audio rendered through a second engine is not in the reference and returns as everyone else's echo. Since audio is per-participant and never server-mixed, the client is the only place the sum exists, and it has to be the same unit the microphone is tapped off. Per-participant volume stays a node volume and local mute stays an unsubscribe, so nothing the per-participant design buys is given up. Session purpose is explicit rather than implied: voiceCall to the receiver, videoCall to the speaker with voice processing on (the speakerphone-with-camera case), music with processing off, since cancellation arrives bundled with gain control and suppression of anything unlike speech and a cymbal is unlike speech. Runtime bypass rather than teardown for a broadcast that starts a song. Take audio from the voice-processing graph and never from the video capture session, which has no app-level canceller, and reconcile the two capture clocks on one host timebase. Android's hardware canceller is a per-device lottery, so carry WebRTC AEC3 (BSD-3, compatible with our Apache-2.0 SDKs) as the floor rather than trusting AcousticEchoCanceler.isAvailable."
+    status: in_progress
+    remaining: "Landed for Apple: AudioGraph owns one AVAudioEngine, configures the session per purpose, engages voice processing before start, hands the microphone out converted and packetised, gives every participant a player node on the shared mixer, and reinstalls itself across route changes, interruptions and engine reconfiguration. MicrophoneSource and AudioPlayer both default to it, so the arrangement that cannot cancel is no longer reachable by accident. The device run is now set up rather than done: capture is metered where the samples already are, the sample app publishes the real microphone behind an input picker and shows level, noise floor, cancellation state and the speaking verdict, and voice processing can be bypassed at runtime so the cancellation can be measured by removing it rather than believed. The procedure and its acceptance criteria are in the sample's README -- 25dB of echo return loss at 80% volume, level within 6dB of the floor, and no false speaking verdict across a minute of far-end audio. Nothing here has executed on hardware yet. Android, web and desktop are unwritten, and A/V sync across the AVAudioEngine and AVCaptureSession clocks is unimplemented."
+    evidence:
+      - repo: moqom-swift
+        path: Sources/MoqomKit/Platform/AudioGraph.swift
+      - repo: moqom-swift
+        path: Sources/MoqomKit/Platform/AudioGraph.swift
+        contains: 'wantsVoiceProcessing'
+      - repo: moqom-swift
+        path: Tests/MoqomKitTests/AudioGraphTests.swift
+  - id: voice-activity
+    content: "Voice activity detection as one shared decision with three consumers: the silence property on every published object, the speaking indicator in the interface, and the gate in front of everything expensive on-device (ASR, translation, captions), which thermal-policy already assumes exists. Measure relative to a continuously estimated noise floor rather than against an absolute threshold, because automatic gain control deliberately amplifies the room until it is audible and every packet then clears any fixed level. Root-mean-square rather than peak, since speech is crest-heavy. High-pass first, so a converter offset and a hand on the device are not speech. Never let speech teach the estimator -- an estimate that chases the signal goes deaf in the middle of the sentence it was tracking -- and bound the resulting deadlock with a watchdog, since a floor that is too low makes every frame speech and nothing then measures the room. Keep sending marked silence packets rather than sending nothing: discontinuous transmission saves bandwidth that was never the constraint and makes a pause indistinguishable from loss on exactly the links where that matters."
+    status: in_progress
+    remaining: "Landed in MoqomCore as a pure value type with thirteen tests, wired into both audio encoders, replacing a peak-amplitude threshold that was correct as written and useless in practice: it asked whether any sample cleared -50 dBFS, which tests for a digitally silent buffer rather than a quiet room, so with gain control engaged nothing was ever silence. Two presets, asymmetric for a reason -- transmission commits on the frame speech arrives because waiting costs the start of the first word, indicator confirms over 60ms because a door should not light up somebody's name. The published flag now has its first consumer: subscribers turn it back into speaking state and tile order (see gallery), which is also the answer to how active-speaker detection works when the relay cannot read the audio. Not yet ported to Android, web or desktop, and not yet driving layer priority or the on-device inference gate. Never validated against real speech: the tests use synthesised tones and noise, which prove the estimator's behaviour but not its thresholds."
+    evidence:
+      - repo: moqom-swift
+        path: Sources/MoqomCore/VoiceActivity.swift
+      - repo: moqom-swift
+        path: Sources/MoqomCore/VoiceActivity.swift
+        contains: 'suspicion'
+      - repo: moqom-swift
+        path: Tests/MoqomCoreTests/VoiceActivityTests.swift
+  - id: gallery
+    content: "Two layouts on one model: a video gallery of up to sixteen tiles, and a seated audio room. Sixteen tiles is not sixteen decoders -- a phone will not decode sixteen 1080p streams and VideoToolbox refuses the session rather than degrading, so what makes sixteen work is that sixteen tiles are small and the ladder serves each one its bottom rung. Occupancy and layer choice are therefore the same decision made twice, which is why the gallery feeds the subscription planner instead of sitting beside it. The hard part is who gets left out when twenty cohosts want sixteen boxes, and every obvious answer is wrong: roster order picks alphabetically and keeps picking, drawn area cannot break the tie because every tile in a uniform grid is the same size, and pure active-speaker order picks correctly and then reshuffles on every syllable -- each move costing an unsubscribe, a subscribe and a wait for a keyframe. So rank by claim (spotlight, then this viewer's pin, then speaking, then recency, then present, then absent) and treat holding a tile as a claim in itself: a minimum dwell before eviction, bypassed only by an explicit pin, and a position held for as long as the tile is. The overflow keeps audio, so exceeding what the device can decode costs video on the least important tiles rather than an error -- the bound Agora states as 'subscribe to at most 50' and enforces by refusing. Speaking state is derived on the subscriber from the voice-activity flag the publisher already sets, not measured on a server, which is the difference between active-speaker detection that survives E2EE and one that disappears with it. An audio room is the same engine with square seats, no video, and one thing that is not layout at all: a listener holds no microphone, which is a session category, and is what decides whether the room keeps playing when the screen locks."
+    status: in_progress
+    remaining: "Landed for Apple with 27 tests: Gallery is a pure value type over the roster and the speaker set, ActiveSpeakers turns the isSilence property on arriving objects into speaking and recency with one hangover rule that covers both explicit silence and DTX gaps, GalleryGrid chooses the column count that maximises visible tile area (which is why sixteen 16:9 tiles on a portrait phone want two columns and not four, and why square seats want three), and MoqomGalleryView reports every tile's geometry so render-aware selection cannot be omitted on one branch. RoomSession drives it: speech feeds it from the audio path, a tick expires it when the packets stop, its order breaks ties in the planner's ranking, and galleryChanged carries the whole layout because the interesting property is what did not move. AudioGraph.Purpose.listening is a playback session with no input tap, and the sample declares the background mode that makes it useful. Two things this exposed and fixed: a spotlight set StageState and never the roster flag everything reads, and nothing stopped a client subscribing to its own video when an application reported a box for its self tile. Unwritten on Android, web and desktop. The audio room has no hand-raise queue wired to StageInvitation yet, and no audience count at all -- listeners publish nothing, so they are structurally absent from a roster built from announcements, and the number has to come from the control plane rather than from MoQ."
+    evidence:
+      - repo: moqom-swift
+        path: Sources/MoqomKit/Subscribe/Gallery.swift
+      - repo: moqom-swift
+        path: Sources/MoqomKit/Subscribe/Gallery.swift
+        contains: 'dwell'
+      - repo: moqom-swift
+        path: Sources/MoqomKit/Subscribe/ActiveSpeakers.swift
+      - repo: moqom-swift
+        path: Sources/MoqomKit/Subscribe/GalleryGrid.swift
+      - repo: moqom-swift
+        path: Tests/MoqomKitTests/GalleryTests.swift
+  - id: music-detect
+    content: "Detect music in captured audio, and treat the answer as a pipeline change rather than a label. Three things act on it: voice processing bypasses so the canceller and its noise suppressor stop treating a cymbal as an artefact, the encoder switches from a speech signal hint to a music one where it exposes the choice, and rights handling wakes up. Use the platform classifier rather than shipping a model -- SNClassifySoundRequest against Apple's built-in classifier, MediaPipe AudioClassifier over YAMNet's AudioSet labels on Android, a small ONNX model on web where there is no built-in -- because on-device inference is what keeps this working inside the E2EE boundary. The interaction that makes this subtle and has to be documented rather than discovered: the echo canceller treats music played by the same device as echo and removes it, and iOS does not let an app capture another app's output at all. So music intended for a broadcast must enter through the SDK as its own declared source, where it needs no detection because we already know what it is. Detection is for ambient music nobody declared."
+    status: pending
+  - id: song-id
+    content: "Identify songs from captured audio by landmark fingerprinting (Wang 2003: spectrogram, local peak constellation, peak pairs hashed as (f1, f2, dt), inverted index, match on a spike in the time-offset histogram). Cheap enough to run continuously, robust to noise and codecs, and the algorithm is the easy part. The catalog is the decision: ShazamKit is Apple-only and needs an Apple-granted entitlement plus a network round trip, the commercial providers (ACRCloud, Audible Magic, Pex) are what large platforms actually use for rights work, and AcoustID with Chromaprint is open but built for identifying an exact recording rather than for a microphone in a noisy room. Own the fingerprint format regardless, because it must be one wire vocabulary across iOS, Android, web and OBS ingest, and because it keeps the catalog swappable. The property worth building around: a fingerprint is a one-way summary that cannot be inverted back into audio, so a client inside the E2EE boundary can compute it and send that instead of the audio, and matching happens server-side against a catalog no phone could hold -- privacy-preserving rights detection at a few kbps, on streams the relay cannot decrypt. Be explicit that identification is not a licence: this drives attribution, now-playing, a warning to the broadcaster, and a rights-holder report, and any muting is policy on top."
+    status: pending
+    # Deliberately deferred, July 2026, rather than merely unstarted. Every route
+    # to a catalog costs money or scope on a feature no customer has asked for,
+    # and none of them can be evaluated before knowing which one they want:
+    # rights enforcement points at a commercial provider, a now-playing credit
+    # points at ShazamKit, and "did my advert run" points at tenant-supplied
+    # reference audio and needs no third-party catalog at all. Ship music
+    # detection, which is what the pipeline actually reacts to, and revisit this
+    # when there is a customer to size it against. Recorded here so the design
+    # above is not mistaken for a queued task.
   - id: effects-pipeline
     content: "Build moqom-fx: a GPU-in/GPU-out effects chain in the capture-to-encode seam, modelled on Agora's IExtensionVideoFilter (format negotiation, sync and async modes, Bypass, string property channel, start/stop lifecycle) rather than LiveKit's bare transform. Segmentation is its own stage publishing an alpha mask so one inference feeds blur, virtual background, and makeup. Enable/disable is a property, never attach/detach. Every processor gets a frame-deadline watchdog that passes the frame through unmodified on miss. Moderation taps the post-effect frame so a filter cannot be used to evade it. Frame types: IOSurface-backed CVPixelBuffer, AHardwareBuffer via Camera2 and AImageReader_newWithUsage (not CameraX, which forces a CPU-usage realloc), VideoFrame on web, wgpu on desktop."
     status: pending
@@ -810,6 +914,20 @@ Indicative defaults, all tenant-configurable and all needing measurement against
 
 Honest framing: most of this is table stakes that LiveKit and Agora already do, and the plan simply lacked it. The part that is genuinely better is the first line — under QUIC, a large share of mobile "disconnects" never become disconnects at all.
 
+### What a client gets back after a gap: two mechanisms, not one
+
+A subscription only ever delivers what is published from now on. That is deliberate in MOQT and it means a client returning from an outage has two different recovery problems, with two different correct answers. Conflating them is the mistake worth naming, because a single mechanism sized for one is wrong for the other.
+
+**Missed media is recovered by FETCH, and is bounded on purpose.** The relay retains recent objects and answers a fetch from them, so a client that was away asks for the range it missed and gets back what is still held. Retention is a window — eight groups by default, roughly sixteen seconds at a two-second group interval — and an outage longer than the window cannot be filled. That is the right trade: nobody wants the frames from two minutes ago, they want to be live now, and a relay that retained enough to cover every outage would be storage rather than a relay.
+
+The same mechanism does double duty. A subscription starts at the *next* group boundary, so joining a live track means waiting for the next keyframe — up to a whole group interval of black. A joining fetch closes that gap by asking for the group already in progress, which is the difference between a tile that fills immediately and one that is blank for two seconds. Reconnection and cold join are the same operation with a different starting point.
+
+**Missed state is recovered by replaying a log, and is exact.** Grants, forced mutes, who is on stage, whether the room ended, which watchdogs are attached — none of that is media, and none of it may be approximated. A client that comes back believing it still has moderator rights it lost while offline is a security bug, not a rendering artefact. So room state travels on its own control track as a sequence-numbered log with periodic snapshots: every entry carries an absolute value rather than a delta, which makes reapplying one idempotent, and a reconnecting client either replays from where its sequence left off or takes the nearest snapshot and moves on. Gaps are detectable because sequence numbers are contiguous, and repairable by fetching the current group.
+
+The division of labour follows from what each thing costs to be wrong about. Media is worth having and safe to lose — a dropped frame is a visual artefact. State is not optional and not approximable, so it gets snapshots, sequence numbers, and gap detection, which would be absurd overhead per video frame and are exactly right for a few hundred bytes of room state.
+
+**A partial answer says which part is missing.** When a fetch range reaches past what the relay holds, the answer carries markers distinguishing "these objects do not exist" from "I do not know whether these objects exist." The distinction is load-bearing: the first is final and a client can stop asking, the second means somebody else might have it and the request is worth forwarding upstream. A relay that collapsed them would either make clients wait for objects that are never coming or make them give up on objects they could still get. Non-existence is only ever asserted from evidence — an end-of-group or end-of-track marker — and a hole between two retained objects is reported as unknown, because subgroups interleave Object IDs within a group and holding one says nothing about what the others carried.
+
 ### Mute is four features, not one
 
 They share a word and nothing else. Each has a different decider and a different enforcement point, and collapsing them produces either a mute that can be bypassed or a preference that needs a server round-trip.
@@ -956,6 +1074,57 @@ Reproducing a decision months later requires storing the triggering frames, the 
 ### What this cannot do
 
 Proactive detection is **impossible in E2EE rooms** — there is no plaintext for a server agent to classify. Those rooms get reactive franking-based reporting and metadata signals only, and that limitation must be stated at room creation rather than discovered after an incident. This is the same conflict documented in the security section, and it is the sharpest instance of it: a tenant that needs guaranteed proactive moderation cannot offer E2EE, and should be told so in the console rather than in a postmortem.
+
+## Audio: four features that turn out to be one pipeline
+
+Echo cancellation, voice detection, music detection, and song identification arrive as four separate asks and share one seam — the few milliseconds between the microphone and the encoder, and the mirror of it between the decoder and the speaker. They also constrain each other in ways that are cheap to design for and expensive to discover, so the interactions are the point of this section.
+
+### Echo cancellation is a property of the graph, not of capture
+
+A canceller works by subtracting a reference — what went out of the speaker — from what came in the microphone. It can only subtract audio it was given. So the requirement is not "enable echo cancellation on the microphone", it is **capture and playback must be the same audio graph**, and that is a structural constraint on the SDK rather than a setting.
+
+This interacts directly with a decision made elsewhere in this document: audio is **per-participant and never server-mixed**, because mixing would make the relay decode, break E2EE, and make per-viewer mute impossible without per-viewer mixes. The consequence is that the client is the only place a mix exists at all — and that mix has to live inside the same audio unit the microphone is tapped off, or the canceller's reference is empty.
+
+The iOS SDK had this exactly backwards, which is worth recording because the failure is silent. `MicrophoneSource` owned an `AVAudioEngine` with voice processing enabled, and every `AudioPlayer` owned another one. A room with three cohosts ran four engines: one cancelling against a reference containing nothing, and three rendering the audio it needed to cancel. Voice processing was switched on, looked correct in code review, and could not work. Now there is one graph, with a player node per participant on its mixer, and the microphone tapped off the same engine. Everything the per-participant design buys survives it: volume is that node's volume, local mute is still an unsubscribe so muted bytes still never leave the relay, and the relay still forwards rather than mixes. What changed is only that the summing the operating system would have done one layer down, where we could not see it, now happens where the canceller can use it.
+
+Three more things follow, and each is a way to have a canceller that does not cancel:
+
+- **Take audio from the voice-processing graph, never from the video capture session.** The camera path's audio has no app-level canceller, so a video broadcast that draws audio from it is publishing echo by construction. The cost is two capture clocks that have to be reconciled on one host timebase.
+- **Session purpose has to be explicit.** A voice call is held against an ear and belongs on the receiver; a video call cannot be, because the camera has to see a face, so the device is at arm's length and the loudspeaker and microphone are in the same room. That second case *is* the speakerphone case, and it is why it exists as its own configuration rather than as a flag.
+- **Speakerphone at volume defeats linear cancellation.** The loudspeaker distorts nonlinearly, and what a linear canceller cannot model it cannot subtract, which is what the residual suppressor is for and why output level is part of the problem. This needs measuring on a device; nothing here proves it.
+
+Platform-wise, Apple's voice-processing unit is good and free. Android's is a per-device lottery, so the floor there is WebRTC's AEC3 — BSD-3, compatible with our Apache-2.0 SDKs — rather than trusting `AcousticEchoCanceler.isAvailable()`. Browsers supply their own through `getUserMedia`.
+
+### Voice activity, and why the obvious threshold cannot work
+
+Three consumers want this answer with different tolerances: the silence property on published objects, the speaking indicator in the interface, and the gate in front of on-device ASR and translation that the thermal policy already assumes exists.
+
+The trap is measuring an absolute level. The SDK previously asked whether any sample in a packet cleared −50 dBFS, which is a correct test for a digitally silent buffer and a useless one for a quiet room — with automatic gain control engaged, and gain control is engaged precisely because cancellation is, the noise floor is deliberately amplified until it is audible. Every packet clears −50 dBFS and nothing is ever silence. The flag was doing what it said and telling us nothing.
+
+So the measurement is relative to a continuously estimated floor, and the estimator's failure modes matter more than its accuracy:
+
+- **Speech must not teach it.** An estimate that chases the signal gets dragged up by a monologue until the margin closes, and the detector goes deaf in the middle of the sentence it was tracking. A broadcaster talking without pausing is the normal case, not an edge one.
+- **But refusing to learn during speech deadlocks.** If the floor is too low — a fan switches on — every frame reads as speech, so nothing ever measures the room, so every frame stays speech. Nobody talks for twenty seconds without the level dipping, so speech that has apparently run that long is better evidence that the floor is wrong than that somebody is still talking, and the estimate resumes climbing.
+
+Both bounds are configuration rather than emergent, which is the only way anyone debugging this later can reason about it. The complementary decision: **we keep sending marked silence packets rather than sending nothing.** Discontinuous transmission saves bandwidth that was never our constraint, and it makes a pause indistinguishable from loss on exactly the bad links where the difference decides whether a receiver conceals.
+
+### Music detection changes the pipeline, not just a label
+
+Detecting music is worth doing because three things should act on it: voice processing bypasses, so the canceller and its suppressor stop treating a cymbal as an artefact to remove; the encoder switches from a speech signal hint to a music one where it exposes that choice; and rights handling wakes up. Use the platform classifier rather than shipping a model — Apple's built-in sound classifier, YAMNet's AudioSet labels through MediaPipe on Android, a small ONNX model on web where there is no built-in — because on-device inference is what keeps any of this working inside the E2EE boundary.
+
+The subtle part is an interaction that has to be written down rather than discovered: **the echo canceller treats music played by the same device as echo, and removes it.** And iOS does not let an app capture another app's output at all. So a broadcaster who starts a song in a music app and expects it in the stream is asking for two things the platform will not do together. The resolution is not a workaround, it is a product decision: **music intended for a broadcast enters through the SDK as its own declared source**, where it needs no detection because we already know what it is, arrives without passing through a canceller tuned for voices, and can be attributed exactly. Detection is then for ambient music nobody declared — a bar, a car radio, a television — which is also precisely the case rights handling cares about.
+
+### Song identification: the algorithm is easy, the catalog is the decision
+
+Landmark fingerprinting is well understood and cheap: spectrogram, pick local peaks into a constellation, hash pairs of peaks as `(f1, f2, Δt)`, look them up in an inverted index, and declare a match when the histogram of time offsets spikes. It is robust to noise and to codecs, and it runs continuously without being noticed.
+
+What it needs is reference fingerprints, and that is a business decision rather than an engineering one. ShazamKit is Apple-only and needs an Apple-granted entitlement plus a network round trip. The commercial providers — ACRCloud, Audible Magic, Pex — are what large platforms actually use when the purpose is rights. AcoustID with Chromaprint is open, but it is built to identify an exact recording rather than a microphone in a noisy room. We should own the fingerprint format regardless of which we buy, because it has to be one wire vocabulary across iOS, Android, web, and OBS ingest, and because owning it keeps the catalog swappable.
+
+**This is designed and deliberately not queued.** The choice cannot be made in the abstract: rights enforcement points at a commercial provider, a now-playing credit points at ShazamKit, and "did my advert actually run" points at tenant-supplied reference audio and needs no third-party catalog at all. They differ by an order of magnitude in cost and none of them is cheap enough to buy speculatively. Music *detection* is what the pipeline reacts to and is worth building now; identification waits for a customer to size it against.
+
+**And there is a property here worth building the whole feature around.** A fingerprint is a one-way summary: it cannot be inverted back into audio. So a client sitting inside the encryption boundary can compute one and send *that* to the server instead of the audio, and matching happens server-side against a catalog no phone could ever hold — on streams the relay cannot decrypt, at a few kbps. This is the same argument as running captions on-device, but stronger, because here the server still participates in the answer. Zoom's bargain is that E2EE turns the AI features off; ours is that a summary crosses the boundary the media cannot.
+
+Finally, be honest about what identification is: it is not a licence. It drives attribution, a now-playing credit, a warning to the broadcaster, and a report a rights holder can act on. Muting a stream because a song was recognised is policy layered on top, and it belongs with the rest of the enforcement ladder rather than in the detector.
 
 ## Scaling to millions, and the edge question
 
@@ -1456,6 +1625,40 @@ That cost is what makes the feedback loop worth building: **the relay knows whic
 - **The recorder**, which holds the top layer whenever recording is enabled — otherwise a stream nobody happens to be watching at full resolution gets archived at thumbnail quality.
 - **The moderation agent**, which holds a minimum layer. A safety classifier running on 180p is both less accurate and an obvious evasion vector once anyone works out that an empty room downgrades the stream the detector sees.
 
+## Sixteen boxes, and the audio room
+
+The layout question the previous section leaves open is *who is in the grid*. Sixteen tiles is the number a cohost grid needs; it is not sixteen decoders, and the difference is where the design lives.
+
+**Sixteen works because sixteen tiles are small.** A 16-up grid on a phone is roughly 90×160 points per tile, which is the bottom rung of the ladder — so the decode cost falls out of the layout automatically. Ask for sixteen tiles of anything larger and `VideoToolbox` refuses the session outright rather than degrading, and the tile stays black. So the tile count and the layer choice are one decision made twice, and the gallery has to be an input to subscription planning rather than a thing beside it. Under thermal pressure the client lowers the tile count, which is the same lever as lowering quality.
+
+### Who gets left out, and why every obvious answer is wrong
+
+Twenty cohosts and sixteen boxes means four people have no tile. The candidate rules fail in instructive ways:
+
+- **Roster order** picks alphabetically and keeps picking. A cohost called Zoe is invisible for the whole broadcast, including while she is the only one talking.
+- **Drawn area** — the ranking that works for a speaker view — cannot break the tie, because every tile in a uniform grid is the same size. It falls through to the identity string and lands back on alphabetical order.
+- **Active-speaker order** picks the right people and then reshuffles constantly. Every tile move costs an unsubscribe, a subscribe and a wait for a keyframe, so the grid flickers black while faces jump between positions. This is the single most complained-about behaviour in the products that ship it.
+
+The rule that works is to rank by claim — spotlight, then this viewer's pin, then speaking, then speech recency, then present, then disconnected — and then to **treat holding a tile as a claim in itself**. A tile is held for a minimum dwell before it can be taken, so speech changes who is on screen at a bounded rate; and an occupant keeps its *position* for as long as it holds the tile, so nobody moves because somebody else started talking. An explicit pin bypasses the dwell, because dwell exists to tame speech and not to make a viewer wait three seconds for a button they pressed.
+
+**The overflow keeps its audio.** Exceeding what the device can decode costs video on the least important tiles and nothing else, so a twenty-cohost room is audible and legible on hardware that cannot draw it. This is the same bound Agora states as "subscribe to at most 50" and enforces by refusing the subscription.
+
+### Active speakers, and why ours survive encryption
+
+Every SFU-based stack computes the active-speaker list on the server: it has the plaintext audio, measures the energy, and publishes the answer. That is reasonable until the media is end-to-end encrypted, at which point the server holds ciphertext and the feature disappears — which is why products that took the server-side route treat E2EE as a mode with features missing.
+
+We already publish a voice-activity flag on every audio object, and a subscriber already has each speaker as a separate track. So **the client answers the question itself**, at no extra cost on the wire, and the answer is unchanged by encryption. One hangover rule covers both cases that end speech: an explicitly silent packet, and no packet at all under DTX.
+
+### The audio room is the same engine
+
+An audio room — a stage of speakers, a much larger audience, hand-raising to come up — is the same model with square seats, no video, and a seat count unbounded by the decoder because an avatar costs nothing. Ordering, stability and promotion-on-speech are identical and were not worth writing twice.
+
+Three things genuinely differ, and only one of them is layout:
+
+- **A listener holds no microphone.** Every capture purpose is a recording session; a listener needs a playback one. Getting this wrong is four failures at once: an orange indicator on an app that is only listening, audio that stops when the screen locks, input hardware powered for nothing, and the input device held away from every other app. The screen-lock case is the one that decides whether an audio room is usable at all, and it also needs the *application* to declare the background mode — an SDK cannot grant itself a capability.
+- **Twitter Spaces needs two stacks; we need one.** Their speakers use WebRTC and their listeners a separate low-latency streaming path, because an SFU connection per listener does not scale to ten thousand. In MoQ a listener is a subscriber, which is what the protocol already does at scale, and a late joiner gets FETCH instead of a special path. Server-side mixing — the usual answer for ten-plus speakers — stays off the table for the reasons in the audio section: it breaks E2EE and per-viewer mute. An optional mix-down agent for very large stages remains available as a *product* choice with those costs stated.
+- **The audience is not in the roster.** The roster is built from namespace announcements, so it structurally cannot contain anyone who publishes nothing — which is exactly right for a room with ten thousand listeners, and means the audience count is a control-plane number rather than a MoQ one. No UI shows ten thousand avatars anyway; it shows a count and a sample.
+
 ## `moqom-cc`: a media-aware congestion controller
 
 This is the one place we write transport-layer code, and it is the most defensible engineering in the project.
@@ -1673,6 +1876,58 @@ We already run Postgres for tenants, users, devices, and tokens. This adds a tab
 
 **When we would revisit.** NATS earns its place when many heterogeneous services in different languages need at-least-once delivery with queue groups. We have two services and our own pub/sub protocol. If durable event volume ever outgrows a Postgres outbox, the answer at that point is a real log (Kafka or NATS JetStream), not plain NATS — and by then we will know the actual access pattern instead of guessing.
 
+## Observability: what we can see, and what we deliberately cannot
+
+Every support conversation about live video is the same conversation: *it was bad, was it me or was it you?* Answering it takes measurement from both ends of the same session at the same time, and the shape of the answer is constrained by a decision made much earlier — the relay cannot see inside objects, so it can never explain a picture. It can only explain a link.
+
+That splits the work cleanly, and the split is the design.
+
+### The relay measures the network; the client measures the media
+
+The relay knows things no client can: true QUIC round-trip time, congestion window, retransmissions, how many subscribers a track fanned out to, whether a cache answered a fetch or missed. It knows nothing about frames, because objects are opaque to it and, under E2EE, encrypted.
+
+The client knows the other half: whether a keyframe arrived, whether a frame decoded, how long the jitter buffer held, how much the encoder dropped before anything reached the network. Nothing on the server can see an encoder drop — those frames never became packets.
+
+Neither half is sufficient and the useful diagnosis is almost always the pair. "The relay says the link was clean and the client says it dropped a third of its frames" is a device that was too hot, and no amount of network telemetry would have said so.
+
+### Shape: Prometheus for aggregates, JSON for the long tail
+
+The relay exposes an **admin surface on a separate port**, off by default and enabled with `MOQOM_RELAY_ADMIN_ADDR`. Separate because metrics must not be reachable from the media port a stranger can dial, and off by default because an unauthenticated endpoint that lists who is in which room is not something to ship on by accident.
+
+- `/metrics` — Prometheus text exposition. Counters, gauges, and histograms with **fixed, low-cardinality labels only**. No usernames, no room IDs, no track names. The rule is not stylistic: a label whose values grow with traffic turns a time-series database into an outage, and it is always the room ID that does it.
+- `/healthz` and `/readyz` — separated on purpose. Draining flips readiness so the load balancer stops sending new connections while liveness stays true, because a relay finishing its existing sessions is healthy and killing it would drop them.
+- `/sessions` and `/rooms` — JSON snapshots, where the per-session and per-room detail lives. This is the pressure valve: the questions that genuinely need high cardinality get answered by a point-in-time query rather than by retaining a million series forever.
+
+Round-trip time is sampled per session by polling the QUIC connection on a timer, not derived from anything above the transport, because `quinn` already maintains the estimate the congestion controller runs on and a second estimate would disagree with the first.
+
+### The client reports one snapshot, not a dozen accessors
+
+`RoomStatistics` is everything measurable about a room read at one instant: the link, the uplink including encode drops, per-participant receive and decode state, decryption, control-track health, and a derived quality level per participant plus one for this device. Available as a property and as a periodic `AsyncStream`.
+
+One type at one instant because the comparison is the diagnosis. "The link says 3 Mbps and the encoder is sending 6" is a finding; read a few hundred milliseconds apart it is two unrelated numbers.
+
+**Quality is five buckets, not a percentage.** A percentage invites an application to render a precision the underlying signals do not have. Loss dominates because loss is what a viewer sees; the congestion state can only lower the result and only by one level, floored above `bad`, because a controller backing off on a link that is delivering everything is the mechanism working rather than a fault — and an indicator that fires on every normal probe cycle is one that gets ignored on the day it is right.
+
+**The client has no round-trip time and does not invent one.** `Network.framework` does not surface a QUIC RTT estimate. The client reports the one-way delay gradient it does measure, and the relay reports true RTT for the same session. Pairing the two is the supported way to answer "them or me".
+
+**Per-participant quality uses that participant's own loss**, not the room aggregate. The aggregate spans every subscription, so one cohost on a failing connection would otherwise pull every tile's indicator down and point the viewer at their own network instead of at the person actually in trouble.
+
+### Logging: a category that cannot hold a payload
+
+The SDK logger is injectable, categorised, levelled, and **silent by default** — a library that writes to a host application's console uninvited is a bug report about the library.
+
+Two properties are load-bearing. Suppressed records cost nothing: messages and fields are autoclosures behind a level check, because this is called from the object receive path and a `debug` line that formats a string before discovering nobody wants it is per-object work thrown away.
+
+And **payloads and keys cannot appear, enforced by the type system rather than by review**. `LogValue` has no case that holds `Data`. There is no expression that puts a media payload or a key into a log field; the most a caller can say is `.redacted(bytes:)`, which renders as a count. A reviewer noticing a leak is a control that works until the once it does not. A case that does not exist cannot be bypassed by someone in a hurry.
+
+Participant identities render according to the sink's privacy policy: readable on a device-local log, a short stable digest otherwise. Stable so two lines about the same person remain joinable, which is the entire diagnostic value of keeping the field — and honestly a defence against casual disclosure rather than against an adversary holding the user list, since a short digest over a known set of usernames is guessable by anyone who can compute it.
+
+### Two distinctions worth stating, because getting them wrong trains people to ignore alarms
+
+**Unmeasured is not bad.** A room joined half a second ago has observed nothing. A red indicator for it is a lie in the direction that destroys trust in the indicator fastest, so quality starts at `unknown` and stays there until there is evidence.
+
+**Wanting a snapshot is not having a gap.** The room control log wants a snapshot from the moment of joining until the first one arrives, which is the right trigger for a repair fetch and the wrong thing to show a person. So the client reports both: the raw signal that drives the repair, and `hasGap`, which is only true once a log that had been whole develops a hole. The second is the one worth a warning, and it is worth it — until it heals, this client's idea of who may do what is stale, and stale grants present as a permissions bug rather than as the network problem they are.
+
 ## Video effects: beauty filters and third-party re-renders
 
 There is already a GPU seam between capture and encode on every platform — the Metal RGB-to-NV12 pass on Apple, the wgpu pipeline on desktop, WebGPU in the browser. That seam is the effects slot, and the one inviolable rule is that **frames never leave GPU memory**. A plugin that forces a CPU readback and re-upload destroys the latency budget and the thermal budget at once.
@@ -1725,6 +1980,35 @@ The mitigation is a **two-tier API**, and making tier one genuinely capable is w
 Two controls matter more than the rest: **never grant raw frame access and network egress together** outside a reviewed partner, and ship a **server-side kill switch keyed on vendor, version, and binary hash**. The EngageSDK fix took seven months to reach users; remote disablement is the only control that would have helped in the interim.
 
 Ship the effects pipeline non-empty by bundling first-party effects over **GPUPixel** (Apache-2.0, C++11, all five platforms, actively maintained, beauty and reshaping built in) plus MediaPipe segmentation and face landmarks. That gives users value on day one, proves our own API is usable, and sets a performance baseline to hold vendors to.
+
+## Raw media taps: letting somebody else's model look at the frames
+
+Every SDK exposes the pixels and the samples to the application, and not through the pipelines we ship. Our own classification, transcription, and translation are one customer of the media path; an integrator with their own model, their own vendor, or a regulatory obligation we have never heard of is another, and a platform that can only be extended by us is a platform people route around.
+
+The seam has to exist on both directions and at four specific points, because they are four different pictures:
+
+- **Captured video, after effects and before the encoder.** The same frame the encoder gets, for the reason moderation taps it there: if a filter can change what the audience sees after the classifier ran, the filter is an evasion tool.
+- **Captured audio, after echo cancellation and before the encoder.** This is the one an application genuinely cannot get for itself. Opening a second microphone alongside the SDK returns the raw hardware feed, which on a speakerphone contains every other participant coming back through the speaker — transcribe that and every device in the call transcribes the whole room, twice.
+- **Received video, decoded, per participant.** Nothing else on the receive path decodes: rendering goes through `AVSampleBufferDisplayLayer` on Apple and the equivalent black box elsewhere, which decodes privately and hands back nothing.
+- **Received audio, decoded, per participant**, with the concealed and silent slots labelled rather than smoothed away.
+
+### Three properties the contract has to have
+
+**A tap is never back pressure.** A slow consumer degrades itself and nothing else: the buffer is bounded, it drops the oldest, and the drops are counted so the consumer can find out it is sampling rather than seeing everything. This is not a detail. A detector that believes it inspected every frame and inspected a third of them is wrong in a way no amount of testing its model will reveal, so `dropped` is part of the public surface and not a debug counter.
+
+**Cadence is a first-class parameter, and keyframes-only is the interesting one.** Inference at thirty frames a second is thirty times the cost of inference at one and rarely thirty times the answer. Nudity, scene, presence, and brand safety do not change their verdict within a group of pictures. Because a keyframe is independently decodable, a keyframes-only tap decodes standalone pictures rather than maintaining a reference chain — closer to a still-image decode every couple of seconds than to running a decoder. That is the difference between safety classification being affordable on a mid-tier phone and not.
+
+**Decoding is asked for, never assumed.** A receive tap starts a decompression session that would not otherwise exist, and on a phone those are a bounded hardware resource shared with everything on screen. The tap owns it, releases it when the consumer stops, and the SDK notices a consumer that walked away rather than trusting them to call `stop`.
+
+### Why this is the answer to E2EE and AI rather than a hole in it
+
+Taps sit after decryption, on the device that is entitled to the plaintext. A relay cannot classify what it cannot read and a participant can, because the participant is who the media was encrypted for; putting the inference here is what makes those two facts compatible instead of forcing a choice between end-to-end encryption and any safety tooling at all.
+
+What it does not do is make the media accountable. **The SDK cannot tell an on-device transcriber from an upload**, and pretending otherwise would be selling a guarantee we cannot keep. So the docs say it plainly, and a tap whose output leaves the device is a disclosure the integrator owes the room through the watchdog mechanism that already exists for recording. The same honesty the effects section applies to third-party plugins applies here, and for the same reason: the boundary is real, and the first person to notice it should be us.
+
+### Where it stands
+
+Implemented in the Swift SDK against both directions, with a decoder seam (`VideoDecoding`, `AudioDecoding`) mirroring the encoder factory so an integrator can substitute a software AV1, a decoder that writes into a texture they own, or a deterministic synthetic one for their own tests. The Android and web SDKs inherit the contract rather than reinventing it — same four points, same drop-don't-stall rule, same cadence vocabulary — with `ImageReader`-backed `AHardwareBuffer` and `VideoFrame` respectively as the frame type, since those are what the platform's own inference stacks already take.
 
 ## Broadcasting from OBS and other desktop tools
 
@@ -1949,7 +2233,7 @@ Beauty filters and scene effects come from `moqom-fx` tier 1, which is exactly t
 
 - **Companion controllers — build this.** Apple Watch and Wear OS cannot broadcast video, but they are genuinely good remote controls: start and stop, live stats, moderation actions, reaction triggers. Cheap to build and differentiating, because nobody else bothers. The strongest version publishes **heart rate as a data track** during a fitness broadcast, which demonstrates data tracks and the agent plane in one gesture and is very hard to look at without wanting it.
 - **Head-mounted viewers — already planned.** visionOS is in the roadmap; **Android XR is the newer target worth adding**, since it runs Android apps and the Kotlin SDK largely carries over.
-- **Camera glasses as a broadcast source — mostly closed, so do not plan around it.** Meta's Ray-Ban glasses livestream only to Meta's own properties with no third-party SDK, and Snap Spectacles require Lens Studio. Android-based glasses like Xreal and Rokid are reachable through the ordinary Android SDK. Treat the rest as a partnership conversation, not an engineering task.
+- **Camera glasses as a broadcast source — now partly open, and the openings are worth taking.** This was written when it was true that nothing here was reachable; it no longer is. Meta's **Wearables Device Access Toolkit** exposes the Ray-Ban camera to a companion iOS or Android app, which is a real MOQOM publisher — with the caveat that the microphone comes over Bluetooth HFP at 8 kHz, so the glasses are a camera and the phone is the better microphone. Snap's **Specs NDK** gives C and C++ on-device with direct camera access, though egress may be constrained to the Remote Service Gateway, which has to be checked before committing. **Android XR** glasses reach hardware through `ProjectedContext` and the Kotlin SDK largely carries over. Xreal and Rokid remain ordinary Android. What stays closed is livestreaming *from* Meta's own capture path to a third-party destination, which is a partnership conversation rather than an SDK. The full matrix, tiered by where our code actually runs, is in the smart-glasses canvas.
 
 ### The discipline that keeps them useful
 

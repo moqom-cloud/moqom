@@ -158,6 +158,19 @@ func (s *eventsService) StreamRoomEvents(
 	id, live := s.core.bus.subscribe(request.GetTenant(), request.GetRoom(), kinds)
 	defer s.core.bus.unsubscribe(id)
 
+	// Headers are sent as soon as the subscription exists, which makes the moment it
+	// becomes live observable to the caller.
+	//
+	// Without this, opening a stream is asynchronous with nothing to wait on: gRPC
+	// returns a stream handle before the server has run any of this, so a caller that
+	// opens a stream and then does something has no way to know whether the event it
+	// caused will arrive. A consumer that must not miss events should still persist a
+	// cursor and resume from it -- headers make the live path usable, they do not make
+	// it reliable.
+	if err := stream.SendHeader(nil); err != nil {
+		return err
+	}
+
 	// Resumption is per room, because sequences are. A tenant-wide stream asking to
 	// resume has no well-defined place to resume from, and silently starting at the
 	// present would look like resumption while quietly dropping the backlog.

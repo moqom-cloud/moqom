@@ -14,6 +14,14 @@ Full texts are in [`LICENSES/`](LICENSES/). Every crate declares its own
 `license` field; **a crate without one is a bug**, since the workspace spans
 both halves and there is no safe default to fall back on.
 
+"SDKs" includes the server-side ones. `sdk/go` and `sdk/rust` are Apache-2.0
+even though the control plane they call is BUSL-1.1, and the line between them
+is the gRPC contract in `proto/`: an SDK holds generated stubs and the wire
+vocabulary, never any part of the server. That is what keeps a customer's
+backend free of a source-available dependency for doing something as ordinary as
+kicking somebody out of a room — and it is why neither SDK may grow a shortcut
+that imports from `go/internal` or links the relay.
+
 ## Apache-2.0, and why not MIT
 
 The SDK half has to be permissive — anything with copyleft obligations makes a

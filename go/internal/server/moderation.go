@@ -45,6 +45,15 @@ type action struct {
 	target control.Identity
 	// needsStanding is false for verbs aimed at a room rather than a person.
 	needsStanding bool
+	// extra is a capability this particular call needs beyond what its verb
+	// implies -- widening a ban from a room to the whole tenant, for instance.
+	//
+	// It has to be checked here rather than after, and that is not a style
+	// preference: begin also answers a retried request from the log, so a check
+	// placed after it can be skipped entirely by replaying somebody else's
+	// idempotency key. That was a real hole, found by a test, and this field is
+	// where it is closed.
+	extra control.Capability
 }
 
 // begin performs steps 1 and 2, and returns an entry if the action was already done.
@@ -68,6 +77,10 @@ func (c *core) begin(ctx context.Context, request action) (ServiceAccount, *cont
 	}
 	if err := control.Authorise(actor, request.verb, target); err != nil {
 		return ServiceAccount{}, nil, statusFor(err)
+	}
+	if request.extra != 0 && !actor.IsOwner && !actor.Moderation.Has(request.extra) {
+		return ServiceAccount{}, nil, status.Errorf(codes.PermissionDenied,
+			"this call needs %s, actor holds %s", request.extra, actor.Moderation)
 	}
 
 	// The retry check comes after authorisation, so a caller cannot learn that an
@@ -147,28 +160,24 @@ func (s *moderationService) Ban(ctx context.Context, request *adminpb.BanRequest
 		}
 	}
 
+	// Widening the scope needs the wider capability, or anyone who can ban from a
+	// room bans from the platform by passing a different enum value.
+	var wider control.Capability
+	if scopeTenant {
+		wider = control.CapBanFromTenant
+	}
+
 	account, done, err := s.core.begin(ctx, action{
 		tenant: request.GetTenant(), room: room, verb: verb,
 		actor: request.GetActor(), target: control.Identity{Username: ban.Username, Device: ban.Device},
 		needsStanding: ban.Kind != control.BanByAddress,
+		extra:         wider,
 	})
 	if err != nil {
 		return nil, err
 	}
 	if done != nil {
 		return entryToProto(*done), nil
-	}
-
-	// A tenant-wide ban needs the wider capability. Without this check, anyone who
-	// can ban from a room could ban from the platform by passing a different enum.
-	if scopeTenant {
-		actor, err := s.core.effectiveActor(ctx, account, request.GetTenant(), room, request.GetActor())
-		if err != nil {
-			return nil, statusFor(err)
-		}
-		if !actor.IsOwner && !actor.Moderation.Has(control.CapBanFromTenant) {
-			return nil, status.Error(codes.PermissionDenied, "banning tenant-wide needs ban_from_tenant")
-		}
 	}
 
 	var expires time.Time
@@ -256,6 +265,14 @@ func (s *moderationService) Unban(ctx context.Context, request *adminpb.UnbanReq
 		return nil, status.Error(codes.InvalidArgument, "room is required")
 	}
 
+	var wider control.Capability
+	if scopeTenant {
+		// Symmetric with Ban on purpose. A room moderator who could lift a
+		// tenant-wide ban could readmit somebody the platform excluded, which is
+		// the same power as granting it.
+		wider = control.CapBanFromTenant
+	}
+
 	account, done, err := s.core.begin(ctx, action{
 		tenant: request.GetTenant(), room: room, verb: control.VerbUnban,
 		actor: request.GetActor(),
@@ -263,6 +280,7 @@ func (s *moderationService) Unban(ctx context.Context, request *adminpb.UnbanReq
 		// over somebody who has been banned would make bans unliftable once the
 		// person's record has gone.
 		needsStanding: false,
+		extra:         wider,
 	})
 	if err != nil {
 		return nil, err

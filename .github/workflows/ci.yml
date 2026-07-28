@@ -172,5 +172,70 @@ jobs:
       - name: Build
         run: go build ./...
 
+      # Covers the Go SDK too: the control plane's own tests drive it against a
+      # real server over bufconn, which is worth more than testing it against a
+      # stub in its own module.
       - name: Test
         run: go test ./...
+
+      - name: Vet the SDK
+        working-directory: sdk/go
+        run: go vet ./...
+
+      - name: Test the SDK
+        working-directory: sdk/go
+        run: go test ./...
+
+  # A workspace of its own, so it needs its own job: rs/ patches crates.io to a
+  # vendored quinn and this deliberately does not, which is what keeps a QUIC
+  # stack out of a backend's dependency graph.
+  sdk-rust:
+    name: Rust SDK
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: sdk/rust
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: sdk/rust
+
+      - name: Format
+        run: cargo fmt --all --check
+
+      - name: Clippy
+        run: cargo clippy --all-targets -- -D warnings
+
+      # The interop tests are #[ignore]d and stay skipped here. The job below is
+      # the one that runs them, and it needs a Go toolchain to do it.
+      - name: Test
+        run: cargo test
+
+      - name: Docs
+        run: cargo doc --no-deps
+        env:
+          RUSTDOCFLAGS: -D warnings
+
+  # The seam no single-language job can reach. A capability is a bit in each SDK
+  # and an enum on the wire; a mapping table with two rows pointing at the same
+  # wire value passes every test in every package above while handing a moderator
+  # a power somebody meant to withhold.
+  interop:
+    name: Interop (SDKs against the control plane)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go/go.mod
+          cache: false
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: sdk/rust
+
+      - name: Run
+        run: ./tools/interop.sh
