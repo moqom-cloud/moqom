@@ -1,7 +1,7 @@
 # MOQOM
 
-A Media over QUIC platform: relay, control plane, and client SDKs for iOS,
-Android, web, and desktop.
+**Media Over QUIC Orchestration Mesh**: relay, control plane, and client SDKs for
+iOS, Android, web, and desktop.
 
 Targets [`draft-ietf-moq-transport-19`](https://datatracker.ietf.org/doc/draft-ietf-moq-transport/).
 The protocol implementation is our own rather than a fork, because owning the

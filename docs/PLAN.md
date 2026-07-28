@@ -541,7 +541,7 @@ todos:
     status: pending
 ---
 
-# MOQOM: Media over QUIC Platform
+# MOQOM: Media Over QUIC Orchestration Mesh
 
 ## Product decisions, and three tensions they create
 
