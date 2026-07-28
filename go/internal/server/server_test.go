@@ -21,6 +21,7 @@ import (
 	"github.com/moqom-cloud/moqom/go/internal/server"
 	"github.com/moqom-cloud/moqom/go/internal/store"
 	"github.com/moqom-cloud/moqom/go/internal/store/memory"
+	"github.com/moqom-cloud/moqom/go/internal/timecode"
 	"github.com/moqom-cloud/moqom/go/internal/token"
 )
 
@@ -56,12 +57,23 @@ type harness struct {
 	listener *bufconn.Listener
 }
 
-func newHarness(t *testing.T) *harness {
+// newHarness builds a control plane over an in-memory store.
+//
+// The optional clock is for tests about time itself. Without one the server
+// gets the frozen wall clock, which it treats as unsynchronised — correct for a
+// fixture, and worth preserving so that no test accidentally asserts against
+// laundered time.
+func newHarness(t *testing.T, clocks ...timecode.Clock) *harness {
 	t.Helper()
 
 	current := time.Date(2026, 7, 27, 12, 0, 0, 0, time.UTC)
 	now := func() time.Time { return current }
 	advance := func(d time.Duration) { current = current.Add(d) }
+
+	var clock timecode.Clock
+	if len(clocks) > 0 {
+		clock = clocks[0]
+	}
 
 	memoryStore := memory.New(now, nil)
 	signing, err := token.GenerateKey()
@@ -88,6 +100,7 @@ func newHarness(t *testing.T) *harness {
 		Issuer:          issuerFor,
 		Keys:            []token.Key{signing},
 		Now:             now,
+		Clock:           clock,
 		DispatchTimeout: 2 * time.Second,
 	})
 	if err != nil {
@@ -1073,6 +1086,95 @@ func TestTenantWideStreamCannotResume(t *testing.T) {
 	if status.Code(err) != codes.InvalidArgument {
 		t.Errorf("resuming a tenant-wide stream gave %v, want InvalidArgument", status.Code(err))
 	}
+}
+
+func TestEventsCarryTheServersOwnClockQuality(t *testing.T) {
+	// A host that knows it is well disciplined. The interesting part is not
+	// that a number arrives, it is that the number brought its error bound
+	// with it: a consumer merging this room's events with a relay's in another
+	// region has no way to order them honestly otherwise.
+	at := time.Date(2026, 7, 27, 12, 0, 0, 0, time.UTC)
+	h := newHarness(t, timecode.Fixed{
+		Timecode: timecode.New(at, 3*time.Millisecond, timecode.Synchronised),
+	})
+	h.createRoom(t, "alice")
+
+	ctx, cancel := context.WithTimeout(as(ownerKey), 5*time.Second)
+	defer cancel()
+
+	event := h.liveEvent(t, ctx, "mallory")
+
+	stamp := event.GetTimecode()
+	if stamp == nil {
+		t.Fatal("event carries no timecode")
+	}
+	if got := stamp.GetTrust(); got != adminpb.TimeTrust_TIME_TRUST_SYNCHRONISED {
+		t.Errorf("trust = %v, want synchronised", got)
+	}
+	if got := stamp.GetUncertaintyNs(); got != int64(3*time.Millisecond) {
+		t.Errorf("uncertainty = %dns, want the clock's 3ms", got)
+	}
+
+	// The legacy field and the timecode must never drift apart, or a consumer
+	// reading one and a consumer reading the other will disagree about what
+	// the server said.
+	if !stamp.GetAt().AsTime().Equal(event.GetAt().AsTime()) {
+		t.Errorf("timecode.at = %v but at = %v", stamp.GetAt().AsTime(), event.GetAt().AsTime())
+	}
+}
+
+func TestAnInjectedClockIsNotLaunderedIntoTrustedTime(t *testing.T) {
+	// The default fixture freezes the wall clock and says nothing about its
+	// quality. Recording that as synchronised would make every test a place
+	// where fake time looks like good time.
+	h := newHarness(t)
+	h.createRoom(t, "alice")
+
+	ctx, cancel := context.WithTimeout(as(ownerKey), 5*time.Second)
+	defer cancel()
+
+	event := h.liveEvent(t, ctx, "mallory")
+
+	if got := event.GetTimecode().GetTrust(); got != adminpb.TimeTrust_TIME_TRUST_UNSYNCHRONISED {
+		t.Errorf("trust = %v, want unsynchronised for an unchecked clock", got)
+	}
+}
+
+// liveEvent subscribes, provokes one moderation event, and returns it.
+//
+// The subscribe-then-act order is not incidental: a stream opened with
+// `after_sequence` zero carries only what happens next, and headers are the
+// only signal that the subscription actually exists.
+func (h *harness) liveEvent(
+	t *testing.T,
+	ctx context.Context,
+	target string,
+) *adminpb.RoomEvent {
+	t.Helper()
+
+	stream, err := h.events.StreamRoomEvents(ctx, &adminpb.StreamRoomEventsRequest{
+		Tenant: tenant, Room: roomName,
+	})
+	if err != nil {
+		t.Fatalf("opening the stream: %v", err)
+	}
+	if _, err := stream.Header(); err != nil {
+		t.Fatalf("waiting for the stream to become live: %v", err)
+	}
+
+	if _, err := h.moderation.Ban(as(ownerKey), &adminpb.BanRequest{
+		Tenant: tenant, Room: roomName,
+		Scope:   adminpb.BanScope_BAN_SCOPE_ROOM,
+		Subject: &adminpb.BanSubject{Key: &adminpb.BanSubject_Username{Username: target}},
+	}); err != nil {
+		t.Fatalf("banning %s: %v", target, err)
+	}
+
+	event, err := stream.Recv()
+	if err != nil {
+		t.Fatalf("reading the stream: %v", err)
+	}
+	return event
 }
 
 // A fake relay: enough of one to prove directives arrive and snapshots are sent.

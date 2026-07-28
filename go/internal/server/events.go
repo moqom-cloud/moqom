@@ -116,7 +116,12 @@ func (c *core) publish(
 	event.Tenant = tenant
 	event.Room = room
 	if event.At == nil {
-		event.At = timestamppb.New(c.now())
+		// One reading, used for both fields. Asking the clock twice would let
+		// `at` and `timecode.at` disagree, which is a small thing that would
+		// take a very long time to explain to whoever found it.
+		stamped := c.clock.Now()
+		event.Timecode = timecodeToProto(stamped)
+		event.At = timestamppb.New(stamped.At)
 	}
 
 	body, err := proto.Marshal(event)

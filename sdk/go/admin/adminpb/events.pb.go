@@ -195,9 +195,23 @@ type RoomEvent struct {
 	Room   string                 `protobuf:"bytes,2,opt,name=room,proto3" json:"room,omitempty"`
 	// Contiguous within a room and never reused. A gap means events were lost,
 	// and that is worth alerting on rather than papering over.
-	Sequence uint64                 `protobuf:"varint,3,opt,name=sequence,proto3" json:"sequence,omitempty"`
-	At       *timestamppb.Timestamp `protobuf:"bytes,4,opt,name=at,proto3" json:"at,omitempty"`
-	Kind     RoomEventKind          `protobuf:"varint,5,opt,name=kind,proto3,enum=moqom.admin.v1.RoomEventKind" json:"kind,omitempty"`
+	Sequence uint64 `protobuf:"varint,3,opt,name=sequence,proto3" json:"sequence,omitempty"`
+	// When this happened, as a bare instant.
+	//
+	// Kept alongside `timecode` rather than replaced by it, because consumers
+	// written before uncertainty existed still read this field and breaking them
+	// to save eight bytes would be a poor trade. It always equals
+	// `timecode.at`.
+	At   *timestamppb.Timestamp `protobuf:"bytes,4,opt,name=at,proto3" json:"at,omitempty"`
+	Kind RoomEventKind          `protobuf:"varint,5,opt,name=kind,proto3,enum=moqom.admin.v1.RoomEventKind" json:"kind,omitempty"`
+	// When this happened, and how well the server knew.
+	//
+	// The field to use for anything that compares events across sources — a room
+	// whose participants are on three continents produces a log that reads like
+	// a total order and is not one. Absent from events recorded before the
+	// control plane tracked its own clock health, which should be read as
+	// unsynchronised.
+	Timecode *Timecode `protobuf:"bytes,6,opt,name=timecode,proto3" json:"timecode,omitempty"`
 	// Types that are valid to be assigned to Body:
 	//
 	//	*RoomEvent_ParticipantJoined
@@ -278,6 +292,13 @@ func (x *RoomEvent) GetKind() RoomEventKind {
 		return x.Kind
 	}
 	return RoomEventKind_ROOM_EVENT_KIND_UNSPECIFIED
+}
+
+func (x *RoomEvent) GetTimecode() *Timecode {
+	if x != nil {
+		return x.Timecode
+	}
+	return nil
 }
 
 func (x *RoomEvent) GetBody() isRoomEvent_Body {
@@ -994,13 +1015,14 @@ const file_moqom_admin_v1_events_proto_rawDesc = "" +
 	"\x06tenant\x18\x01 \x01(\tR\x06tenant\x12\x12\n" +
 	"\x04room\x18\x02 \x01(\tR\x04room\x12%\n" +
 	"\x0eafter_sequence\x18\x03 \x01(\x04R\rafterSequence\x121\n" +
-	"\x04kind\x18\x04 \x03(\x0e2\x1d.moqom.admin.v1.RoomEventKindR\x04kind\"\xc1\a\n" +
+	"\x04kind\x18\x04 \x03(\x0e2\x1d.moqom.admin.v1.RoomEventKindR\x04kind\"\xf7\a\n" +
 	"\tRoomEvent\x12\x16\n" +
 	"\x06tenant\x18\x01 \x01(\tR\x06tenant\x12\x12\n" +
 	"\x04room\x18\x02 \x01(\tR\x04room\x12\x1a\n" +
 	"\bsequence\x18\x03 \x01(\x04R\bsequence\x12*\n" +
 	"\x02at\x18\x04 \x01(\v2\x1a.google.protobuf.TimestampR\x02at\x121\n" +
-	"\x04kind\x18\x05 \x01(\x0e2\x1d.moqom.admin.v1.RoomEventKindR\x04kind\x12R\n" +
+	"\x04kind\x18\x05 \x01(\x0e2\x1d.moqom.admin.v1.RoomEventKindR\x04kind\x124\n" +
+	"\btimecode\x18\x06 \x01(\v2\x18.moqom.admin.v1.TimecodeR\btimecode\x12R\n" +
 	"\x12participant_joined\x18\n" +
 	" \x01(\v2!.moqom.admin.v1.ParticipantJoinedH\x00R\x11participantJoined\x12L\n" +
 	"\x10participant_left\x18\v \x01(\v2\x1f.moqom.admin.v1.ParticipantLeftH\x00R\x0fparticipantLeft\x12L\n" +
@@ -1096,56 +1118,58 @@ var file_moqom_admin_v1_events_proto_goTypes = []any{
 	(*WatchdogChanged)(nil),         // 10: moqom.admin.v1.WatchdogChanged
 	(*LifecycleChanged)(nil),        // 11: moqom.admin.v1.LifecycleChanged
 	(*timestamppb.Timestamp)(nil),   // 12: google.protobuf.Timestamp
-	(*ModerationEntry)(nil),         // 13: moqom.admin.v1.ModerationEntry
-	(*Participant)(nil),             // 14: moqom.admin.v1.Participant
-	(*Identity)(nil),                // 15: moqom.admin.v1.Identity
-	(ModerationCode)(0),             // 16: moqom.admin.v1.ModerationCode
-	(Presence)(0),                   // 17: moqom.admin.v1.Presence
-	(*Grants)(nil),                  // 18: moqom.admin.v1.Grants
-	(MediaKind)(0),                  // 19: moqom.admin.v1.MediaKind
-	(*Watchdog)(nil),                // 20: moqom.admin.v1.Watchdog
-	(RoomLifecycle)(0),              // 21: moqom.admin.v1.RoomLifecycle
+	(*Timecode)(nil),                // 13: moqom.admin.v1.Timecode
+	(*ModerationEntry)(nil),         // 14: moqom.admin.v1.ModerationEntry
+	(*Participant)(nil),             // 15: moqom.admin.v1.Participant
+	(*Identity)(nil),                // 16: moqom.admin.v1.Identity
+	(ModerationCode)(0),             // 17: moqom.admin.v1.ModerationCode
+	(Presence)(0),                   // 18: moqom.admin.v1.Presence
+	(*Grants)(nil),                  // 19: moqom.admin.v1.Grants
+	(MediaKind)(0),                  // 20: moqom.admin.v1.MediaKind
+	(*Watchdog)(nil),                // 21: moqom.admin.v1.Watchdog
+	(RoomLifecycle)(0),              // 22: moqom.admin.v1.RoomLifecycle
 }
 var file_moqom_admin_v1_events_proto_depIdxs = []int32{
 	0,  // 0: moqom.admin.v1.StreamRoomEventsRequest.kind:type_name -> moqom.admin.v1.RoomEventKind
 	12, // 1: moqom.admin.v1.RoomEvent.at:type_name -> google.protobuf.Timestamp
 	0,  // 2: moqom.admin.v1.RoomEvent.kind:type_name -> moqom.admin.v1.RoomEventKind
-	3,  // 3: moqom.admin.v1.RoomEvent.participant_joined:type_name -> moqom.admin.v1.ParticipantJoined
-	4,  // 4: moqom.admin.v1.RoomEvent.participant_left:type_name -> moqom.admin.v1.ParticipantLeft
-	5,  // 5: moqom.admin.v1.RoomEvent.presence_changed:type_name -> moqom.admin.v1.PresenceChanged
-	6,  // 6: moqom.admin.v1.RoomEvent.grants_changed:type_name -> moqom.admin.v1.GrantsChanged
-	7,  // 7: moqom.admin.v1.RoomEvent.mute_changed:type_name -> moqom.admin.v1.MuteChanged
-	8,  // 8: moqom.admin.v1.RoomEvent.spotlight_changed:type_name -> moqom.admin.v1.SpotlightChanged
-	9,  // 9: moqom.admin.v1.RoomEvent.publish_changed:type_name -> moqom.admin.v1.PublishChanged
-	10, // 10: moqom.admin.v1.RoomEvent.watchdog_changed:type_name -> moqom.admin.v1.WatchdogChanged
-	11, // 11: moqom.admin.v1.RoomEvent.lifecycle_changed:type_name -> moqom.admin.v1.LifecycleChanged
-	13, // 12: moqom.admin.v1.RoomEvent.moderation_applied:type_name -> moqom.admin.v1.ModerationEntry
-	14, // 13: moqom.admin.v1.ParticipantJoined.participant:type_name -> moqom.admin.v1.Participant
-	15, // 14: moqom.admin.v1.ParticipantLeft.identity:type_name -> moqom.admin.v1.Identity
-	16, // 15: moqom.admin.v1.ParticipantLeft.code:type_name -> moqom.admin.v1.ModerationCode
-	15, // 16: moqom.admin.v1.PresenceChanged.identity:type_name -> moqom.admin.v1.Identity
-	17, // 17: moqom.admin.v1.PresenceChanged.from:type_name -> moqom.admin.v1.Presence
-	17, // 18: moqom.admin.v1.PresenceChanged.to:type_name -> moqom.admin.v1.Presence
-	15, // 19: moqom.admin.v1.GrantsChanged.identity:type_name -> moqom.admin.v1.Identity
-	18, // 20: moqom.admin.v1.GrantsChanged.from:type_name -> moqom.admin.v1.Grants
-	18, // 21: moqom.admin.v1.GrantsChanged.to:type_name -> moqom.admin.v1.Grants
-	15, // 22: moqom.admin.v1.MuteChanged.identity:type_name -> moqom.admin.v1.Identity
-	19, // 23: moqom.admin.v1.MuteChanged.self_muted:type_name -> moqom.admin.v1.MediaKind
-	19, // 24: moqom.admin.v1.MuteChanged.forced_muted_for_everyone:type_name -> moqom.admin.v1.MediaKind
-	19, // 25: moqom.admin.v1.MuteChanged.forced_muted_for_audience:type_name -> moqom.admin.v1.MediaKind
-	15, // 26: moqom.admin.v1.SpotlightChanged.identity:type_name -> moqom.admin.v1.Identity
-	15, // 27: moqom.admin.v1.PublishChanged.identity:type_name -> moqom.admin.v1.Identity
-	20, // 28: moqom.admin.v1.WatchdogChanged.watchdog:type_name -> moqom.admin.v1.Watchdog
-	21, // 29: moqom.admin.v1.LifecycleChanged.from:type_name -> moqom.admin.v1.RoomLifecycle
-	21, // 30: moqom.admin.v1.LifecycleChanged.to:type_name -> moqom.admin.v1.RoomLifecycle
-	15, // 31: moqom.admin.v1.LifecycleChanged.acting_host:type_name -> moqom.admin.v1.Identity
-	1,  // 32: moqom.admin.v1.Events.StreamRoomEvents:input_type -> moqom.admin.v1.StreamRoomEventsRequest
-	2,  // 33: moqom.admin.v1.Events.StreamRoomEvents:output_type -> moqom.admin.v1.RoomEvent
-	33, // [33:34] is the sub-list for method output_type
-	32, // [32:33] is the sub-list for method input_type
-	32, // [32:32] is the sub-list for extension type_name
-	32, // [32:32] is the sub-list for extension extendee
-	0,  // [0:32] is the sub-list for field type_name
+	13, // 3: moqom.admin.v1.RoomEvent.timecode:type_name -> moqom.admin.v1.Timecode
+	3,  // 4: moqom.admin.v1.RoomEvent.participant_joined:type_name -> moqom.admin.v1.ParticipantJoined
+	4,  // 5: moqom.admin.v1.RoomEvent.participant_left:type_name -> moqom.admin.v1.ParticipantLeft
+	5,  // 6: moqom.admin.v1.RoomEvent.presence_changed:type_name -> moqom.admin.v1.PresenceChanged
+	6,  // 7: moqom.admin.v1.RoomEvent.grants_changed:type_name -> moqom.admin.v1.GrantsChanged
+	7,  // 8: moqom.admin.v1.RoomEvent.mute_changed:type_name -> moqom.admin.v1.MuteChanged
+	8,  // 9: moqom.admin.v1.RoomEvent.spotlight_changed:type_name -> moqom.admin.v1.SpotlightChanged
+	9,  // 10: moqom.admin.v1.RoomEvent.publish_changed:type_name -> moqom.admin.v1.PublishChanged
+	10, // 11: moqom.admin.v1.RoomEvent.watchdog_changed:type_name -> moqom.admin.v1.WatchdogChanged
+	11, // 12: moqom.admin.v1.RoomEvent.lifecycle_changed:type_name -> moqom.admin.v1.LifecycleChanged
+	14, // 13: moqom.admin.v1.RoomEvent.moderation_applied:type_name -> moqom.admin.v1.ModerationEntry
+	15, // 14: moqom.admin.v1.ParticipantJoined.participant:type_name -> moqom.admin.v1.Participant
+	16, // 15: moqom.admin.v1.ParticipantLeft.identity:type_name -> moqom.admin.v1.Identity
+	17, // 16: moqom.admin.v1.ParticipantLeft.code:type_name -> moqom.admin.v1.ModerationCode
+	16, // 17: moqom.admin.v1.PresenceChanged.identity:type_name -> moqom.admin.v1.Identity
+	18, // 18: moqom.admin.v1.PresenceChanged.from:type_name -> moqom.admin.v1.Presence
+	18, // 19: moqom.admin.v1.PresenceChanged.to:type_name -> moqom.admin.v1.Presence
+	16, // 20: moqom.admin.v1.GrantsChanged.identity:type_name -> moqom.admin.v1.Identity
+	19, // 21: moqom.admin.v1.GrantsChanged.from:type_name -> moqom.admin.v1.Grants
+	19, // 22: moqom.admin.v1.GrantsChanged.to:type_name -> moqom.admin.v1.Grants
+	16, // 23: moqom.admin.v1.MuteChanged.identity:type_name -> moqom.admin.v1.Identity
+	20, // 24: moqom.admin.v1.MuteChanged.self_muted:type_name -> moqom.admin.v1.MediaKind
+	20, // 25: moqom.admin.v1.MuteChanged.forced_muted_for_everyone:type_name -> moqom.admin.v1.MediaKind
+	20, // 26: moqom.admin.v1.MuteChanged.forced_muted_for_audience:type_name -> moqom.admin.v1.MediaKind
+	16, // 27: moqom.admin.v1.SpotlightChanged.identity:type_name -> moqom.admin.v1.Identity
+	16, // 28: moqom.admin.v1.PublishChanged.identity:type_name -> moqom.admin.v1.Identity
+	21, // 29: moqom.admin.v1.WatchdogChanged.watchdog:type_name -> moqom.admin.v1.Watchdog
+	22, // 30: moqom.admin.v1.LifecycleChanged.from:type_name -> moqom.admin.v1.RoomLifecycle
+	22, // 31: moqom.admin.v1.LifecycleChanged.to:type_name -> moqom.admin.v1.RoomLifecycle
+	16, // 32: moqom.admin.v1.LifecycleChanged.acting_host:type_name -> moqom.admin.v1.Identity
+	1,  // 33: moqom.admin.v1.Events.StreamRoomEvents:input_type -> moqom.admin.v1.StreamRoomEventsRequest
+	2,  // 34: moqom.admin.v1.Events.StreamRoomEvents:output_type -> moqom.admin.v1.RoomEvent
+	34, // [34:35] is the sub-list for method output_type
+	33, // [33:34] is the sub-list for method input_type
+	33, // [33:33] is the sub-list for extension type_name
+	33, // [33:33] is the sub-list for extension extendee
+	0,  // [0:33] is the sub-list for field type_name
 }
 
 func init() { file_moqom_admin_v1_events_proto_init() }

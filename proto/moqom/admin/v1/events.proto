@@ -75,9 +75,24 @@ message RoomEvent {
   // and that is worth alerting on rather than papering over.
   uint64 sequence = 3;
 
+  // When this happened, as a bare instant.
+  //
+  // Kept alongside `timecode` rather than replaced by it, because consumers
+  // written before uncertainty existed still read this field and breaking them
+  // to save eight bytes would be a poor trade. It always equals
+  // `timecode.at`.
   google.protobuf.Timestamp at = 4;
 
   RoomEventKind kind = 5;
+
+  // When this happened, and how well the server knew.
+  //
+  // The field to use for anything that compares events across sources — a room
+  // whose participants are on three continents produces a log that reads like
+  // a total order and is not one. Absent from events recorded before the
+  // control plane tracked its own clock health, which should be read as
+  // unsynchronised.
+  Timecode timecode = 6;
 
   oneof body {
     ParticipantJoined participant_joined = 10;

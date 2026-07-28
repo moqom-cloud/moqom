@@ -19,6 +19,7 @@ import (
 	adminpb "github.com/moqom-cloud/moqom-go/admin/adminpb"
 	"github.com/moqom-cloud/moqom/go/internal/control"
 	"github.com/moqom-cloud/moqom/go/internal/store"
+	"github.com/moqom-cloud/moqom/go/internal/timecode"
 	"github.com/moqom-cloud/moqom/go/internal/token"
 	"google.golang.org/grpc"
 )
@@ -52,7 +53,19 @@ type Config struct {
 	// how stale enforcement can be when a push could not be delivered.
 	SnapshotInterval time.Duration
 
+	// Clock is where every timestamp the server writes comes from.
+	//
+	// A timecode rather than a bare instant because the events this server
+	// records are compared against events from relays and phones elsewhere in
+	// the world, and that comparison is only honest if each side says how well
+	// it knew the time. Defaults to the host's disciplined system clock; see
+	// `internal/timecode`.
+	Clock timecode.Clock
+
+	// Now is the legacy wall clock, kept for tests that only need to freeze
+	// time. Ignored when Clock is set.
 	Now func() time.Time
+
 	IDs func() string
 }
 
@@ -76,9 +89,15 @@ type core struct {
 	relayGrace       time.Duration
 	snapshotInterval time.Duration
 
-	now func() time.Time
-	ids func() string
+	clock timecode.Clock
+	ids   func() string
 }
+
+// now is the wall-clock estimate, for the many call sites that only need one.
+//
+// Derived from the clock rather than kept alongside it, so there is exactly one
+// source of time in the process and no way for the two to disagree.
+func (c *core) now() time.Time { return c.clock.Now().At }
 
 // Server holds the services and can register them on a gRPC server.
 type Server struct {
@@ -99,8 +118,15 @@ func New(config Config) (*Server, error) {
 	if config.Issuer == "" {
 		return nil, errors.New("control plane needs an issuer name")
 	}
-	if config.Now == nil {
-		config.Now = time.Now
+	if config.Clock == nil {
+		// A caller that froze `Now` gets a clock over it, marked
+		// unsynchronised — which is the truth about an injected clock, and
+		// keeps the fixture from quietly producing trustworthy-looking time.
+		if config.Now != nil {
+			config.Clock = timecode.FromFunc(config.Now)
+		} else {
+			config.Clock = timecode.NewHost()
+		}
 	}
 	if config.IDs == nil {
 		config.IDs = randomIDs()
@@ -135,7 +161,7 @@ func New(config Config) (*Server, error) {
 		dispatchTimeout:  config.DispatchTimeout,
 		relayGrace:       config.RelayGrace,
 		snapshotInterval: config.SnapshotInterval,
-		now:              config.Now,
+		clock:            config.Clock,
 		ids:              config.IDs,
 	}}, nil
 }

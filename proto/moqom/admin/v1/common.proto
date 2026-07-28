@@ -10,7 +10,66 @@ syntax = "proto3";
 
 package moqom.admin.v1;
 
+import "google/protobuf/timestamp.proto";
+
 option go_package = "github.com/moqom-cloud/moqom-go/admin/adminpb;adminpb";
+
+// How much a timecode should be believed.
+//
+// Mirrors `MoqomCore.TimeTrust` in the Swift SDK. The names are shared on
+// purpose: a phone, a relay and the control plane all stamp the same room, and
+// the value of doing so evaporates if any of them means something slightly
+// different by "synchronised".
+enum TimeTrust {
+  // Read this as UNSYNCHRONISED, not as "probably fine".
+  //
+  // Proto3 requires a zero, and the safe reading of a field nobody set is that
+  // nothing has vouched for it. A producer too old to know about this field
+  // has not told us its clock is good.
+  TIME_TRUST_UNSPECIFIED = 0;
+
+  // No measurement stands behind the value. Still worth recording as one
+  // machine's account of itself; not evidence about the order of two.
+  TIME_TRUST_UNSYNCHRONISED = 1;
+
+  // Measured against the reference clock, recently enough to still be tight.
+  TIME_TRUST_SYNCHRONISED = 2;
+
+  // Produced by a reference clock itself.
+  //
+  // Nothing in the managed service claims this, and that is correct: our hosts
+  // are disciplined by Cloudflare's NTP, which makes them synchronised clients
+  // of an authority rather than authorities. It is here for a self-hosted
+  // deployment with a real local reference, such as GPS or PTP.
+  TIME_TRUST_AUTHORITATIVE = 3;
+}
+
+// An instant, with the width of what is actually known about it.
+//
+// A bare timestamp invites a comparison the data cannot support: two events a
+// millisecond apart, produced by machines synced to within fifty, are not
+// ordered, and a log that renders them as ordered has invented the answer. So
+// the uncertainty travels with the value.
+//
+// Consumers wanting to state an order as fact should compare
+// `at + uncertainty_ns` against the other's `at - uncertainty_ns` and accept
+// that the honest answer is often "cannot tell". Within a single event stream,
+// use `RoomEvent.sequence` instead — it is exact, and reaching for a timecode
+// to order two entries in the same log throws away a certainty you had.
+message Timecode {
+  // The best estimate.
+  google.protobuf.Timestamp at = 1;
+
+  // Half the width of the interval the true instant lies in.
+  //
+  // Nanoseconds, and signed only because protobuf's varint encoding of a
+  // negative would otherwise be a footgun for a producer with a bug. Readers
+  // should clamp a negative to zero rather than trusting it: a negative width
+  // silently inverts every comparison above.
+  int64 uncertainty_ns = 2;
+
+  TimeTrust trust = 3;
+}
 
 // Who a participant is.
 //

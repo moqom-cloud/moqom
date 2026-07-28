@@ -17,6 +17,7 @@ package adminpb
 import (
 	protoreflect "google.golang.org/protobuf/reflect/protoreflect"
 	protoimpl "google.golang.org/protobuf/runtime/protoimpl"
+	timestamppb "google.golang.org/protobuf/types/known/timestamppb"
 	reflect "reflect"
 	sync "sync"
 	unsafe "unsafe"
@@ -28,6 +29,78 @@ const (
 	// Verify that runtime/protoimpl is sufficiently up-to-date.
 	_ = protoimpl.EnforceVersion(protoimpl.MaxVersion - 20)
 )
+
+// How much a timecode should be believed.
+//
+// Mirrors `MoqomCore.TimeTrust` in the Swift SDK. The names are shared on
+// purpose: a phone, a relay and the control plane all stamp the same room, and
+// the value of doing so evaporates if any of them means something slightly
+// different by "synchronised".
+type TimeTrust int32
+
+const (
+	// Read this as UNSYNCHRONISED, not as "probably fine".
+	//
+	// Proto3 requires a zero, and the safe reading of a field nobody set is that
+	// nothing has vouched for it. A producer too old to know about this field
+	// has not told us its clock is good.
+	TimeTrust_TIME_TRUST_UNSPECIFIED TimeTrust = 0
+	// No measurement stands behind the value. Still worth recording as one
+	// machine's account of itself; not evidence about the order of two.
+	TimeTrust_TIME_TRUST_UNSYNCHRONISED TimeTrust = 1
+	// Measured against the reference clock, recently enough to still be tight.
+	TimeTrust_TIME_TRUST_SYNCHRONISED TimeTrust = 2
+	// Produced by a reference clock itself.
+	//
+	// Nothing in the managed service claims this, and that is correct: our hosts
+	// are disciplined by Cloudflare's NTP, which makes them synchronised clients
+	// of an authority rather than authorities. It is here for a self-hosted
+	// deployment with a real local reference, such as GPS or PTP.
+	TimeTrust_TIME_TRUST_AUTHORITATIVE TimeTrust = 3
+)
+
+// Enum value maps for TimeTrust.
+var (
+	TimeTrust_name = map[int32]string{
+		0: "TIME_TRUST_UNSPECIFIED",
+		1: "TIME_TRUST_UNSYNCHRONISED",
+		2: "TIME_TRUST_SYNCHRONISED",
+		3: "TIME_TRUST_AUTHORITATIVE",
+	}
+	TimeTrust_value = map[string]int32{
+		"TIME_TRUST_UNSPECIFIED":    0,
+		"TIME_TRUST_UNSYNCHRONISED": 1,
+		"TIME_TRUST_SYNCHRONISED":   2,
+		"TIME_TRUST_AUTHORITATIVE":  3,
+	}
+)
+
+func (x TimeTrust) Enum() *TimeTrust {
+	p := new(TimeTrust)
+	*p = x
+	return p
+}
+
+func (x TimeTrust) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (TimeTrust) Descriptor() protoreflect.EnumDescriptor {
+	return file_moqom_admin_v1_common_proto_enumTypes[0].Descriptor()
+}
+
+func (TimeTrust) Type() protoreflect.EnumType {
+	return &file_moqom_admin_v1_common_proto_enumTypes[0]
+}
+
+func (x TimeTrust) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use TimeTrust.Descriptor instead.
+func (TimeTrust) EnumDescriptor() ([]byte, []int) {
+	return file_moqom_admin_v1_common_proto_rawDescGZIP(), []int{0}
+}
 
 // What someone is allowed to publish.
 //
@@ -77,11 +150,11 @@ func (x PublishScope) String() string {
 }
 
 func (PublishScope) Descriptor() protoreflect.EnumDescriptor {
-	return file_moqom_admin_v1_common_proto_enumTypes[0].Descriptor()
+	return file_moqom_admin_v1_common_proto_enumTypes[1].Descriptor()
 }
 
 func (PublishScope) Type() protoreflect.EnumType {
-	return &file_moqom_admin_v1_common_proto_enumTypes[0]
+	return &file_moqom_admin_v1_common_proto_enumTypes[1]
 }
 
 func (x PublishScope) Number() protoreflect.EnumNumber {
@@ -90,7 +163,7 @@ func (x PublishScope) Number() protoreflect.EnumNumber {
 
 // Deprecated: Use PublishScope.Descriptor instead.
 func (PublishScope) EnumDescriptor() ([]byte, []int) {
-	return file_moqom_admin_v1_common_proto_rawDescGZIP(), []int{0}
+	return file_moqom_admin_v1_common_proto_rawDescGZIP(), []int{1}
 }
 
 // A moderation power.
@@ -205,11 +278,11 @@ func (x Capability) String() string {
 }
 
 func (Capability) Descriptor() protoreflect.EnumDescriptor {
-	return file_moqom_admin_v1_common_proto_enumTypes[1].Descriptor()
+	return file_moqom_admin_v1_common_proto_enumTypes[2].Descriptor()
 }
 
 func (Capability) Type() protoreflect.EnumType {
-	return &file_moqom_admin_v1_common_proto_enumTypes[1]
+	return &file_moqom_admin_v1_common_proto_enumTypes[2]
 }
 
 func (x Capability) Number() protoreflect.EnumNumber {
@@ -218,7 +291,7 @@ func (x Capability) Number() protoreflect.EnumNumber {
 
 // Deprecated: Use Capability.Descriptor instead.
 func (Capability) EnumDescriptor() ([]byte, []int) {
-	return file_moqom_admin_v1_common_proto_rawDescGZIP(), []int{1}
+	return file_moqom_admin_v1_common_proto_rawDescGZIP(), []int{2}
 }
 
 // A named bundle of capabilities, for the common cases.
@@ -270,11 +343,11 @@ func (x CapabilityPreset) String() string {
 }
 
 func (CapabilityPreset) Descriptor() protoreflect.EnumDescriptor {
-	return file_moqom_admin_v1_common_proto_enumTypes[2].Descriptor()
+	return file_moqom_admin_v1_common_proto_enumTypes[3].Descriptor()
 }
 
 func (CapabilityPreset) Type() protoreflect.EnumType {
-	return &file_moqom_admin_v1_common_proto_enumTypes[2]
+	return &file_moqom_admin_v1_common_proto_enumTypes[3]
 }
 
 func (x CapabilityPreset) Number() protoreflect.EnumNumber {
@@ -283,7 +356,7 @@ func (x CapabilityPreset) Number() protoreflect.EnumNumber {
 
 // Deprecated: Use CapabilityPreset.Descriptor instead.
 func (CapabilityPreset) EnumDescriptor() ([]byte, []int) {
-	return file_moqom_admin_v1_common_proto_rawDescGZIP(), []int{2}
+	return file_moqom_admin_v1_common_proto_rawDescGZIP(), []int{3}
 }
 
 // A kind of media, for mutes and for layer questions.
@@ -323,11 +396,11 @@ func (x MediaKind) String() string {
 }
 
 func (MediaKind) Descriptor() protoreflect.EnumDescriptor {
-	return file_moqom_admin_v1_common_proto_enumTypes[3].Descriptor()
+	return file_moqom_admin_v1_common_proto_enumTypes[4].Descriptor()
 }
 
 func (MediaKind) Type() protoreflect.EnumType {
-	return &file_moqom_admin_v1_common_proto_enumTypes[3]
+	return &file_moqom_admin_v1_common_proto_enumTypes[4]
 }
 
 func (x MediaKind) Number() protoreflect.EnumNumber {
@@ -336,7 +409,7 @@ func (x MediaKind) Number() protoreflect.EnumNumber {
 
 // Deprecated: Use MediaKind.Descriptor instead.
 func (MediaKind) EnumDescriptor() ([]byte, []int) {
-	return file_moqom_admin_v1_common_proto_rawDescGZIP(), []int{3}
+	return file_moqom_admin_v1_common_proto_rawDescGZIP(), []int{4}
 }
 
 // Whether someone is here, published on the room's control track.
@@ -391,11 +464,11 @@ func (x Presence) String() string {
 }
 
 func (Presence) Descriptor() protoreflect.EnumDescriptor {
-	return file_moqom_admin_v1_common_proto_enumTypes[4].Descriptor()
+	return file_moqom_admin_v1_common_proto_enumTypes[5].Descriptor()
 }
 
 func (Presence) Type() protoreflect.EnumType {
-	return &file_moqom_admin_v1_common_proto_enumTypes[4]
+	return &file_moqom_admin_v1_common_proto_enumTypes[5]
 }
 
 func (x Presence) Number() protoreflect.EnumNumber {
@@ -404,7 +477,7 @@ func (x Presence) Number() protoreflect.EnumNumber {
 
 // Deprecated: Use Presence.Descriptor instead.
 func (Presence) EnumDescriptor() ([]byte, []int) {
-	return file_moqom_admin_v1_common_proto_rawDescGZIP(), []int{4}
+	return file_moqom_admin_v1_common_proto_rawDescGZIP(), []int{5}
 }
 
 // Why a session was ended, when a moderator ended it.
@@ -464,11 +537,11 @@ func (x ModerationCode) String() string {
 }
 
 func (ModerationCode) Descriptor() protoreflect.EnumDescriptor {
-	return file_moqom_admin_v1_common_proto_enumTypes[5].Descriptor()
+	return file_moqom_admin_v1_common_proto_enumTypes[6].Descriptor()
 }
 
 func (ModerationCode) Type() protoreflect.EnumType {
-	return &file_moqom_admin_v1_common_proto_enumTypes[5]
+	return &file_moqom_admin_v1_common_proto_enumTypes[6]
 }
 
 func (x ModerationCode) Number() protoreflect.EnumNumber {
@@ -477,7 +550,86 @@ func (x ModerationCode) Number() protoreflect.EnumNumber {
 
 // Deprecated: Use ModerationCode.Descriptor instead.
 func (ModerationCode) EnumDescriptor() ([]byte, []int) {
-	return file_moqom_admin_v1_common_proto_rawDescGZIP(), []int{5}
+	return file_moqom_admin_v1_common_proto_rawDescGZIP(), []int{6}
+}
+
+// An instant, with the width of what is actually known about it.
+//
+// A bare timestamp invites a comparison the data cannot support: two events a
+// millisecond apart, produced by machines synced to within fifty, are not
+// ordered, and a log that renders them as ordered has invented the answer. So
+// the uncertainty travels with the value.
+//
+// Consumers wanting to state an order as fact should compare
+// `at + uncertainty_ns` against the other's `at - uncertainty_ns` and accept
+// that the honest answer is often "cannot tell". Within a single event stream,
+// use `RoomEvent.sequence` instead — it is exact, and reaching for a timecode
+// to order two entries in the same log throws away a certainty you had.
+type Timecode struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// The best estimate.
+	At *timestamppb.Timestamp `protobuf:"bytes,1,opt,name=at,proto3" json:"at,omitempty"`
+	// Half the width of the interval the true instant lies in.
+	//
+	// Nanoseconds, and signed only because protobuf's varint encoding of a
+	// negative would otherwise be a footgun for a producer with a bug. Readers
+	// should clamp a negative to zero rather than trusting it: a negative width
+	// silently inverts every comparison above.
+	UncertaintyNs int64     `protobuf:"varint,2,opt,name=uncertainty_ns,json=uncertaintyNs,proto3" json:"uncertainty_ns,omitempty"`
+	Trust         TimeTrust `protobuf:"varint,3,opt,name=trust,proto3,enum=moqom.admin.v1.TimeTrust" json:"trust,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *Timecode) Reset() {
+	*x = Timecode{}
+	mi := &file_moqom_admin_v1_common_proto_msgTypes[0]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *Timecode) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*Timecode) ProtoMessage() {}
+
+func (x *Timecode) ProtoReflect() protoreflect.Message {
+	mi := &file_moqom_admin_v1_common_proto_msgTypes[0]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use Timecode.ProtoReflect.Descriptor instead.
+func (*Timecode) Descriptor() ([]byte, []int) {
+	return file_moqom_admin_v1_common_proto_rawDescGZIP(), []int{0}
+}
+
+func (x *Timecode) GetAt() *timestamppb.Timestamp {
+	if x != nil {
+		return x.At
+	}
+	return nil
+}
+
+func (x *Timecode) GetUncertaintyNs() int64 {
+	if x != nil {
+		return x.UncertaintyNs
+	}
+	return 0
+}
+
+func (x *Timecode) GetTrust() TimeTrust {
+	if x != nil {
+		return x.Trust
+	}
+	return TimeTrust_TIME_TRUST_UNSPECIFIED
 }
 
 // Who a participant is.
@@ -500,7 +652,7 @@ type Identity struct {
 
 func (x *Identity) Reset() {
 	*x = Identity{}
-	mi := &file_moqom_admin_v1_common_proto_msgTypes[0]
+	mi := &file_moqom_admin_v1_common_proto_msgTypes[1]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -512,7 +664,7 @@ func (x *Identity) String() string {
 func (*Identity) ProtoMessage() {}
 
 func (x *Identity) ProtoReflect() protoreflect.Message {
-	mi := &file_moqom_admin_v1_common_proto_msgTypes[0]
+	mi := &file_moqom_admin_v1_common_proto_msgTypes[1]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -525,7 +677,7 @@ func (x *Identity) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Identity.ProtoReflect.Descriptor instead.
 func (*Identity) Descriptor() ([]byte, []int) {
-	return file_moqom_admin_v1_common_proto_rawDescGZIP(), []int{0}
+	return file_moqom_admin_v1_common_proto_rawDescGZIP(), []int{1}
 }
 
 func (x *Identity) GetUsername() string {
@@ -560,7 +712,7 @@ type ParticipantRef struct {
 
 func (x *ParticipantRef) Reset() {
 	*x = ParticipantRef{}
-	mi := &file_moqom_admin_v1_common_proto_msgTypes[1]
+	mi := &file_moqom_admin_v1_common_proto_msgTypes[2]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -572,7 +724,7 @@ func (x *ParticipantRef) String() string {
 func (*ParticipantRef) ProtoMessage() {}
 
 func (x *ParticipantRef) ProtoReflect() protoreflect.Message {
-	mi := &file_moqom_admin_v1_common_proto_msgTypes[1]
+	mi := &file_moqom_admin_v1_common_proto_msgTypes[2]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -585,7 +737,7 @@ func (x *ParticipantRef) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ParticipantRef.ProtoReflect.Descriptor instead.
 func (*ParticipantRef) Descriptor() ([]byte, []int) {
-	return file_moqom_admin_v1_common_proto_rawDescGZIP(), []int{1}
+	return file_moqom_admin_v1_common_proto_rawDescGZIP(), []int{2}
 }
 
 func (x *ParticipantRef) GetUsername() string {
@@ -621,7 +773,7 @@ type Grants struct {
 
 func (x *Grants) Reset() {
 	*x = Grants{}
-	mi := &file_moqom_admin_v1_common_proto_msgTypes[2]
+	mi := &file_moqom_admin_v1_common_proto_msgTypes[3]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -633,7 +785,7 @@ func (x *Grants) String() string {
 func (*Grants) ProtoMessage() {}
 
 func (x *Grants) ProtoReflect() protoreflect.Message {
-	mi := &file_moqom_admin_v1_common_proto_msgTypes[2]
+	mi := &file_moqom_admin_v1_common_proto_msgTypes[3]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -646,7 +798,7 @@ func (x *Grants) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Grants.ProtoReflect.Descriptor instead.
 func (*Grants) Descriptor() ([]byte, []int) {
-	return file_moqom_admin_v1_common_proto_rawDescGZIP(), []int{2}
+	return file_moqom_admin_v1_common_proto_rawDescGZIP(), []int{3}
 }
 
 func (x *Grants) GetPublish() []PublishScope {
@@ -698,7 +850,7 @@ type ActorContext struct {
 
 func (x *ActorContext) Reset() {
 	*x = ActorContext{}
-	mi := &file_moqom_admin_v1_common_proto_msgTypes[3]
+	mi := &file_moqom_admin_v1_common_proto_msgTypes[4]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -710,7 +862,7 @@ func (x *ActorContext) String() string {
 func (*ActorContext) ProtoMessage() {}
 
 func (x *ActorContext) ProtoReflect() protoreflect.Message {
-	mi := &file_moqom_admin_v1_common_proto_msgTypes[3]
+	mi := &file_moqom_admin_v1_common_proto_msgTypes[4]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -723,7 +875,7 @@ func (x *ActorContext) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ActorContext.ProtoReflect.Descriptor instead.
 func (*ActorContext) Descriptor() ([]byte, []int) {
-	return file_moqom_admin_v1_common_proto_rawDescGZIP(), []int{3}
+	return file_moqom_admin_v1_common_proto_rawDescGZIP(), []int{4}
 }
 
 func (x *ActorContext) GetOnBehalfOf() string {
@@ -751,7 +903,11 @@ var File_moqom_admin_v1_common_proto protoreflect.FileDescriptor
 
 const file_moqom_admin_v1_common_proto_rawDesc = "" +
 	"\n" +
-	"\x1bmoqom/admin/v1/common.proto\x12\x0emoqom.admin.v1\">\n" +
+	"\x1bmoqom/admin/v1/common.proto\x12\x0emoqom.admin.v1\x1a\x1fgoogle/protobuf/timestamp.proto\"\x8e\x01\n" +
+	"\bTimecode\x12*\n" +
+	"\x02at\x18\x01 \x01(\v2\x1a.google.protobuf.TimestampR\x02at\x12%\n" +
+	"\x0euncertainty_ns\x18\x02 \x01(\x03R\runcertaintyNs\x12/\n" +
+	"\x05trust\x18\x03 \x01(\x0e2\x19.moqom.admin.v1.TimeTrustR\x05trust\">\n" +
 	"\bIdentity\x12\x1a\n" +
 	"\busername\x18\x01 \x01(\tR\busername\x12\x16\n" +
 	"\x06device\x18\x02 \x01(\tR\x06device\"D\n" +
@@ -768,7 +924,12 @@ const file_moqom_admin_v1_common_proto_rawDesc = "" +
 	"\fon_behalf_of\x18\x01 \x01(\tR\n" +
 	"onBehalfOf\x12\x16\n" +
 	"\x06reason\x18\x02 \x01(\tR\x06reason\x12'\n" +
-	"\x0fidempotency_key\x18\x03 \x01(\tR\x0eidempotencyKey*\x97\x01\n" +
+	"\x0fidempotency_key\x18\x03 \x01(\tR\x0eidempotencyKey*\x81\x01\n" +
+	"\tTimeTrust\x12\x1a\n" +
+	"\x16TIME_TRUST_UNSPECIFIED\x10\x00\x12\x1d\n" +
+	"\x19TIME_TRUST_UNSYNCHRONISED\x10\x01\x12\x1b\n" +
+	"\x17TIME_TRUST_SYNCHRONISED\x10\x02\x12\x1c\n" +
+	"\x18TIME_TRUST_AUTHORITATIVE\x10\x03*\x97\x01\n" +
 	"\fPublishScope\x12\x1d\n" +
 	"\x19PUBLISH_SCOPE_UNSPECIFIED\x10\x00\x12\x17\n" +
 	"\x13PUBLISH_SCOPE_AUDIO\x10\x01\x12\x17\n" +
@@ -841,28 +1002,33 @@ func file_moqom_admin_v1_common_proto_rawDescGZIP() []byte {
 	return file_moqom_admin_v1_common_proto_rawDescData
 }
 
-var file_moqom_admin_v1_common_proto_enumTypes = make([]protoimpl.EnumInfo, 6)
-var file_moqom_admin_v1_common_proto_msgTypes = make([]protoimpl.MessageInfo, 4)
+var file_moqom_admin_v1_common_proto_enumTypes = make([]protoimpl.EnumInfo, 7)
+var file_moqom_admin_v1_common_proto_msgTypes = make([]protoimpl.MessageInfo, 5)
 var file_moqom_admin_v1_common_proto_goTypes = []any{
-	(PublishScope)(0),      // 0: moqom.admin.v1.PublishScope
-	(Capability)(0),        // 1: moqom.admin.v1.Capability
-	(CapabilityPreset)(0),  // 2: moqom.admin.v1.CapabilityPreset
-	(MediaKind)(0),         // 3: moqom.admin.v1.MediaKind
-	(Presence)(0),          // 4: moqom.admin.v1.Presence
-	(ModerationCode)(0),    // 5: moqom.admin.v1.ModerationCode
-	(*Identity)(nil),       // 6: moqom.admin.v1.Identity
-	(*ParticipantRef)(nil), // 7: moqom.admin.v1.ParticipantRef
-	(*Grants)(nil),         // 8: moqom.admin.v1.Grants
-	(*ActorContext)(nil),   // 9: moqom.admin.v1.ActorContext
+	(TimeTrust)(0),                // 0: moqom.admin.v1.TimeTrust
+	(PublishScope)(0),             // 1: moqom.admin.v1.PublishScope
+	(Capability)(0),               // 2: moqom.admin.v1.Capability
+	(CapabilityPreset)(0),         // 3: moqom.admin.v1.CapabilityPreset
+	(MediaKind)(0),                // 4: moqom.admin.v1.MediaKind
+	(Presence)(0),                 // 5: moqom.admin.v1.Presence
+	(ModerationCode)(0),           // 6: moqom.admin.v1.ModerationCode
+	(*Timecode)(nil),              // 7: moqom.admin.v1.Timecode
+	(*Identity)(nil),              // 8: moqom.admin.v1.Identity
+	(*ParticipantRef)(nil),        // 9: moqom.admin.v1.ParticipantRef
+	(*Grants)(nil),                // 10: moqom.admin.v1.Grants
+	(*ActorContext)(nil),          // 11: moqom.admin.v1.ActorContext
+	(*timestamppb.Timestamp)(nil), // 12: google.protobuf.Timestamp
 }
 var file_moqom_admin_v1_common_proto_depIdxs = []int32{
-	0, // 0: moqom.admin.v1.Grants.publish:type_name -> moqom.admin.v1.PublishScope
-	1, // 1: moqom.admin.v1.Grants.moderation:type_name -> moqom.admin.v1.Capability
-	2, // [2:2] is the sub-list for method output_type
-	2, // [2:2] is the sub-list for method input_type
-	2, // [2:2] is the sub-list for extension type_name
-	2, // [2:2] is the sub-list for extension extendee
-	0, // [0:2] is the sub-list for field type_name
+	12, // 0: moqom.admin.v1.Timecode.at:type_name -> google.protobuf.Timestamp
+	0,  // 1: moqom.admin.v1.Timecode.trust:type_name -> moqom.admin.v1.TimeTrust
+	1,  // 2: moqom.admin.v1.Grants.publish:type_name -> moqom.admin.v1.PublishScope
+	2,  // 3: moqom.admin.v1.Grants.moderation:type_name -> moqom.admin.v1.Capability
+	4,  // [4:4] is the sub-list for method output_type
+	4,  // [4:4] is the sub-list for method input_type
+	4,  // [4:4] is the sub-list for extension type_name
+	4,  // [4:4] is the sub-list for extension extendee
+	0,  // [0:4] is the sub-list for field type_name
 }
 
 func init() { file_moqom_admin_v1_common_proto_init() }
@@ -875,8 +1041,8 @@ func file_moqom_admin_v1_common_proto_init() {
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_moqom_admin_v1_common_proto_rawDesc), len(file_moqom_admin_v1_common_proto_rawDesc)),
-			NumEnums:      6,
-			NumMessages:   4,
+			NumEnums:      7,
+			NumMessages:   5,
 			NumExtensions: 0,
 			NumServices:   0,
 		},

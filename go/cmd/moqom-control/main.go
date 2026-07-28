@@ -31,6 +31,7 @@ import (
 	"github.com/moqom-cloud/moqom/go/internal/server"
 	"github.com/moqom-cloud/moqom/go/internal/store"
 	"github.com/moqom-cloud/moqom/go/internal/store/memory"
+	"github.com/moqom-cloud/moqom/go/internal/timecode"
 	"github.com/moqom-cloud/moqom/go/internal/token"
 )
 
@@ -56,7 +57,12 @@ func run() error {
 	if err != nil {
 		return err
 	}
-	backing, err := backingStore()
+	// One clock for the process, disciplined by the host's NTP daemon and
+	// honest about how well that is going. See internal/timecode.
+	clock := timecode.NewHost()
+	reportClockHealth(clock)
+
+	backing, err := backingStore(func() time.Time { return clock.Now().At })
 	if err != nil {
 		return err
 	}
@@ -66,6 +72,7 @@ func run() error {
 		Accounts: accounts,
 		Issuer:   issuer,
 		Keys:     keys,
+		Clock:    clock,
 	})
 	if err != nil {
 		return err
@@ -264,14 +271,39 @@ func serviceAccounts() (server.Accounts, error) {
 	return server.NewStaticAccounts(byCredential), nil
 }
 
-func backingStore() (store.Store, error) {
+// reportClockHealth says at startup whether this host can timestamp anything.
+//
+// Worth a line in the log rather than leaving it to be inferred from the width
+// of timecodes much later. A control plane whose chrony never started produces
+// a complete, entirely plausible-looking audit log in which nothing can be
+// ordered against another machine, and the cheapest moment to find that out is
+// before it has recorded anything.
+func reportClockHealth(clock *timecode.Host) {
+	health, ok := clock.Healthy()
+	switch {
+	case !ok:
+		slog.Warn("cannot read the host clock's discipline",
+			"consequence", "every event will be recorded as unsynchronised",
+			"note", "expected off Linux; production hosts read it via adjtimex")
+	case !health.Synchronised:
+		slog.Error("the host clock is not disciplined",
+			"consequence", "events cannot be ordered against other machines",
+			"remedy", "check chrony is running and can reach time.cloudflare.com")
+	default:
+		slog.Info("host clock disciplined",
+			"maxErrorMs", health.MaxError.Milliseconds(),
+			"leapPending", health.LeapPending)
+	}
+}
+
+func backingStore(now func() time.Time) (store.Store, error) {
 	switch kind := env("MOQOM_CONTROL_STORE", "memory"); kind {
 	case "memory":
 		// Honest about what this is. A single-node deployment or a laptop can run
 		// against it; a restart loses every room, ban, and audit entry.
 		slog.Warn("using the in-memory store",
 			"consequence", "all state, including the moderation log, is lost on restart")
-		return memory.New(time.Now, nil), nil
+		return memory.New(now, nil), nil
 	case "postgres":
 		return nil, errors.New("the Postgres store is not wired up yet; see docs/PLAN.md")
 	default:

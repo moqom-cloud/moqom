@@ -10,6 +10,7 @@ import (
 	"github.com/moqom-cloud/moqom/go/internal/control"
 	relaypb "github.com/moqom-cloud/moqom/go/internal/relaypb"
 	"github.com/moqom-cloud/moqom/go/internal/store"
+	"github.com/moqom-cloud/moqom/go/internal/timecode"
 )
 
 // Translation between the wire and the domain.
@@ -530,6 +531,48 @@ func timeFromProto(wire *timestamppb.Timestamp) time.Time {
 		return time.Time{}
 	}
 	return wire.AsTime()
+}
+
+var trustToProto = map[timecode.Trust]adminpb.TimeTrust{
+	timecode.Unsynchronised: adminpb.TimeTrust_TIME_TRUST_UNSYNCHRONISED,
+	timecode.Synchronised:   adminpb.TimeTrust_TIME_TRUST_SYNCHRONISED,
+	timecode.Authoritative:  adminpb.TimeTrust_TIME_TRUST_AUTHORITATIVE,
+}
+
+func timecodeToProto(at timecode.Timecode) *adminpb.Timecode {
+	if at.IsZero() {
+		return nil
+	}
+	trust, ok := trustToProto[at.Trust]
+	if !ok {
+		// An unmapped trust level is a bug, and the safe way to be buggy about
+		// time is to claim less than you know rather than more.
+		trust = adminpb.TimeTrust_TIME_TRUST_UNSYNCHRONISED
+	}
+	return &adminpb.Timecode{
+		At:            timestamppb.New(at.At),
+		UncertaintyNs: at.Uncertainty.Nanoseconds(),
+		Trust:         trust,
+	}
+}
+
+var trustFromProto = map[adminpb.TimeTrust]timecode.Trust{
+	adminpb.TimeTrust_TIME_TRUST_SYNCHRONISED:  timecode.Synchronised,
+	adminpb.TimeTrust_TIME_TRUST_AUTHORITATIVE: timecode.Authoritative,
+}
+
+func timecodeFromProto(wire *adminpb.Timecode) timecode.Timecode {
+	if wire == nil {
+		return timecode.Timecode{}
+	}
+	// Anything not explicitly a trusted level reads as unsynchronised,
+	// including UNSPECIFIED from a producer too old to know about the field.
+	// The absence of a claim is not a claim.
+	return timecode.New(
+		timeFromProto(wire.GetAt()),
+		time.Duration(wire.GetUncertaintyNs()),
+		trustFromProto[wire.GetTrust()],
+	)
 }
 
 // Relay-facing conversions.
