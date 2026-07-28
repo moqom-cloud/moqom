@@ -186,6 +186,13 @@ so three checks here run against other repositories:
   Go toolchain; CI re-mints it here and fails if the bytes disagree.
 - **Interop** builds the control plane and runs both SDKs against it.
 
+Those jobs clone sibling repositories, which for private repositories needs a
+token: `GITHUB_TOKEN` is scoped to the repository it was issued for and cannot
+read another. They use an organisation secret named `MOQOM_REPO_TOKEN` — a
+fine-grained PAT with **Contents: read** on `moqom-cloud`, set once at the
+organisation level rather than per repository, since all four need the same
+thing. Without it those jobs fail at checkout; the rest of CI is unaffected.
+
 **What none of them catch: misreading the draft.** A rule misread the same way
 in an encoder and its decoder is self-consistent, and every check passes. Only
 differential testing against an independent implementation closes that gap.

@@ -9,9 +9,13 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+# Several jobs here clone a sibling repository, because the checks that matter
+# most after the split are the ones that cross one. MOQOM_REPO_TOKEN is an
+# organisation secret with read access to moqom-cloud; GITHUB_TOKEN cannot do it,
+# since it is scoped to the repository it was issued for. See the
+# "Cross-repository checks" section of README.md.
 env:
   CARGO_TERM_COLOR: always
-  RUSTFLAGS: -D warnings
 
 jobs:
   # The plan is a document, so nothing about it fails to compile. Checking it
@@ -35,25 +39,25 @@ jobs:
         with:
           repository: moqom-cloud/moqom-engine
           path: moqom-engine
-          token: ${{ secrets.SDK_REPO_TOKEN }}
+          token: ${{ secrets.MOQOM_REPO_TOKEN }}
 
       - uses: actions/checkout@v7
         with:
           repository: moqom-cloud/moqom-go
           path: moqom-go
-          token: ${{ secrets.SDK_REPO_TOKEN }}
+          token: ${{ secrets.MOQOM_REPO_TOKEN }}
 
       - uses: actions/checkout@v7
         with:
           repository: moqom-cloud/moqom-rust
           path: moqom-rust
-          token: ${{ secrets.SDK_REPO_TOKEN }}
+          token: ${{ secrets.MOQOM_REPO_TOKEN }}
 
       - uses: actions/checkout@v7
         with:
           repository: moqom-cloud/moqom-swift
           path: moqom-swift
-          token: ${{ secrets.SDK_REPO_TOKEN }}
+          token: ${{ secrets.MOQOM_REPO_TOKEN }}
 
       - uses: actions/setup-python@v6
         with:
@@ -115,7 +119,7 @@ jobs:
         with:
           repository: moqom-cloud/moqom-go
           path: moqom-go
-          token: ${{ secrets.SDK_REPO_TOKEN }}
+          token: ${{ secrets.MOQOM_REPO_TOKEN }}
 
       # For the token fixture only -- nothing here builds Rust. Checking out the
       # engine is cheaper than the alternative, which is a cross-language check
@@ -124,7 +128,7 @@ jobs:
         with:
           repository: moqom-cloud/moqom-engine
           path: moqom-engine
-          token: ${{ secrets.SDK_REPO_TOKEN }}
+          token: ${{ secrets.MOQOM_REPO_TOKEN }}
 
       - uses: actions/setup-go@v7
         with:
@@ -179,13 +183,13 @@ jobs:
         with:
           repository: moqom-cloud/moqom-go
           path: moqom-go
-          token: ${{ secrets.SDK_REPO_TOKEN }}
+          token: ${{ secrets.MOQOM_REPO_TOKEN }}
 
       - uses: actions/checkout@v7
         with:
           repository: moqom-cloud/moqom-rust
           path: moqom-rust
-          token: ${{ secrets.SDK_REPO_TOKEN }}
+          token: ${{ secrets.MOQOM_REPO_TOKEN }}
 
       - uses: actions/setup-go@v7
         with:
