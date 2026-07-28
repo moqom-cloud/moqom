@@ -120,7 +120,7 @@ func New(config Config) (*Server, error) {
 	}
 	if config.Clock == nil {
 		// A caller that froze `Now` gets a clock over it, marked
-		// unsynchronised — which is the truth about an injected clock, and
+		// fallback time — which is the truth about an injected clock, and
 		// keeps the fixture from quietly producing trustworthy-looking time.
 		if config.Now != nil {
 			config.Clock = timecode.FromFunc(config.Now)

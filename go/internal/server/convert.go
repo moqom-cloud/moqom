@@ -534,9 +534,9 @@ func timeFromProto(wire *timestamppb.Timestamp) time.Time {
 }
 
 var trustToProto = map[timecode.Trust]adminpb.TimeTrust{
-	timecode.Unsynchronised: adminpb.TimeTrust_TIME_TRUST_UNSYNCHRONISED,
-	timecode.Synchronised:   adminpb.TimeTrust_TIME_TRUST_SYNCHRONISED,
-	timecode.Authoritative:  adminpb.TimeTrust_TIME_TRUST_AUTHORITATIVE,
+	timecode.TrustFallback:      adminpb.TimeTrust_TIME_TRUST_FALLBACK,
+	timecode.TrustSynchronised:  adminpb.TimeTrust_TIME_TRUST_SYNCHRONISED,
+	timecode.TrustAuthoritative: adminpb.TimeTrust_TIME_TRUST_AUTHORITATIVE,
 }
 
 func timecodeToProto(at timecode.Timecode) *adminpb.Timecode {
@@ -547,7 +547,7 @@ func timecodeToProto(at timecode.Timecode) *adminpb.Timecode {
 	if !ok {
 		// An unmapped trust level is a bug, and the safe way to be buggy about
 		// time is to claim less than you know rather than more.
-		trust = adminpb.TimeTrust_TIME_TRUST_UNSYNCHRONISED
+		trust = adminpb.TimeTrust_TIME_TRUST_FALLBACK
 	}
 	return &adminpb.Timecode{
 		At:            timestamppb.New(at.At),
@@ -557,15 +557,15 @@ func timecodeToProto(at timecode.Timecode) *adminpb.Timecode {
 }
 
 var trustFromProto = map[adminpb.TimeTrust]timecode.Trust{
-	adminpb.TimeTrust_TIME_TRUST_SYNCHRONISED:  timecode.Synchronised,
-	adminpb.TimeTrust_TIME_TRUST_AUTHORITATIVE: timecode.Authoritative,
+	adminpb.TimeTrust_TIME_TRUST_SYNCHRONISED:  timecode.TrustSynchronised,
+	adminpb.TimeTrust_TIME_TRUST_AUTHORITATIVE: timecode.TrustAuthoritative,
 }
 
 func timecodeFromProto(wire *adminpb.Timecode) timecode.Timecode {
 	if wire == nil {
 		return timecode.Timecode{}
 	}
-	// Anything not explicitly a trusted level reads as unsynchronised,
+	// Anything not explicitly a trusted level reads as fallback time,
 	// including UNSPECIFIED from a producer too old to know about the field.
 	// The absence of a claim is not a claim.
 	return timecode.New(

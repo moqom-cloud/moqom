@@ -283,7 +283,7 @@ func reportClockHealth(clock *timecode.Host) {
 	switch {
 	case !ok:
 		slog.Warn("cannot read the host clock's discipline",
-			"consequence", "every event will be recorded as unsynchronised",
+			"consequence", "every event will be stamped with fallback time",
 			"note", "expected off Linux; production hosts read it via adjtimex")
 	case !health.Synchronised:
 		slog.Error("the host clock is not disciplined",

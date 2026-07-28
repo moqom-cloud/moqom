@@ -24,6 +24,68 @@ write_files:
       net.ipv4.udp_rmem_min = 262144
       net.ipv4.udp_wmem_min = 262144
 
+  - path: /etc/chrony/chrony.conf
+    permissions: "0644"
+    owner: root
+    content: |
+      # Replaces the Container-Optimized OS default wholesale, and the word
+      # "replaces" is the point rather than an implementation detail.
+      #
+      # COS ships `server metadata.google.internal prefer iburst`, and Google's
+      # metadata clock *smears* leap seconds: it spreads the extra second across
+      # a long window so that UTC never repeats. Cloudflare does not smear — it
+      # forwards the leap indicator and lets the kernel step — and Cloudflare's
+      # own documentation warns that mixing smeared and unsmeared sources gives
+      # "unpredictable and anomalous results". Since every MOQOM client takes its
+      # time from time.cloudflare.com, a relay left on the metadata server would
+      # sit up to half a second away from the phones publishing to it for the
+      # duration of a smear, which is far worse than the one-second
+      # discontinuity the smear exists to avoid.
+      #
+      # So: one source family, chosen to match the clients, and the Google
+      # source removed rather than deprioritised.
+      pool time.cloudflare.com iburst maxsources 4
+
+      # Step rather than slew for the first few updates, then slew forever
+      # after. A relay that boots with a wildly wrong clock should correct it
+      # immediately; one that has been serving for a week should never have time
+      # jump underneath an in-flight recording.
+      makestep 1.0 3
+
+      # Never smear. This is chrony's default, and it is written down because
+      # the alternative — `leapsecmode slew` — would silently reintroduce
+      # exactly the mismatch this file exists to remove.
+      #
+      # Worth being explicit that not smearing is the *better* choice here and
+      # not merely the consistent one, because the usual advice says otherwise.
+      # Smearing keeps the wall clock continuous, which protects code that
+      # computes durations from it; every famous leap-second outage was a
+      # negative duration. MOQOM has no such code — every duration in the relay,
+      # the control plane and the SDKs comes from a monotonic clock, never from
+      # this one — so smearing would buy protection we do not need.
+      #
+      # What it would cost is the thing we cannot give up. A smearing host is
+      # knowingly up to half a second from UTC for around twenty-four hours,
+      # and the kernel reports a healthy few-millisecond error bound throughout,
+      # so the relay would publish confident timecodes that are wrong by 500ms
+      # with nothing anywhere to indicate it. Not smearing gives a one-second
+      # window instead of a day-long one, and it announces itself in advance via
+      # the leap indicator, which the relay turns into a ±1s uncertainty on
+      # every timecode for the rest of that day. Honest and short beats silent
+      # and long, for a system whose whole premise is the error bound.
+      leapsecmode system
+
+      # Refuse a source whose own root distance is worse than this. The relay
+      # publishes the kernel's error bound as the uncertainty on every timecode
+      # it writes, so a source that cannot say where it is within a quarter
+      # second is worse than no source: it would produce confident-looking
+      # readings with no basis.
+      maxdistance 0.25
+
+      driftfile /var/lib/chrony/drift
+      rtcsync
+      logdir /var/log/chrony
+
   - path: /etc/systemd/system/moqom-relay.service
     permissions: "0644"
     owner: root
@@ -67,5 +129,12 @@ write_files:
 
 runcmd:
   - sysctl --system
+  # Before the relay starts, so that the first sessions it accepts are stamped
+  # with a clock somebody has vouched for. chrony is asked to wait for a source
+  # rather than assumed to have found one; the relay reports
+  # `moqom_relay_clock_synchronised 0` if this did not work, which is the check
+  # that actually matters and the one an operator should alarm on.
+  - systemctl restart chronyd
+  - chronyc waitsync 12 0.1 || echo "chrony did not reach time.cloudflare.com; timecodes will fall back to local time"
   - systemctl daemon-reload
   - systemctl enable --now moqom-relay.service

@@ -24,6 +24,7 @@
 package timecode
 
 import (
+	"log/slog"
 	"sync"
 	"time"
 )
@@ -66,14 +67,21 @@ type Host struct {
 	// test: what makes a reading unusable is how wide it is.
 	Ceiling time.Duration
 
+	// Logger receives the transitions into and out of fallback time. Nil
+	// means slog.Default.
+	Logger *slog.Logger
+
 	now    func() time.Time
 	read   func() (Health, error)
 	expiry time.Duration
 
-	mutex  sync.Mutex
-	cached Health
-	failed bool
-	read_  time.Time
+	mutex     sync.Mutex
+	cached    Health
+	failed    bool
+	read_     time.Time
+	announced Trust
+	said      bool
+	fallbacks uint64
 }
 
 // DefaultCeiling is a generous bound that still catches a broken host.
@@ -102,10 +110,16 @@ func NewHost() *Host {
 
 // Now returns the current instant and how well it is known.
 func (h *Host) Now() Timecode {
+	code := h.stamp()
+	h.announce(code.Trust)
+	return code
+}
+
+func (h *Host) stamp() Timecode {
 	at := h.now()
 	health, ok := h.health()
 	if !ok || !health.Synchronised {
-		return Unchecked(at)
+		return Fallback(at)
 	}
 
 	width := health.MaxError
@@ -121,9 +135,61 @@ func (h *Host) Now() Timecode {
 	}
 
 	if width > h.Ceiling {
-		return New(at, width, Unsynchronised)
+		return New(at, width, TrustFallback)
 	}
-	return New(at, width, Synchronised)
+	return New(at, width, TrustSynchronised)
+}
+
+// announce says, once, when this clock starts or stops being believable.
+//
+// Falling back is not something a caller sees: Now keeps returning a
+// plausible-looking instant, and every consumer that does not inspect Trust
+// carries on as though nothing had changed. So the transition has to be said
+// out loud, or the first anyone knows of it is an audit trail that will not
+// line up against a relay's.
+//
+// Also counted, via Fallbacks, so the condition is alarmable and not only
+// greppable.
+func (h *Host) announce(trust Trust) {
+	h.mutex.Lock()
+	if trust == TrustFallback {
+		h.fallbacks++
+	}
+	if h.said && trust == h.announced {
+		h.mutex.Unlock()
+		return
+	}
+	previous, first := h.announced, !h.said
+	h.announced, h.said = trust, true
+	logger := h.Logger
+	h.mutex.Unlock()
+
+	if logger == nil {
+		logger = slog.Default()
+	}
+	if trust == TrustFallback {
+		was := previous.String()
+		if first {
+			was = "never established"
+		}
+		logger.Warn("clock fell back to local time",
+			"previously", was,
+			"consequence", "timecodes cannot be ordered against other hosts",
+		)
+		return
+	}
+	logger.Info("clock is disciplined", "trust", trust.String())
+}
+
+// Fallbacks is how many timecodes this clock has stamped from local time.
+//
+// Exported for the metrics endpoint. A rate above zero on a relay means its
+// events cannot be placed against anyone else's, which is worth a page rather
+// than a log line somebody reads later.
+func (h *Host) Fallbacks() uint64 {
+	h.mutex.Lock()
+	defer h.mutex.Unlock()
+	return h.fallbacks
 }
 
 // Healthy reports whether the host clock is currently disciplined.
@@ -157,7 +223,7 @@ type Fixed struct {
 
 func (f Fixed) Now() Timecode { return f.Timecode }
 
-// FromFunc adapts a bare wall clock, marking everything unsynchronised.
+// FromFunc adapts a bare wall clock, marking everything as fallback time.
 //
 // For call sites that have a `func() time.Time` and no better source. The
 // resulting timecodes say plainly that nothing checked them, which is the
@@ -169,4 +235,4 @@ func FromFunc(now func() time.Time) Clock {
 
 type funcClock func() time.Time
 
-func (f funcClock) Now() Timecode { return Unchecked(f()) }
+func (f funcClock) Now() Timecode { return Fallback(f()) }

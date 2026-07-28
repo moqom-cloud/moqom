@@ -60,7 +60,7 @@ type harness struct {
 // newHarness builds a control plane over an in-memory store.
 //
 // The optional clock is for tests about time itself. Without one the server
-// gets the frozen wall clock, which it treats as unsynchronised — correct for a
+// gets the frozen wall clock, which it treats as fallback time — correct for a
 // fixture, and worth preserving so that no test accidentally asserts against
 // laundered time.
 func newHarness(t *testing.T, clocks ...timecode.Clock) *harness {
@@ -1095,7 +1095,7 @@ func TestEventsCarryTheServersOwnClockQuality(t *testing.T) {
 	// region has no way to order them honestly otherwise.
 	at := time.Date(2026, 7, 27, 12, 0, 0, 0, time.UTC)
 	h := newHarness(t, timecode.Fixed{
-		Timecode: timecode.New(at, 3*time.Millisecond, timecode.Synchronised),
+		Timecode: timecode.New(at, 3*time.Millisecond, timecode.TrustSynchronised),
 	})
 	h.createRoom(t, "alice")
 
@@ -1135,8 +1135,8 @@ func TestAnInjectedClockIsNotLaunderedIntoTrustedTime(t *testing.T) {
 
 	event := h.liveEvent(t, ctx, "mallory")
 
-	if got := event.GetTimecode().GetTrust(); got != adminpb.TimeTrust_TIME_TRUST_UNSYNCHRONISED {
-		t.Errorf("trust = %v, want unsynchronised for an unchecked clock", got)
+	if got := event.GetTimecode().GetTrust(); got != adminpb.TimeTrust_TIME_TRUST_FALLBACK {
+		t.Errorf("trust = %v, want fallback for an unchecked clock", got)
 	}
 }
 

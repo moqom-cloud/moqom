@@ -2,7 +2,7 @@
 
 // Everywhere that is not a deployment target.
 //
-// In practice this is a developer's Mac. It reports unsynchronised rather than
+// In practice this is a developer's Mac. It reports fallback time rather than
 // guessing, which means events stamped on a laptop are visibly marked as
 // unorderable against events from anywhere else — and that is the correct
 // answer, not a limitation to work around. macOS does have `ntp_adjtime`, but

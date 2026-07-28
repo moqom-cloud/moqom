@@ -21,16 +21,20 @@ option go_package = "github.com/moqom-cloud/moqom-go/admin/adminpb;adminpb";
 // the value of doing so evaporates if any of them means something slightly
 // different by "synchronised".
 enum TimeTrust {
-  // Read this as UNSYNCHRONISED, not as "probably fine".
+  // Read this as FALLBACK, not as "probably fine".
   //
   // Proto3 requires a zero, and the safe reading of a field nobody set is that
   // nothing has vouched for it. A producer too old to know about this field
   // has not told us its clock is good.
   TIME_TRUST_UNSPECIFIED = 0;
 
-  // No measurement stands behind the value. Still worth recording as one
-  // machine's account of itself; not evidence about the order of two.
-  TIME_TRUST_UNSYNCHRONISED = 1;
+  // The producer's local system clock, because it could not reach the
+  // reference. Still worth recording as one machine's account of itself; not
+  // evidence about the order of two.
+  //
+  // Named for the clock that produced it rather than the property it lacks,
+  // because that is what a reader finding it in an audit trail needs to know.
+  TIME_TRUST_FALLBACK = 1;
 
   // Measured against the reference clock, recently enough to still be tight.
   TIME_TRUST_SYNCHRONISED = 2;

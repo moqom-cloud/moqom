@@ -22,34 +22,39 @@ import (
 type Trust uint8
 
 const (
-	// Unsynchronised means no measurement stands behind this value.
+	// TrustFallback means the local system clock, because the reference
+	// could not be reached. No measurement stands behind the value.
 	//
 	// The zero value on purpose. A struct that someone forgot to fill in
 	// should read as "we do not know", never as "this is good time".
-	Unsynchronised Trust = iota
+	//
+	// Named for what it is rather than what it is not: "fallback" tells a
+	// reader which clock produced the number, which is the question they are
+	// actually asking when they find it in a log.
+	TrustFallback Trust = iota
 
-	// Synchronised means measured against the reference, recently enough.
-	Synchronised
+	// TrustSynchronised means measured against the reference, recently enough.
+	TrustSynchronised
 
-	// Authoritative means produced by a reference clock itself.
+	// TrustAuthoritative means produced by a reference clock itself.
 	//
 	// Nothing MOQOM runs claims this today and that is correct: our servers
 	// are disciplined by Cloudflare's NTP, which makes them synchronised
 	// clients of an authority rather than authorities. It exists for a
 	// self-hosted deployment with a real local reference — GPS or PTP — where
 	// the claim would be true.
-	Authoritative
+	TrustAuthoritative
 )
 
 // String matches the Swift `TimeTrust` raw values, since these cross the wire.
 func (t Trust) String() string {
 	switch t {
-	case Authoritative:
+	case TrustAuthoritative:
 		return "authoritative"
-	case Synchronised:
+	case TrustSynchronised:
 		return "synchronised"
 	default:
-		return "unsynchronised"
+		return "fallback"
 	}
 }
 
@@ -77,14 +82,18 @@ func New(at time.Time, uncertainty time.Duration, trust Trust) Timecode {
 	return Timecode{At: at, Uncertainty: uncertainty, Trust: trust}
 }
 
-// Unchecked is the fallback for a process that cannot ask a reference clock.
+// Fallback is the local system clock, for a process that cannot reach the
+// reference.
 //
-// Marked Unsynchronised so everything downstream knows what it has, and given
-// a deliberately enormous width rather than a plausible one: an undisciplined
-// clock can be wrong by years, and a bound implying otherwise would be exactly
-// the lie this type exists to prevent.
-func Unchecked(at time.Time) Timecode {
-	return New(at, 24*time.Hour, Unsynchronised)
+// Deliberate, not an accident: refusing to produce a timestamp at all would
+// throw away this machine's own account of when something happened, which is
+// the only evidence left. What must not happen is that it gets mistaken for
+// measured time, so it is marked TrustFallback and given a deliberately
+// enormous width rather than a plausible one. An undisciplined clock can be
+// wrong by years, and a bound implying otherwise would be exactly the lie this
+// type exists to prevent.
+func Fallback(at time.Time) Timecode {
+	return New(at, 24*time.Hour, TrustFallback)
 }
 
 // Earliest is the earliest instant this could be.
@@ -94,7 +103,7 @@ func (t Timecode) Earliest() time.Time { return t.At.Add(-t.Uncertainty) }
 func (t Timecode) Latest() time.Time { return t.At.Add(t.Uncertainty) }
 
 // IsTrusted reports whether this can be placed against another machine's.
-func (t Timecode) IsTrusted() bool { return t.Trust != Unsynchronised }
+func (t Timecode) IsTrusted() bool { return t.Trust != TrustFallback }
 
 // IsZero reports whether this holds no instant at all.
 func (t Timecode) IsZero() bool { return t.At.IsZero() }
@@ -103,7 +112,7 @@ func (t Timecode) IsZero() bool { return t.At.IsZero() }
 //
 // Deliberately strict: true only when the intervals do not overlap, and false
 // when they do, including when the estimates differ. Both must be trusted,
-// since an unsynchronised timecode is one machine's opinion with nothing to
+// since a fallback timecode is one machine's opinion of itself with nothing
 // place it against.
 //
 // For two entries from the *same* source, use that source's sequence number
@@ -120,7 +129,7 @@ func (t Timecode) DefinitelyPrecedes(other Timecode) bool {
 // MayCoincide reports whether these two could be the same instant.
 //
 // True whenever the intervals overlap, and true whenever either is
-// unsynchronised, since there is then no basis for ruling it out.
+// a fallback, since there is then no basis for ruling it out.
 func (t Timecode) MayCoincide(other Timecode) bool {
 	if !t.IsTrusted() || !other.IsTrusted() {
 		return true
@@ -145,7 +154,7 @@ func (t Timecode) Widened(extra time.Duration) Timecode {
 func (t Timecode) String() string {
 	stamp := t.At.UTC().Format(time.RFC3339Nano)
 	if !t.IsTrusted() {
-		return stamp + " (unsynchronised)"
+		return stamp + " (fallback clock)"
 	}
 	return fmt.Sprintf("%s ±%.1fms", stamp, float64(t.Uncertainty)/float64(time.Millisecond))
 }

@@ -8,7 +8,10 @@
 package timecode
 
 import (
+	"context"
 	"errors"
+	"log/slog"
+	"sync"
 	"testing"
 	"time"
 )
@@ -18,8 +21,8 @@ var epoch = time.Date(2026, 7, 27, 12, 0, 0, 0, time.UTC)
 func TestOverlappingTimecodesAreNotOrdered(t *testing.T) {
 	// 20ms apart, 50ms of slop each way. The second may well have happened
 	// first, and saying otherwise is the bug this type exists to prevent.
-	early := New(epoch, 50*time.Millisecond, Synchronised)
-	late := New(epoch.Add(20*time.Millisecond), 50*time.Millisecond, Synchronised)
+	early := New(epoch, 50*time.Millisecond, TrustSynchronised)
+	late := New(epoch.Add(20*time.Millisecond), 50*time.Millisecond, TrustSynchronised)
 
 	if early.DefinitelyPrecedes(late) {
 		t.Error("ordered two readings whose intervals overlap")
@@ -33,8 +36,8 @@ func TestOverlappingTimecodesAreNotOrdered(t *testing.T) {
 }
 
 func TestDisjointTimecodesAreOrdered(t *testing.T) {
-	early := New(epoch, 5*time.Millisecond, Synchronised)
-	late := New(epoch.Add(20*time.Millisecond), 5*time.Millisecond, Synchronised)
+	early := New(epoch, 5*time.Millisecond, TrustSynchronised)
+	late := New(epoch.Add(20*time.Millisecond), 5*time.Millisecond, TrustSynchronised)
 
 	if !early.DefinitelyPrecedes(late) {
 		t.Error("failed to order readings that do not overlap")
@@ -47,18 +50,18 @@ func TestDisjointTimecodesAreOrdered(t *testing.T) {
 	}
 }
 
-func TestUnsynchronisedNeverOrders(t *testing.T) {
+func TestFallbackNeverOrders(t *testing.T) {
 	// Far apart, so the intervals plainly do not overlap. It still must not
 	// order them: one machine's unchecked opinion cannot be placed against
 	// another's however different the numbers look.
-	adrift := New(epoch, time.Millisecond, Unsynchronised)
-	good := New(epoch.Add(time.Hour), time.Millisecond, Synchronised)
+	adrift := New(epoch, time.Millisecond, TrustFallback)
+	good := New(epoch.Add(time.Hour), time.Millisecond, TrustSynchronised)
 
 	if adrift.DefinitelyPrecedes(good) {
-		t.Error("ordered an unsynchronised reading against a good one")
+		t.Error("ordered a fallback reading against a good one")
 	}
 	if good.DefinitelyPrecedes(adrift) {
-		t.Error("ordered a good reading against an unsynchronised one")
+		t.Error("ordered a good reading against a fallback one")
 	}
 	if !adrift.MayCoincide(good) {
 		t.Error("nothing rules out coincidence when one side is unchecked")
@@ -68,7 +71,7 @@ func TestUnsynchronisedNeverOrders(t *testing.T) {
 func TestNegativeUncertaintyIsRefused(t *testing.T) {
 	// A negative width would invert every comparison above, turning "cannot
 	// tell" into a confident wrong answer.
-	code := New(epoch, -time.Second, Synchronised)
+	code := New(epoch, -time.Second, TrustSynchronised)
 	if code.Uncertainty != 0 {
 		t.Fatalf("kept a negative uncertainty: %v", code.Uncertainty)
 	}
@@ -78,7 +81,7 @@ func TestNegativeUncertaintyIsRefused(t *testing.T) {
 }
 
 func TestWideningOnlyGrows(t *testing.T) {
-	code := New(epoch, 10*time.Millisecond, Synchronised)
+	code := New(epoch, 10*time.Millisecond, TrustSynchronised)
 	wider := code.Widened(5 * time.Millisecond)
 
 	if wider.Uncertainty != 15*time.Millisecond {
@@ -89,8 +92,8 @@ func TestWideningOnlyGrows(t *testing.T) {
 	}
 }
 
-func TestUncheckedIsWideAndUntrusted(t *testing.T) {
-	code := Unchecked(epoch)
+func TestFallbackIsWideAndUntrusted(t *testing.T) {
+	code := Fallback(epoch)
 	if code.IsTrusted() {
 		t.Error("an unchecked clock claimed to be trustworthy")
 	}
@@ -101,7 +104,7 @@ func TestUncheckedIsWideAndUntrusted(t *testing.T) {
 	}
 }
 
-func TestZeroValueIsUnsynchronised(t *testing.T) {
+func TestZeroValueIsFallback(t *testing.T) {
 	// A struct somebody forgot to fill in must read as "we do not know".
 	var code Timecode
 	if code.IsTrusted() {
@@ -113,9 +116,9 @@ func TestTrustNamesMatchTheSwiftSDK(t *testing.T) {
 	// These strings cross the wire into MoqomCore.TimeTrust. Renaming one here
 	// without renaming it there breaks interop quietly.
 	for trust, want := range map[Trust]string{
-		Unsynchronised: "unsynchronised",
-		Synchronised:   "synchronised",
-		Authoritative:  "authoritative",
+		TrustFallback:      "fallback",
+		TrustSynchronised:  "synchronised",
+		TrustAuthoritative: "authoritative",
 	} {
 		if got := trust.String(); got != want {
 			t.Errorf("Trust(%d).String() = %q, want %q", trust, got, want)
@@ -143,7 +146,7 @@ func TestHostReportsTheKernelsOwnBound(t *testing.T) {
 	clock, _ := host(Health{Synchronised: true, MaxError: 3 * time.Millisecond}, nil)
 
 	code := clock.Now()
-	if code.Trust != Synchronised {
+	if code.Trust != TrustSynchronised {
 		t.Fatalf("trust = %v, want synchronised", code.Trust)
 	}
 	if code.Uncertainty != 3*time.Millisecond {
@@ -167,8 +170,8 @@ func TestHostBeyondTheCeilingIsNotSynchronised(t *testing.T) {
 	clock, _ := host(Health{Synchronised: true, MaxError: time.Second}, nil)
 
 	code := clock.Now()
-	if code.Trust != Unsynchronised {
-		t.Errorf("trust = %v, want unsynchronised past the ceiling", code.Trust)
+	if code.Trust != TrustFallback {
+		t.Errorf("trust = %v, want fallback past the ceiling", code.Trust)
 	}
 	if code.Uncertainty != time.Second {
 		t.Errorf("uncertainty = %v, want the real bound preserved", code.Uncertainty)
@@ -187,7 +190,7 @@ func TestHostWidensForAPendingLeapSecond(t *testing.T) {
 	if code.Uncertainty < time.Second {
 		t.Errorf("uncertainty = %v, want at least a second across a leap", code.Uncertainty)
 	}
-	if code.Trust != Unsynchronised {
+	if code.Trust != TrustFallback {
 		t.Error("a second of ambiguity is past the ceiling and should say so")
 	}
 }
@@ -250,5 +253,130 @@ func TestFromFuncLaundersNothing(t *testing.T) {
 	}
 	if !code.At.Equal(epoch) {
 		t.Errorf("At = %v, want the wrapped clock's reading", code.At)
+	}
+}
+
+// MARK: - Saying so
+
+// captured is a slog handler that keeps what it was told, for asserting on the
+// transitions rather than on formatting.
+type captured struct {
+	mutex   sync.Mutex
+	records []slog.Record
+}
+
+func (c *captured) Enabled(context.Context, slog.Level) bool { return true }
+
+func (c *captured) Handle(_ context.Context, record slog.Record) error {
+	c.mutex.Lock()
+	defer c.mutex.Unlock()
+	c.records = append(c.records, record)
+	return nil
+}
+
+func (c *captured) WithAttrs([]slog.Attr) slog.Handler { return c }
+func (c *captured) WithGroup(string) slog.Handler      { return c }
+
+func (c *captured) messages() []string {
+	c.mutex.Lock()
+	defer c.mutex.Unlock()
+	out := make([]string, 0, len(c.records))
+	for _, record := range c.records {
+		out = append(out, record.Message)
+	}
+	return out
+}
+
+func (c *captured) count(message string) int {
+	found := 0
+	for _, seen := range c.messages() {
+		if seen == message {
+			found++
+		}
+	}
+	return found
+}
+
+func TestFallingBackIsAnnounced(t *testing.T) {
+	// The failure being guarded against is silence. Now keeps returning a
+	// plausible instant with no time source, and every consumer that does not
+	// inspect Trust carries on as though nothing had happened.
+	sink := &captured{}
+	clock, _ := host(Health{Synchronised: false}, nil)
+	clock.Logger = slog.New(sink)
+
+	clock.Now()
+
+	if sink.count("clock fell back to local time") != 1 {
+		t.Errorf("messages = %v, want the fallback announced", sink.messages())
+	}
+	if sink.records[0].Level != slog.LevelWarn {
+		t.Errorf("level = %v, want a warning; a quiet fallback is the thing being prevented", sink.records[0].Level)
+	}
+}
+
+func TestTheAnnouncementIsMadeOnce(t *testing.T) {
+	// A clock that says this on every stamp buries the transition that matters
+	// under a line per event.
+	sink := &captured{}
+	clock, _ := host(Health{Synchronised: false}, nil)
+	clock.Logger = slog.New(sink)
+
+	for range 100 {
+		clock.Now()
+	}
+
+	if got := sink.count("clock fell back to local time"); got != 1 {
+		t.Errorf("said it %d times for 100 stamps, want 1", got)
+	}
+}
+
+func TestRecoveryIsAnnouncedToo(t *testing.T) {
+	sink := &captured{}
+	health := Health{Synchronised: false}
+	at := epoch
+	clock := &Host{
+		Ceiling: DefaultCeiling,
+		Logger:  slog.New(sink),
+		now:     func() time.Time { return at },
+		read:    func() (Health, error) { return health, nil },
+		expiry:  pollInterval,
+	}
+
+	clock.Now()
+	health = Health{Synchronised: true, MaxError: 3 * time.Millisecond}
+	at = at.Add(2 * pollInterval)
+	clock.Now()
+
+	if sink.count("clock is disciplined") != 1 {
+		t.Errorf("messages = %v, want the recovery announced", sink.messages())
+	}
+}
+
+func TestFallbackStampsAreCounted(t *testing.T) {
+	// Greppable is not alarmable. An operator needs a number to page on, not a
+	// log line somebody reads afterwards.
+	clock, _ := host(Health{Synchronised: false}, nil)
+	clock.Logger = slog.New(&captured{})
+
+	for range 7 {
+		clock.Now()
+	}
+
+	if got := clock.Fallbacks(); got != 7 {
+		t.Errorf("Fallbacks() = %d, want 7", got)
+	}
+}
+
+func TestTrustedStampsAreNotCountedAsFallbacks(t *testing.T) {
+	clock, _ := host(Health{Synchronised: true, MaxError: time.Millisecond}, nil)
+	clock.Logger = slog.New(&captured{})
+
+	for range 7 {
+		clock.Now()
+	}
+
+	if got := clock.Fallbacks(); got != 0 {
+		t.Errorf("Fallbacks() = %d, want 0", got)
 	}
 }

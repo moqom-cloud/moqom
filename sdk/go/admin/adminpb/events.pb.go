@@ -210,7 +210,7 @@ type RoomEvent struct {
 	// whose participants are on three continents produces a log that reads like
 	// a total order and is not one. Absent from events recorded before the
 	// control plane tracked its own clock health, which should be read as
-	// unsynchronised.
+	// fallback time.
 	Timecode *Timecode `protobuf:"bytes,6,opt,name=timecode,proto3" json:"timecode,omitempty"`
 	// Types that are valid to be assigned to Body:
 	//

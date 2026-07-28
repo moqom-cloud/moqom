@@ -39,15 +39,19 @@ const (
 type TimeTrust int32
 
 const (
-	// Read this as UNSYNCHRONISED, not as "probably fine".
+	// Read this as FALLBACK, not as "probably fine".
 	//
 	// Proto3 requires a zero, and the safe reading of a field nobody set is that
 	// nothing has vouched for it. A producer too old to know about this field
 	// has not told us its clock is good.
 	TimeTrust_TIME_TRUST_UNSPECIFIED TimeTrust = 0
-	// No measurement stands behind the value. Still worth recording as one
-	// machine's account of itself; not evidence about the order of two.
-	TimeTrust_TIME_TRUST_UNSYNCHRONISED TimeTrust = 1
+	// The producer's local system clock, because it could not reach the
+	// reference. Still worth recording as one machine's account of itself; not
+	// evidence about the order of two.
+	//
+	// Named for the clock that produced it rather than the property it lacks,
+	// because that is what a reader finding it in an audit trail needs to know.
+	TimeTrust_TIME_TRUST_FALLBACK TimeTrust = 1
 	// Measured against the reference clock, recently enough to still be tight.
 	TimeTrust_TIME_TRUST_SYNCHRONISED TimeTrust = 2
 	// Produced by a reference clock itself.
@@ -63,15 +67,15 @@ const (
 var (
 	TimeTrust_name = map[int32]string{
 		0: "TIME_TRUST_UNSPECIFIED",
-		1: "TIME_TRUST_UNSYNCHRONISED",
+		1: "TIME_TRUST_FALLBACK",
 		2: "TIME_TRUST_SYNCHRONISED",
 		3: "TIME_TRUST_AUTHORITATIVE",
 	}
 	TimeTrust_value = map[string]int32{
-		"TIME_TRUST_UNSPECIFIED":    0,
-		"TIME_TRUST_UNSYNCHRONISED": 1,
-		"TIME_TRUST_SYNCHRONISED":   2,
-		"TIME_TRUST_AUTHORITATIVE":  3,
+		"TIME_TRUST_UNSPECIFIED":   0,
+		"TIME_TRUST_FALLBACK":      1,
+		"TIME_TRUST_SYNCHRONISED":  2,
+		"TIME_TRUST_AUTHORITATIVE": 3,
 	}
 )
 
@@ -924,10 +928,10 @@ const file_moqom_admin_v1_common_proto_rawDesc = "" +
 	"\fon_behalf_of\x18\x01 \x01(\tR\n" +
 	"onBehalfOf\x12\x16\n" +
 	"\x06reason\x18\x02 \x01(\tR\x06reason\x12'\n" +
-	"\x0fidempotency_key\x18\x03 \x01(\tR\x0eidempotencyKey*\x81\x01\n" +
+	"\x0fidempotency_key\x18\x03 \x01(\tR\x0eidempotencyKey*{\n" +
 	"\tTimeTrust\x12\x1a\n" +
-	"\x16TIME_TRUST_UNSPECIFIED\x10\x00\x12\x1d\n" +
-	"\x19TIME_TRUST_UNSYNCHRONISED\x10\x01\x12\x1b\n" +
+	"\x16TIME_TRUST_UNSPECIFIED\x10\x00\x12\x17\n" +
+	"\x13TIME_TRUST_FALLBACK\x10\x01\x12\x1b\n" +
 	"\x17TIME_TRUST_SYNCHRONISED\x10\x02\x12\x1c\n" +
 	"\x18TIME_TRUST_AUTHORITATIVE\x10\x03*\x97\x01\n" +
 	"\fPublishScope\x12\x1d\n" +
