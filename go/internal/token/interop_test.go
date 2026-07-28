@@ -15,6 +15,8 @@ package token
 import (
 	"crypto/ed25519"
 	"encoding/json"
+	"errors"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"testing"
@@ -26,7 +28,20 @@ import (
 // Where the Rust side reads it from. A committed fixture rather than a running
 // process on both sides: the Rust test then needs no Go toolchain, so it runs on
 // every `cargo test` instead of only where the harness is set up.
-const fixturePath = "../../../rs/moqom-relay/tests/testdata/tokens.json"
+//
+// That property is why the fixture lives in the engine repository rather than
+// here, next to the verifier that reads it, and why this side is the one that
+// has to go looking. MOQOM_ENGINE_ROOT says where; the fallback assumes a
+// sibling checkout, which is where both land if you cloned them into the same
+// directory.
+const fixtureUnder = "moqom-relay/tests/testdata/tokens.json"
+
+func fixturePath() string {
+	if root := os.Getenv("MOQOM_ENGINE_ROOT"); root != "" {
+		return filepath.Join(root, fixtureUnder)
+	}
+	return filepath.Join("../../../../moqom-engine", fixtureUnder)
+}
 
 // A fixed seed, so regenerating the fixture produces the same bytes and a diff
 // shows a real change rather than fresh randomness.
@@ -125,22 +140,32 @@ func buildFixture(t *testing.T) fixture {
 
 func TestInteropFixture(t *testing.T) {
 	built := buildFixture(t)
+	path := fixturePath()
 
 	if os.Getenv("MOQOM_WRITE_FIXTURES") == "1" {
 		encoded, err := json.MarshalIndent(built, "", "  ")
 		if err != nil {
 			t.Fatalf("encoding the fixture: %v", err)
 		}
-		if err := os.MkdirAll(filepath.Dir(fixturePath), 0o755); err != nil {
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 			t.Fatalf("making the fixture directory: %v", err)
 		}
-		if err := os.WriteFile(fixturePath, append(encoded, '\n'), 0o644); err != nil {
+		if err := os.WriteFile(path, append(encoded, '\n'), 0o644); err != nil {
 			t.Fatalf("writing the fixture: %v", err)
 		}
-		t.Logf("wrote %s", fixturePath)
+		t.Logf("wrote %s", path)
 	}
 
-	raw, err := os.ReadFile(fixturePath)
+	raw, err := os.ReadFile(path)
+	// A missing fixture means the engine repository is not checked out, which is
+	// an ordinary state for someone working on the control plane alone -- so it
+	// skips rather than fails. That would be a quiet way to lose the only check
+	// that the two token implementations agree, so CI sets
+	// MOQOM_REQUIRE_INTEROP and turns the skip back into a failure.
+	if errors.Is(err, fs.ErrNotExist) && os.Getenv("MOQOM_REQUIRE_INTEROP") != "1" {
+		t.Skipf("no fixture at %s: check out moqom-engine beside this repository, "+
+			"or set MOQOM_ENGINE_ROOT", path)
+	}
 	if err != nil {
 		t.Fatalf("reading the fixture (regenerate with MOQOM_WRITE_FIXTURES=1): %v", err)
 	}

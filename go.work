@@ -1,12 +1,21 @@
-// Two modules, one tree, until the SDK moves to its own repository.
+// The control plane and the SDK it is developed against, which now live in
+// different repositories.
 //
-// The control plane is BUSL-1.1 and the SDK is Apache-2.0, so they cannot be one
-// module; the SDK's path names a public repository it does not live in yet, so
-// nothing here can resolve it over the network. A workspace is what makes both
-// true at once during development.
+// They cannot be one module: the control plane is BUSL-1.1 and the SDK is
+// Apache-2.0, and the boundary between them has to be the gRPC contract in
+// proto/ rather than a package import. But they are still written together --
+// the control plane's own tests drive the SDK against a real server over
+// bufconn, which is worth considerably more than testing a mirror against a
+// stub -- so development wants both trees editable at once.
+//
+// This assumes moqom-go is checked out beside this repository, which is where
+// it lands if you cloned both into the same directory. It is required rather
+// than convenient: moqom-go has no published tag yet, so there is no version
+// for the network to resolve, and go/go.mod carries a matching `replace` for
+// anyone building with GOWORK=off. Both go away at the first release.
 go 1.23
 
 use (
 	./go
-	./sdk/go
+	../moqom-go
 )

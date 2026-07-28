@@ -31,7 +31,7 @@ Evidence is a list. Each entry is either a path glob:
 
 ```yaml
     evidence:
-      - rs/moqom-proto/src/varint.rs
+      - go/internal/server/rooms.go
       - deploy/modules/*/main.tf
 ```
 
@@ -39,13 +39,13 @@ or a path with a regex that must match inside it:
 
 ```yaml
     evidence:
-      - path: rs/Cargo.toml
-        contains: '\[patch\.crates-io\]'
+      - path: go/go.mod
+        contains: 'moqom-go'
 ```
 
 The `contains` form is for claims a filename cannot support. `vendor/quinn/`
-existing proves someone copied a directory; `[patch.crates-io]` in `rs/Cargo.toml`
-proves the build actually resolves to it. Reach for it whenever the interesting
+existing proves someone copied a directory; `[patch.crates-io]` in the engine's
+`Cargo.toml` proves the build actually resolves to it. Reach for it whenever the interesting
 part of an item is a decision rather than a file — an ALPN string, a lint being
 denied, a feature flag being off.
 
@@ -56,9 +56,10 @@ passing test file is harder to produce accidentally than a module.
 
 ### Evidence in another repository
 
-The plan covers the platform, but the Swift SDK lives in `moqom-swift` — SwiftPM
-will not resolve a package nested in a monorepo, so that split is forced by the
-package manager. Name the repository and the entry becomes relative to it:
+The plan covers the whole platform, and most of the platform is no longer in
+this repository. The engine is in `moqom-engine`, the client SDK in
+`moqom-swift`, the backend SDKs in `moqom-go` and `moqom-rust`. Name the
+repository and the entry becomes relative to it:
 
 ```yaml
     evidence:
@@ -67,17 +68,20 @@ package manager. Name the repository and the entry becomes relative to it:
         contains: 'customPostProcessing'
 ```
 
-These resolve against a **sibling checkout** — `../moqom-swift` next to this
-repo — which is where both land if you clone them into the same directory. Clone
-both and the entry is checked exactly like a local one.
+These resolve against a **sibling checkout** — `../moqom-engine` and friends,
+next to this repo — which is where they all land if you clone them into the same
+directory. Clone them and the entry is checked exactly like a local one.
 
 With no sibling present the entry is reported as external and left unjudged. It
 is never counted as verified and never fails the run, so a completed item whose
-evidence is all external shows up as neither. That is a weaker guarantee, and it
-is weak in the right place: all this check could prove about those files is that
-they exist, while `moqom-swift`'s own CI builds them and runs their tests. The
-property worth protecting is that unresolved evidence is never silently counted
-as verified, and it is not.
+evidence is all external shows up as neither.
+
+That fallback used to cover a handful of Swift entries. It now covers most of
+the plan, which changes what it costs: a run against this repository alone would
+pass while judging almost nothing. So CI clones the siblings, and the fallback
+is back to being what it was meant for — someone working on the control plane
+who has not cloned the rest. The property worth protecting is that unresolved
+evidence is never silently counted as verified, and it is not.
 
 ## Items with no evidence
 

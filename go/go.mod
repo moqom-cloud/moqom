@@ -2,7 +2,12 @@ module github.com/moqom-cloud/moqom/go
 
 go 1.23
 
-replace github.com/moqom-cloud/moqom-go => ../sdk/go
+// The SDK is its own repository, because `go get` resolves a module by fetching
+// its path and a path is a URL. Until it has a published tag there is no
+// version to resolve, so this points at a sibling checkout -- which is where it
+// lands if you cloned both into the same directory. Drop this at the first
+// release and name a real version above.
+replace github.com/moqom-cloud/moqom-go => ../../moqom-go
 
 require (
 	github.com/moqom-cloud/moqom-go v0.0.0-00010101000000-000000000000

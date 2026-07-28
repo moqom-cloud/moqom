@@ -177,8 +177,8 @@ that it succeeds.
 
 Some values cross language boundaries and must agree numerically.
 
-**Time trust**, matching `Trust` in `go/internal/timecode` and in
-`rs/moqom-relay/src/clock.rs`:
+**Time trust**, matching `Trust` in `go/internal/timecode` here and in
+`moqom-relay/src/clock.rs` in the engine repository:
 
 | Value | Meaning |
 |---|---|

@@ -14,99 +14,46 @@ env:
   RUSTFLAGS: -D warnings
 
 jobs:
-  rust:
-    name: Rust
-    runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: rs
-    steps:
-      - uses: actions/checkout@v7
-
-      # No toolchain action: rust-toolchain.toml pins the version, and letting
-      # rustup honour it keeps CI and local builds on exactly one compiler.
-      - name: Show toolchain
-        run: rustc --version && cargo --version
-
-      - uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: rs
-
-      - name: Format
-        run: cargo fmt --all --check
-
-      - name: Clippy
-        run: cargo clippy --all-targets --all-features -- -D warnings
-
-      - name: Test
-        run: cargo test --all-features
-
-      - name: Docs
-        run: cargo doc --no-deps --all-features
-        env:
-          RUSTDOCFLAGS: -D warnings
-
-  # A short fuzz run on every change, sized to catch a regression that the
-  # property tests miss without holding up a PR. The deep runs happen on the
-  # schedule in fuzz.yml; this is a smoke test, and it is only meaningful
-  # because the corpus is seeded first.
-  fuzz-smoke:
-    name: Fuzz (smoke)
-    runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: rs
-    steps:
-      - uses: actions/checkout@v7
-
-      - name: Install nightly
-        run: rustup toolchain install nightly --profile minimal
-
-      - uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: rs
-
-      - name: Install cargo-fuzz
-        run: cargo install cargo-fuzz --locked
-
-      - name: Seed corpus
-        run: |
-          cargo run --example seed-corpus --features testing -- fuzz/corpus/decoders
-          cargo run --example seed-corpus --features testing -- fuzz/corpus/control_frame
-
-      - name: Fuzz decoders
-        run: cargo +nightly fuzz run decoders -- -max_total_time=60
-
-      - name: Fuzz control frame stream
-        run: cargo +nightly fuzz run control_frame -- -max_total_time=60
-
-      - name: Upload crashes
-        if: failure()
-        uses: actions/upload-artifact@v4
-        with:
-          name: fuzz-artifacts
-          path: rs/fuzz/artifacts/
-
-  # Vendoring quinn is only worth anything if it stays unmodified and is
-  # actually the copy that gets linked. Both claims decay silently, so both are
-  # checked rather than trusted.
-  vendor:
-    name: Vendored quinn
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v7
-      - name: Verify
-        run: ./vendor/verify-quinn.sh
-
   # The plan is a document, so nothing about it fails to compile. Checking it
   # against the tree is what keeps it from quietly becoming fiction -- in both
   # directions, since an item stuck on "pending" after the work landed misleads
   # exactly as much as one marked done that was never built.
+  #
+  # Most of the evidence now lives in other repositories, and unresolvable
+  # evidence is reported as external rather than failed -- so checking out only
+  # this one would leave the job passing while judging almost nothing. The
+  # siblings are cloned to keep it meaningful.
   plan:
     name: Plan
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
+        with:
+          path: moqom
+
+      - uses: actions/checkout@v7
+        with:
+          repository: moqom-cloud/moqom-engine
+          path: moqom-engine
+          token: ${{ secrets.SDK_REPO_TOKEN }}
+
+      - uses: actions/checkout@v7
+        with:
+          repository: moqom-cloud/moqom-go
+          path: moqom-go
+          token: ${{ secrets.SDK_REPO_TOKEN }}
+
+      - uses: actions/checkout@v7
+        with:
+          repository: moqom-cloud/moqom-rust
+          path: moqom-rust
+          token: ${{ secrets.SDK_REPO_TOKEN }}
+
+      - uses: actions/checkout@v7
+        with:
+          repository: moqom-cloud/moqom-swift
+          path: moqom-swift
+          token: ${{ secrets.SDK_REPO_TOKEN }}
 
       - uses: actions/setup-python@v6
         with:
@@ -115,6 +62,7 @@ jobs:
       - run: pip install pyyaml
 
       - name: Check the plan against the tree
+        working-directory: moqom
         run: python3 tools/plan-check.py
 
   # Terraform is the one layer where a mistake is discovered by a failed apply
@@ -151,91 +99,103 @@ jobs:
             echo "::endgroup::"
           done
 
+  # The SDK is a repository of its own but is developed here, so this checks out
+  # both: the control plane's own tests drive the Go SDK against a real server
+  # over bufconn, which is worth considerably more than testing a mirror against
+  # a stub. go.work is what points at the sibling, and it is committed.
   go:
     name: Go
     runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: go
     steps:
       - uses: actions/checkout@v7
+        with:
+          path: moqom
+
+      - uses: actions/checkout@v7
+        with:
+          repository: moqom-cloud/moqom-go
+          path: moqom-go
+          token: ${{ secrets.SDK_REPO_TOKEN }}
+
+      # For the token fixture only -- nothing here builds Rust. Checking out the
+      # engine is cheaper than the alternative, which is a cross-language check
+      # that skips itself in CI and reports green.
+      - uses: actions/checkout@v7
+        with:
+          repository: moqom-cloud/moqom-engine
+          path: moqom-engine
+          token: ${{ secrets.SDK_REPO_TOKEN }}
 
       - uses: actions/setup-go@v7
         with:
-          go-version-file: go/go.mod
+          go-version-file: moqom/go/go.mod
           # Re-enable once there is a go.sum; setup-go's cache requires one.
           cache: false
 
       - name: Vet
+        working-directory: moqom/go
         run: go vet ./...
 
       - name: Build
+        working-directory: moqom/go
         run: go build ./...
 
-      # Covers the Go SDK too: the control plane's own tests drive it against a
-      # real server over bufconn, which is worth more than testing it against a
-      # stub in its own module.
+      # MOQOM_REQUIRE_INTEROP turns the token fixture's "engine not checked out"
+      # skip back into a failure. The engine repository is checked out for it,
+      # since a skipped cross-language check is indistinguishable from a passing
+      # one in a summary.
       - name: Test
+        working-directory: moqom/go
+        env:
+          MOQOM_REQUIRE_INTEROP: "1"
+          MOQOM_ENGINE_ROOT: ${{ github.workspace }}/moqom-engine
         run: go test ./...
 
       - name: Vet the SDK
-        working-directory: sdk/go
+        working-directory: moqom-go
         run: go vet ./...
 
       - name: Test the SDK
-        working-directory: sdk/go
+        working-directory: moqom-go
         run: go test ./...
-
-  # A workspace of its own, so it needs its own job: rs/ patches crates.io to a
-  # vendored quinn and this deliberately does not, which is what keeps a QUIC
-  # stack out of a backend's dependency graph.
-  sdk-rust:
-    name: Rust SDK
-    runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: sdk/rust
-    steps:
-      - uses: actions/checkout@v7
-
-      - uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: sdk/rust
-
-      - name: Format
-        run: cargo fmt --all --check
-
-      - name: Clippy
-        run: cargo clippy --all-targets -- -D warnings
-
-      # The interop tests are #[ignore]d and stay skipped here. The job below is
-      # the one that runs them, and it needs a Go toolchain to do it.
-      - name: Test
-        run: cargo test
-
-      - name: Docs
-        run: cargo doc --no-deps
-        env:
-          RUSTDOCFLAGS: -D warnings
 
   # The seam no single-language job can reach. A capability is a bit in each SDK
   # and an enum on the wire; a mapping table with two rows pointing at the same
   # wire value passes every test in every package above while handing a moderator
   # a power somebody meant to withhold.
+  #
+  # Both SDKs now live elsewhere, which makes this the job that would rot first
+  # if it were left to each of them: neither can run it alone, and a check that
+  # belongs to nobody stops running. It stays with the contract it is checking.
   interop:
     name: Interop (SDKs against the control plane)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
+        with:
+          path: moqom
+
+      - uses: actions/checkout@v7
+        with:
+          repository: moqom-cloud/moqom-go
+          path: moqom-go
+          token: ${{ secrets.SDK_REPO_TOKEN }}
+
+      - uses: actions/checkout@v7
+        with:
+          repository: moqom-cloud/moqom-rust
+          path: moqom-rust
+          token: ${{ secrets.SDK_REPO_TOKEN }}
 
       - uses: actions/setup-go@v7
         with:
-          go-version-file: go/go.mod
+          go-version-file: moqom/go/go.mod
           cache: false
 
       - uses: Swatinem/rust-cache@v2
         with:
-          workspaces: sdk/rust
+          workspaces: moqom-rust
 
       - name: Run
+        working-directory: moqom
         run: ./tools/interop.sh

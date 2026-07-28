@@ -10,57 +10,82 @@ overview: "Build MOQOM as a Rust data plane implementing IETF MOQT draft-19 from
 # Read docs/PLAN-CHECK.md before adding evidence to something.
 todos:
   - id: scaffold
-    content: "Scaffold the monorepo: rs/ Cargo workspace, go/ module, sdk/, deploy/. Set up CI with clippy, rustfmt, golangci-lint, and cross-compilation targets for iOS/Android/WASM."
+    content: "Scaffold the platform: a Cargo workspace for the engine, a Go module for the control plane, the SDK modules, and deploy/. Set up CI with clippy, rustfmt, golangci-lint, and cross-compilation targets for iOS/Android/WASM. Since split into sibling repositories, each carrying its own CI."
     status: completed
     evidence:
-      - rs/Cargo.toml
+      - repo: moqom-engine
+        path: Cargo.toml
       - go/go.mod
       - .github/workflows/ci.yml
-      - path: rs/Cargo.toml
+      - repo: moqom-engine
+        path: Cargo.toml
         contains: '\[workspace\]'
   - id: proto
     content: "Implement moqom-proto: sans-io draft-19 codec covering varints, the object data model (Track/Group/Subgroup/Object), control messages (SETUP, SUBSCRIBE, PUBLISH, ANNOUNCE, FETCH, TRACK_STATUS), subgroup stream framing, and datagrams. Make the object-to-transport mapping a deliberate latency decision from the start: datagrams for small latency-critical objects (audio, small frames) to match RTP's no-head-of-line-blocking property, streams for large objects where ordering and flow control earn their keep. Mapping everything onto streams is a concrete way to end up slower than WebRTC. Include property-based round-trip tests and a cargo-fuzz target on the decoder."
     status: in_progress
     remaining: "The draft-19 10.2 parameter registry (AUTHORIZATION_TOKEN and its alias cache, the location and priority filters, delivery timeouts, FORWARD, LARGEST_OBJECT); differential testing against moq-rs or moxygen. Fetch framing landed with the relay cache: FETCH_HEADER, the delta-coded record encoding, and both end-of-range markers, ported from the Swift implementation so the two agree on the parts the draft leaves ambiguous -- whether a marker's IDs are absolute (they are, or a partial cache cannot describe its own holes) and whether a range's end is inclusive (FetchEnd carries the off-by-one once, since the prose and the field description disagree)."
     evidence:
-      - rs/moqom-proto/src/varint.rs
-      - rs/moqom-proto/src/model/ids.rs
-      - rs/moqom-proto/src/model/name.rs
-      - rs/moqom-proto/src/control/frame.rs
-      - rs/moqom-proto/src/control/messages/subscribe.rs
-      - rs/moqom-proto/src/control/messages/fetch.rs
-      - rs/moqom-proto/src/control/messages/publish.rs
-      - rs/moqom-proto/src/control/messages/namespace.rs
-      - rs/moqom-proto/src/data/datagram.rs
-      - rs/moqom-proto/src/data/subgroup.rs
-      - rs/moqom-proto/src/data/fetch.rs
-      - rs/moqom-proto/src/testing.rs
-      - rs/fuzz/fuzz_targets/decoders.rs
+      - repo: moqom-engine
+        path: moqom-proto/src/varint.rs
+      - repo: moqom-engine
+        path: moqom-proto/src/model/ids.rs
+      - repo: moqom-engine
+        path: moqom-proto/src/model/name.rs
+      - repo: moqom-engine
+        path: moqom-proto/src/control/frame.rs
+      - repo: moqom-engine
+        path: moqom-proto/src/control/messages/subscribe.rs
+      - repo: moqom-engine
+        path: moqom-proto/src/control/messages/fetch.rs
+      - repo: moqom-engine
+        path: moqom-proto/src/control/messages/publish.rs
+      - repo: moqom-engine
+        path: moqom-proto/src/control/messages/namespace.rs
+      - repo: moqom-engine
+        path: moqom-proto/src/data/datagram.rs
+      - repo: moqom-engine
+        path: moqom-proto/src/data/subgroup.rs
+      - repo: moqom-engine
+        path: moqom-proto/src/data/fetch.rs
+      - repo: moqom-engine
+        path: moqom-proto/src/testing.rs
+      - repo: moqom-engine
+        path: fuzz/fuzz_targets/decoders.rs
   - id: transport
     content: "Build moqom-transport on quinn: a single rustls ServerConfig carrying both the MOQT ALPN and h3 with post-handshake dispatch, web-transport-quinn Session::raw() so raw QUIC and WebTransport yield one session type, a QUIC-LB ConnectionIdGenerator (byte 0 config, bytes 1-8 server ID, bytes 9+ nonce with shard index), IP_PKTINFO source-address handling for direct-server-return paths, and the Transport trait clients implement over platform-native stacks. Tune rmem_max and the stream windows before measuring anything."
     status: in_progress
     remaining: "QUIC-LB routable ConnectionIdGenerator; IP_PKTINFO source-address handling for direct-server-return; socket buffer and stream window tuning. Session establishment over both carriers is done and tested."
     evidence:
-      - rs/moqom-transport/src/lib.rs
-      - rs/moqom-transport/src/server.rs
-      - rs/moqom-transport/tests/loopback.rs
-      - path: rs/moqom-transport/src/lib.rs
+      - repo: moqom-engine
+        path: moqom-transport/src/lib.rs
+      - repo: moqom-engine
+        path: moqom-transport/src/server.rs
+      - repo: moqom-engine
+        path: moqom-transport/tests/loopback.rs
+      - repo: moqom-engine
+        path: moqom-transport/src/lib.rs
         contains: 'moqt-19'
   - id: vendor-quinn
     content: "Vendor quinn unmodified into vendor/quinn, pinned to a commit and wired through [patch.crates-io]. Keep the diff empty so re-vendoring stays trivial, and document the update procedure plus the RustSec/advisory watch."
     status: completed
     evidence:
-      - vendor/quinn/quinn/Cargo.toml
-      - vendor/verify-quinn.sh
-      - vendor/quinn/VENDORED.md
-      - path: rs/Cargo.toml
+      - repo: moqom-engine
+        path: vendor/quinn/quinn/Cargo.toml
+      - repo: moqom-engine
+        path: vendor/verify-quinn.sh
+      - repo: moqom-engine
+        path: vendor/quinn/VENDORED.md
+      - repo: moqom-engine
+        path: Cargo.toml
         contains: '\[patch\.crates-io\]'
   - id: moqom-cc
     content: "Build moqom-cc, a media-aware congestion controller implementing quinn_proto::congestion::Controller and ControllerFactory. Deadline awareness from draft-19 section 8 delivery timeouts, the audio/base/enhancement value hierarchy, ECN as an early congestion signal, and a latency objective rather than a throughput one. Only start after the lossy-link harness exists, and A/B against Cubic and BBR behind the same trait. Gate on fairness to competing TCP and QUIC flows."
     status: pending
     evidence:
-      - rs/moqom-cc/Cargo.toml
-      - rs/moqom-cc/src/lib.rs
+      - repo: moqom-engine
+        path: moqom-cc/Cargo.toml
+      - repo: moqom-engine
+        path: moqom-cc/src/lib.rs
   - id: encoder-feedback
     content: "Close the bandwidth-estimate-to-encoder loop: surface moqom-cc's estimate through moqom-client to the platform encoders (VTCompressionSession AverageBitRate on Apple, MediaCodec setParameters on Android, VideoEncoder.configure in the browser, obs_encoder_update in OBS). This is the loop WebRTC has via GCC and most MoQ stacks lack."
     status: pending
@@ -75,16 +100,24 @@ todos:
     status: in_progress
     remaining: "Sessions hold: SETUP over both QUIC and WebTransport on one port, PUBLISH_NAMESPACE and its withdrawal, SUBSCRIBE_NAMESPACE with suffix-relative announcements, SUBSCRIBE forwarded upstream, and subgroup fan-out that rewrites the track alias per downstream session. Verified two ways -- integration tests with a Rust client, and three tests in MoqomKit that publish and subscribe through the binary over a socket, which is the first differential check against an independently written codec. The group cache landed with FETCH over it, in both the standalone and joining forms, which is what makes a late joiner warm-start on the group in progress and a client that dropped its connection able to ask for what it missed rather than wait for the next keyframe. Caching is a tee off the forward path rather than a stage in it: forwarding stays a byte pump that never parses an object, the cache parses a copy, and a stream it cannot parse costs a cache miss instead of a dropped forward -- so E2EE and retention stay compatible. Retention is bounded by group count and by byte budgets per track and per process, evicting whole groups because half a group is undecodable, and configurable down to nothing for operators who must not store media. Three things are still missing and one of them is the point of a relay: upstream subscriptions are not deduplicated, so two viewers of one track cause two SUBSCRIBEs to the publisher and the bandwidth saving that justifies the hop is not there yet. Then there is no congestion-aware scheduling, so a slow subscriber back-pressures the publisher instead of being dropped a layer, which is the wrong direction and what moqom-cc is for. Authentication has since landed and authorisation has not, and the two are worth keeping apart: the relay now checks the signature on the Setup token, so it knows which user on which device it is talking to and can charge limits to a person rather than a connection, but it still does not check whether that person may publish under the namespace they announce, belongs to the room they name, or has been banned. Anyone with any valid token can publish anywhere. Not safe to expose to the internet until that lands."
     evidence:
-      - rs/moqom-relay/Cargo.toml
-      - rs/moqom-relay/src/lib.rs
-      - rs/moqom-relay/src/cache.rs
-      - rs/moqom-relay/src/quota.rs
-      - rs/moqom-relay/src/identity.rs
-      - path: rs/moqom-relay/tests/relay.rs
+      - repo: moqom-engine
+        path: moqom-relay/Cargo.toml
+      - repo: moqom-engine
+        path: moqom-relay/src/lib.rs
+      - repo: moqom-engine
+        path: moqom-relay/src/cache.rs
+      - repo: moqom-engine
+        path: moqom-relay/src/quota.rs
+      - repo: moqom-engine
+        path: moqom-relay/src/identity.rs
+      - repo: moqom-engine
+        path: moqom-relay/tests/relay.rs
         contains: 'a_client_that_missed_objects_can_ask_for_them'
-      - path: rs/moqom-relay/tests/limits.rs
+      - repo: moqom-engine
+        path: moqom-relay/tests/limits.rs
         contains: 'a_subscription_over_the_limit_is_refused_with_a_retry_after'
-      - path: rs/moqom-relay/tests/interop_tokens.rs
+      - repo: moqom-engine
+        path: moqom-relay/tests/interop_tokens.rs
         contains: 'tokens_minted_by_the_control_plane_verify_here'
   - id: control-plane
     content: "Build the Go control plane: tenant and user models with string user IDs, device registration binding a P-256 JWK thumbprint, CAT/CWT token minting with the moqt claim and cnf/jkt binding, DPoP proof verification, moqt-reval revalidation, and a stream registry with a discovery API. Expose gRPC to the relay."
@@ -112,21 +145,34 @@ todos:
     status: in_progress
     remaining: "Both SDKs cover the admin surface -- rooms and watchdogs, moderation, token minting, verification keys, and the event stream -- and both are tested against the real control plane rather than only against a stub: tools/interop.sh builds moqom-control and runs each SDK's calls through it, including sending all twenty-one capabilities and all four publish scopes one at a time and reading them back, which is the only way to catch two rows of a mapping table pointing at the same wire value. What is missing: the Rust SDK does not yet speak MOQT, so a recorder, a safety classifier or an agent written in Rust can administer a room but cannot receive a frame from it -- that is the remaining half of this item and it depends on the relay authorising anything. Neither SDK is published; the Rust crate is publish = false and the Go module resolves through a replace directive, because the interfaces will move while the relay is being wired to the control plane. Idempotency is honoured on the way in but keys are stored in memory with the rest of the state, so it survives a retry and not a restart."
     evidence:
-      - sdk/go/moqom.go
-      - sdk/go/moderation.go
-      - sdk/go/tokens.go
-      - sdk/go/events.go
-      - sdk/go/moqom_test.go
-      - sdk/go/LICENSE
-      - sdk/rust/moqom-sdk/src/client.rs
-      - sdk/rust/moqom-sdk/src/moderation.rs
-      - sdk/rust/moqom-sdk/src/events.rs
-      - sdk/rust/moqom-sdk/tests/admin.rs
-      - sdk/rust/moqom-sdk/tests/interop.rs
-      - sdk/rust/moqom-sdk/LICENSE
+      - repo: moqom-go
+        path: moqom.go
+      - repo: moqom-go
+        path: moderation.go
+      - repo: moqom-go
+        path: tokens.go
+      - repo: moqom-go
+        path: events.go
+      - repo: moqom-go
+        path: moqom_test.go
+      - repo: moqom-go
+        path: LICENSE
+      - repo: moqom-rust
+        path: moqom-sdk/src/client.rs
+      - repo: moqom-rust
+        path: moqom-sdk/src/moderation.rs
+      - repo: moqom-rust
+        path: moqom-sdk/src/events.rs
+      - repo: moqom-rust
+        path: moqom-sdk/tests/admin.rs
+      - repo: moqom-rust
+        path: moqom-sdk/tests/interop.rs
+      - repo: moqom-rust
+        path: moqom-sdk/LICENSE
       - go/internal/server/sdk_test.go
       - tools/interop.sh
-      - path: sdk/rust/moqom-sdk/tests/interop.rs
+      - repo: moqom-rust
+        path: moqom-sdk/tests/interop.rs
         contains: 'capabilities_mean_the_same_thing_on_both_sides'
       - path: go/internal/server/sdk_test.go
         contains: 'Capabilit'
@@ -151,7 +197,8 @@ todos:
     content: "Give the relay a metering path separate from its metrics, because the cardinality rule that keeps Prometheus healthy is exactly what disqualifies it from billing: metrics.rs strips tenant, room, and username from every label on purpose, and a counter with no tenant on it that resets on restart cannot produce an invoice. Emit tenant-attributed usage records over the existing relay link - per-track egress so cross-audience cohost bandwidth is a policy choice rather than archaeology, ingress, connected duration, and layer actually served. Aggregate in the relay and send a session summary rather than per-object rows, which would be billions a day; checkpoint every ~60s so the unbilled window on a relay crash is bounded and a six-hour stream is not one row written at the end. A reconnect is one session with a gap, matching the watchdog rule."
     status: pending
     evidence:
-      - rs/moqom-relay/src/usage.rs
+      - repo: moqom-engine
+        path: moqom-relay/src/usage.rs
   - id: metering-ledger
     content: "Build the usage ledger in Postgres, derived from the durable event log rather than from a parallel counter, so the invoice and the audit trail cannot drift and a disputed charge can be shown exactly when it started. Usage records land in the same outbox transaction as the state change that caused them; the ledger is an append-only table with idempotency keys, and rated line items are a projection over it that can be recomputed rather than a running total that can be wrong. Exploit the trusted clock: every event already carries a Timecode with an uncertainty and a trust level, so a billing dispute can be answered with whether the measurement was made against a synchronised clock, and honestly caveated when it was not - almost nothing else in this market can answer that. Roster and meter must read the same entity classification, per watchdog-metering."
     status: pending
@@ -274,7 +321,8 @@ todos:
     content: "Build the visionOS SDK: broadcast via RealityRenderer driving a parallel scene with an explicit broadcast camera entity rendering into an IOSurface-backed CVPixelBuffer, and viewing via VTDecompressionSession into a LowLevelTexture wrapped as a TextureResource inside a RealityView. Design the scene API around the broadcast camera from the start. Verify RealityRenderer on device early, not in the simulator."
     status: pending
     evidence:
-      - sdk/visionos/Package.swift
+      - repo: moqom-swift
+        path: Sources/MoqomKit/VisionOS
   - id: mvhevc
     content: "Add stereoscopic broadcast: render the broadcast scene per eye, encode MV-HEVC via CMTaggedBufferGroup with the MVHEVCVideoLayerIDs/ViewIDs/LeftAndRightViewIDs properties plus StereoCameraBaseline and HorizontalFieldOfView metadata, advertise projection type in the catalog, and let 2D viewers subscribe to the left-eye layer alone."
     status: pending
@@ -282,12 +330,14 @@ todos:
     content: "Build the Android SDK: JNI bindings over moqom-client through UniFFI, published as an AAR with a Kotlin API mirroring the Swift one -- string user IDs, the same room and track vocabulary, coroutines and Flow where Swift uses async and AsyncSequence. Capture is Camera2 with AImageReader_newWithUsage rather than CameraX, because CameraX hands out CPU-usage buffers and that reallocation destroys the zero-copy path; verify the usage bits with AHardwareBuffer_describe on the first frame, since some HALs drop them silently, and carry the SurfaceTexture transform matrix in metadata instead of pre-applying it. Encode through MediaCodec with setParameters as the Android end of the bandwidth-estimate loop. Device identity is a non-exportable P-256 key in the Android Keystore, thumbprinted into the namespace exactly as the Secure Enclave key is on Apple. Effects run on wgpu against the same WGSL the other platforms use. Deferred past V1 by the iOS-first decision, but the API shape is not deferred: it is designed alongside the Swift one, because a Kotlin API retrofitted onto a Swift-shaped core is how SDK pairs end up with different vocabularies for the same concept."
     status: pending
     evidence:
-      - sdk/android/build.gradle.kts
+      - repo: moqom-android
+        path: build.gradle.kts
   - id: web-sdk
     content: "Build the web SDK for both directions: moqom-client compiled to WASM over native WebTransport; viewer with WebCodecs decode and WebGPU importExternalTexture (WebGL2 fallback); broadcaster with getUserMedia/getDisplayMedia through MediaStreamTrackProcessor in a worker into VideoEncoder. Feature-detect per interface and per global scope, and probe hardware encode with mediaCapabilities.encodingInfo().powerEfficient."
     status: pending
     evidence:
-      - sdk/web/package.json
+      - repo: moqom-web
+        path: package.json
   - id: rooms
     content: "Implement the room model on namespace tuples: (tenant, r, roomId, participantId, deviceId), with viewers subscribing to the (tenant, r, roomId) prefix via SUBSCRIBE_NAMESPACE so namespace announcement is the roster. Roles are token scopes rather than a role enum, so promoting a viewer to cohost is a single token reissue. Cross-room cohosting is a plain subscription with no cap."
     status: pending
@@ -319,8 +369,10 @@ todos:
     content: "Build the moqom CLI in Rust as a single static binary with clap, and make it a v1 deliverable. Hard rule: it uses the same public API as customers, with no privileged path - the moment the CLI has a backdoor the public API becomes second-class and under-exercised. It absorbs the planned macOS publisher: moqom publish --camera and --file (deterministic input makes the latency harness reproducible), moqom subscribe --out and --stats reporting the per-stage latency budget, so the fastest way to test the stack is also a shipped product. VideoToolbox, Metal, and AVFoundation are the same APIs on macOS, so this exercises hardware encode and the zero-copy path with no Xcode signing or device deployment, and the iOS app later wraps a proven path. Rust rather than Go because the media subcommands need the client core and cgo would make cross-compilation painful; control-plane calls are ordinary HTTP."
     status: pending
     evidence:
-      - rs/moqom-cli/Cargo.toml
-      - rs/moqom-cli/src/main.rs
+      - repo: moqom-engine
+        path: moqom-cli/Cargo.toml
+      - repo: moqom-engine
+        path: moqom-cli/src/main.rs
   - id: cli-ops
     content: "Build the CLI's live and operational surface, which is what distinguishes it from request/response cloud CLIs: moqom room tail (joins, promotions, verdicts), room watch --stats, relay logs --follow, moderation queue --follow - all subscriptions to the same control and agent tracks the clients use, so the CLI doubles as a reference implementation for consuming them. Auth reuses the device identity model: a CLI install is another device that registers a jkt thumbprint held in the OS keystore (Keychain, CNG/TPM, Linux keyring), so device bans and revocation apply to a compromised laptop like a phone. OAuth device flow for interactive login, service accounts with short-lived tokens for CI, and kubectl-style contexts since BYOC customers point at their own deployment. Machine-readable output auto-selected when piped, meaningful exit codes, confirmation on destructive ops with --force, and CLI actions attributed in the same moderation log - a ban from a terminal is not anonymous. Add moqom dev to bring up a local relay and control plane in containers with one command, since the gap between reading the quickstart and running it is where adoption is lost."
     status: pending
@@ -337,7 +389,8 @@ todos:
       - LICENSING.md
       - .github/CLA.md
       - .github/workflows/cla.yml
-      - rs/moqom-proto/LICENSE
+      - repo: moqom-engine
+        path: moqom-proto/LICENSE
   - id: ai-eval
     content: "Build the AI evaluation harness before trusting any classifier in production: a labeled eval set, explicit precision and recall targets per category, per-model-version scoring, and drift monitoring. False positives are the top product risk and are currently unmeasurable, which means the thresholds cannot be tuned and an appeal cannot be defended. Wire it to the same model-version and policy-version records the appeals system stores."
     status: pending
@@ -348,7 +401,8 @@ todos:
     content: "Build the desktop client as a production and moderation console plus a full-featured cohost client, not a broadcaster - OBS owns desktop broadcasting. Reuses the React from the web reference app. Ship both Electron (production console: Chromium consistency, mature desktopCapturer) and Tauri (lightweight tray viewer: 15MB vs 200MB matters to a creator running OBS and a game), but only behind a narrow explicit shell adapter - window/lifecycle, screen capture, tray/menu, auto-update, credential storage, file dialogs, deep links, notifications - with a lint rule forbidding shell API calls outside it. Everything else is shared and shell-agnostic. Electron first, Tauri once the adapter has proven it holds. Media path in two tiers: web SDK first, then a native transport module underneath without touching UI, via the Transport trait seam. Tier 2 is native transport and protocol (moqom-client through its C ABI, carrying moqom-cc, raw QUIC ALPN, migration control, encoder feedback - all denied by Chromium's WebTransport) with the webview retained for WebCodecs decode and WebGPU render, which works because encoded video is ~6 KB/frame against ~3 MB decoded, so encoded chunks over IPC are free. Never decode natively and marshal raw frames into the webview. Non-negotiable given the security positioning: context isolation on, node integration off, sandbox enabled, real CSP, no remote content in privileged renderers. Code signing and macOS notarization share the OBS plugin certificate; auto-update from day one."
     status: pending
     evidence:
-      - sdk/desktop/package.json
+      - repo: moqom-desktop
+        path: package.json
   - id: webgpu-wgsl
     content: "Standardize on WebGPU as the graphics layer everywhere, with WGSL as the single shader language across browser, Electron, Tauri, and native mobile via wgpu (which targets Metal and Vulkan). One shader codebase, five platforms. This is the mechanism that makes moqom-fx tier-1 effects genuinely portable - a vendor ships WGSL and it runs in Chrome, both desktop shells, iOS, and Android without recompilation - and it means our bundled effects are written once. Constraint on Tauri: WebView2 is Chromium so Windows is fine, WKWebView tracks Safari so recent macOS is fine and older is not, WebKitGTK's WebGPU is weak so Linux is the gap - Tauri ships where its webview supports WebGPU and Electron covers the rest. Escape hatch held in reserve, not built: render natively with wgpu into a surface beneath a transparent webview, which removes the webview dependency and rescues Linux, but is a genuinely different render path."
     status: pending
@@ -389,8 +443,10 @@ todos:
     content: "Harden the relay against draft-englishm-moq-relay-dos: per-identity rather than per-session limits, minimum namespace prefix depth to block short-prefix subscription attacks, REQUEST_UPDATE coalescing, subscribe/cancel churn detection with session termination, slow-subscriber buffer caps with live-edge skip-ahead, and a bounded queue plus fuzz target on every peer-drivable path including CID, migration state, and the cohost subscription graph where cycles are reachable."
     status: in_progress
     evidence:
-      - rs/moqom-relay/src/quota.rs
-      - path: rs/moqom-relay/tests/limits.rs
+      - repo: moqom-engine
+        path: moqom-relay/src/quota.rs
+      - repo: moqom-engine
+        path: moqom-relay/tests/limits.rs
         contains: 'a_refusal_leaves_the_rest_of_the_connection_working'
     remaining: "Per-identity limits are done; the rest of the list is not. moqom-relay::quota charges every session, subscription, announcement, watch and fetch to two tiers at once — the device and the user behind it — with a token bucket for rate and a lease for concurrency, so churn and hoarding are caught by different limits. The three properties that took the work are these. The charge is atomic across tiers, so a client hammering one device cannot drain the budget for a device that never misbehaved; a limiter that debited the tier which passed would let an attacker aim a refusal at someone else. The table is bounded, and evicts only entries whose removal cannot change a decision — a full bucket holding nothing is indistinguishable from an absent one — because a table keyed on something the peer influences is otherwise the amplification the limit exists to prevent; when nothing is evictable it refuses new principals rather than handing anyone a fresh allowance. And the key is a verified identity or nothing: moqom-relay::identity checks the Ed25519 signature on the Setup token before the subject is used, since keying on a claimed name lets an attacker both escape their own limit by inventing a name and aim a victim's limit at them by borrowing theirs. Unauthenticated peers fall to a third tier keyed on the address, configured well below the others so authenticating is what buys capacity. Refusals carry MOQT's EXCESSIVE_LOAD with an exact retry-after, which turns a retry storm into a schedule, and land on the offending request rather than the session so one greedy fetch loop does not take a viewer's video with it. Counters are by resource, tier and reason and never by identity, which would be both unbounded cardinality and a public list of who is being throttled. Still to do: prefix depth, REQUEST_UPDATE coalescing, churn detection with termination, slow-subscriber caps, and the fuzz targets. Also note the deployment caveat — behind a load balancer that does not preserve the client address the whole address tier is one bucket, so JWKS wants configuring before that relay faces the internet. 129 tests in moqom-relay, including a fixture the Go control plane mints and the Rust relay verifies, so the two token implementations are checked against each other rather than each against itself."
   - id: safety-detect
@@ -432,12 +488,14 @@ todos:
     content: "Build a conformance and interop harness: a draft-19 reference test vector suite, a loss/latency/reordering network simulator, glass-to-glass latency measurement, and a load generator for the many-short-lived-streams pattern. Tune rmem_max and quinn's stream windows against it and run it as a regression gate on every transport change. This harness is a hard prerequisite for moqom-cc: it must be able to A/B congestion controllers and measure fairness against competing TCP and QUIC flows, not just our own throughput."
     status: pending
     evidence:
-      - rs/moqom-proto/tests/vectors.rs
+      - repo: moqom-engine
+        path: moqom-proto/tests/vectors.rs
   - id: ondevice-ai
     content: "Build the on-device inference layer: a moqom-infer classify/transcribe/translate seam with swappable backends, publishing to the same track schema as server agents so viewers cannot tell where inference ran. Apple first via SpeechTranscriber (fully local, sample-accurate timing that aligns to media timestamps) plus TranslationSession with .lowLatency and Vision. Android needs an ML Kit classic and LiteRT baseline we own, because Gemini Nano APIs return BACKGROUND_USE_BLOCKED when the app is not foreground, even from a foreground service. Default split is ASR at the publisher once, translation at each viewer. Support bring-your-own Core ML, LiteRT, and ONNX models against the same seam."
     status: pending
     evidence:
-      - rs/moqom-infer/Cargo.toml
+      - repo: moqom-engine
+        path: moqom-infer/Cargo.toml
   - id: thermal-policy
     content: "Implement the thermal and quality tier policy: collapse ProcessInfo.thermalState and low-power mode into one tier every subsystem reads, pin ASR to the Neural Engine so the GPU stays free for hardware encode, serialize behind the ~2 concurrent ANE request ceiling, gate ASR on voice activity detection, and degrade in stages with hysteresis - neural effects shed first, then segmentation to shader-only, then per-frame vision, ASR last, then fall back to a server agent. Acceptance criterion is zero thermal throttling on a continuous 15-minute broadcast at 22C ambient with one effect active."
     status: pending
@@ -500,7 +558,8 @@ todos:
     content: "Build moqom-fx: a GPU-in/GPU-out effects chain in the capture-to-encode seam, modelled on Agora's IExtensionVideoFilter (format negotiation, sync and async modes, Bypass, string property channel, start/stop lifecycle) rather than LiveKit's bare transform. Segmentation is its own stage publishing an alpha mask so one inference feeds blur, virtual background, and makeup. Enable/disable is a property, never attach/detach. Every processor gets a frame-deadline watchdog that passes the frame through unmodified on miss. Moderation taps the post-effect frame so a filter cannot be used to evade it. Frame types: IOSurface-backed CVPixelBuffer, AHardwareBuffer via Camera2 and AImageReader_newWithUsage (not CameraX, which forces a CPU-usage realloc), VideoFrame on web, wgpu on desktop."
     status: pending
     evidence:
-      - rs/moqom-fx/Cargo.toml
+      - repo: moqom-engine
+        path: moqom-fx/Cargo.toml
   - id: effects-tiers
     content: "Ship the two-tier effects plugin model. Tier 1 is declarative - vendor supplies shaders, LUTs, meshes, and a parameter schema that our runtime executes, so vendor code never runs and cannot reach the network; open to all, and portable across platforms in a way a native .so is not. Tier 2 is native vendor binaries behind contract, review, allowlist, pinned binary hash, and CI that diffs the merged Android manifest for exported components. Never grant raw frame access and network egress together outside a reviewed partner. Build a server-side kill switch keyed on vendor, version, and hash. Bundle GPUPixel (Apache-2.0) plus MediaPipe segmentation and face landmarks so the pipeline ships non-empty. Document plainly that a third-party effect has plaintext camera access inside the E2EE boundary."
     status: pending
@@ -508,7 +567,8 @@ todos:
     content: "Build WHIP ingest in moqom-ingest so every OBS install since 30.0 can broadcast with nothing to download: terminate WHIP at the edge and repackage RTP into MoQ objects. Map OBS 32.1+ client-side simulcast (up to 4 RID layers) onto per-subscriber track forwarding so we get a rendition ladder with no transcode. Accept Opus-only audio and no adaptive bitrate, since WHIP has no bandwidth estimation. Add RTMP as the universal compatibility floor."
     status: pending
     evidence:
-      - rs/moqom-ingest/Cargo.toml
+      - repo: moqom-engine
+        path: moqom-ingest/Cargo.toml
   - id: obs-plugin
     content: "Native OBS output plugin in its own public repo, moqom-obs, GPL-2.0-or-later. Not a preference: a plugin links libobs, the OBS Project treats that as a combined work, and distributing it obliges us to publish GPL-licensed source -- which a private repo whose other half is BUSL-1.1 cannot do. Only Apache-2.0 MOQOM code may cross the boundary, so it links the stock-controller build of moqom-client's C ABI; see obs-cc-loop. Apache-2.0 is GPLv3-compatible and not GPLv2-compatible, so the distributed binary is a GPLv3 combined work even though libobs is v2-or-later -- counsel should confirm before first release. Build on obs-plugintemplate's CMake and its per-platform packaging rather than our own. Gated on upstream PR #12911 (service auto-discovery, milestoned OBS 33) - until it merges, a plugin-registered service does not appear in the Stream settings dropdown and requires a forked OBS. Engage moq-dev/obs first; contributing there and helping land #12911 likely beats a parallel implementation. Structure as a C++ shim over moqom-client's C ABI. Force bf=0 and repeat_headers=true, declare avc3/hev1, initialize tracks lazily on first packet since obs_encoder_get_extra_data returns nothing until then, and apply one global PTS offset for AAC priming. Budget real time for FFI callback lifetime. Implement get_congestion for the UI indicator and use obs_output_add_packet_callback's encoder_packet_time for latency telemetry. Notarize on macOS from day one."
     status: pending
@@ -528,7 +588,8 @@ todos:
     content: "Ship moqom-compat-livekit: a package exposing LiveKit's client SDK shape implemented over MOQOM, so migration is a dependency swap rather than a rewrite and a prospect can evaluate in an afternoon. LiveKit first because it is Apache-2.0 (readable source, no legal ambiguity), has a smaller surface, and its room/participant/track model maps almost directly onto MoQ namespaces. Cover join, publish, subscribe, mute, roles, and events; publish a compatibility matrix and fail loudly on gaps rather than stubbing them to silent no-ops. Use type and method shapes only, never their code or docs text."
     status: pending
     evidence:
-      - sdk/web/compat-livekit/package.json
+      - repo: moqom-web
+        path: compat-livekit/package.json
   - id: migration-compat-agora
     content: "Ship moqom-compat-agora after LiveKit proves the adapter seam. Much larger proprietary surface, so scope to what real apps use. Handle the uid problem specifically: Agora identifies users by 32-bit integer, so every customer maintains an int-to-username map - accept the integer and derive a deterministic string identity, letting them cut over to real usernames on their own schedule. Counsel review before shipping, since reimplementing an API is defensible under Google v. Oracle but invites noise from a competitor happy to make us spend money."
     status: pending
@@ -551,7 +612,8 @@ todos:
     content: "Build moqom-record as an ordinary MoQ subscriber, not a media pipeline: it joins, receives objects, and writes them to object storage with no decode and no transcode, so recording is lossless by construction and costs storage plus a memcpy rather than a GPU. Colocate with the relay so recording traffic never leaves the region, which also satisfies residency. Storage shape is the thing most likely to be got wrong: write one storage object per group (roughly 500 KB at a 2s GOP and 2 Mbps), never one per MoQ object, or per-frame request cost dominates storage cost by orders of magnitude. Index (track, group) to storage key in a per-track manifest appended as the stream runs, with only the asset-level record in Postgres - a database row per group is write amplification for no benefit. Groups are written as they arrive, so live-to-VOD is instant with no post-processing job to fail."
     status: pending
     evidence:
-      - rs/moqom-record/Cargo.toml
+      - repo: moqom-engine
+        path: moqom-record/Cargo.toml
   - id: watchdogs
     content: "Model watchdogs as a third room entity class alongside participants and agents, not as a participant with a flag - collapsing them causes a long tail of small wrongnesses (viewer count off by one, a recorder that looks kickable, a detector that can be promoted to stage). The dividing line is output, not intent: if it produces something participants see or hear it is an agent, if it only subscribes it is a watchdog. Recorders, safety detectors, analytics collectors, and customer archivers are watchdogs. Roster exclusion is structural rather than a UI filter, which is what makes it clean - the roster is namespace announcement, and a watchdog publishes nothing so it has no namespace entry and cannot appear even by accident. That same property means watchdogs need explicit room state on the control track or they would be invisible entirely: kind (recording/safety/analytics/compliance/custom), operator (us, tenant, named third party), human-readable descriptor, observed track scope, attach time. Clients render room-level chrome, never a tile. Verbs are attach/detach/start/stop, not kick/mute/promote, so authorization is its own capability generalizing the existing 'control recording' one, with attach and detach in the audit log. State is health (attached, degraded, failed) rather than presence (connected, reconnecting, away) - a customer whose recorder died wants that in room state, not inferred from a missing file later."
     status: pending
@@ -1331,10 +1393,37 @@ What decided it against FlatBuffers was not the encoding, which is good, but the
 
 ## Repo layout
 
+Five repositories, split along lines described below. `moqom` is the platform
+and the others are siblings of it — cloned into one directory, which is what the
+tooling here assumes.
+
 ```
-vendor/
-  quinn/              pinned, unmodified, via [patch.crates-io] - patch-ready insurance
-rs/
+moqom/                the platform: contract, control plane, deployment, plan
+  proto/              the gRPC contract: admin API, and the internal relay link
+  go/
+    cmd/moqom-api/      control plane
+    cmd/moqom-director/ relay steering: RTT, capacity, namespace residency
+    internal/token/     CAT/CWT minting, DPoP verification
+    internal/rooms/     room lifecycle, roles, bans, mutes
+    internal/safety/    policy ladder, hysteresis, evidence, appeals, DSA notices
+    internal/outbox/    durable event dispatch
+  agents/
+    python/ rust/     reference agents: captions, moderation, recommendations
+  schemas/
+    catalog.md        catalog + data track layouts on the MOQOM record format
+    agent.md          agent output tracks: captions, verdicts, recommendations
+    control.md        room control: stage events, roster, watchdogs, terminal events
+    warehouse/        BigQuery table and property-graph definitions
+  samples/
+    quickstart/       <30 lines to publish, <30 to subscribe, per platform
+    reference/        one creator app on iOS, Android, web - built in CI
+    showcase/         visionOS immersive, Watch + Wear companion, WebXR
+    tokens/           shared design tokens; native components per platform
+  deploy/
+    terraform/gcp/ terraform/aws/
+  tools/              cross-repository checks: plan, interop, proto generation
+
+moqom-engine/         the media path, pure Rust
   moqom-proto/        sans-io draft-19 codec: varints, control msgs, object model
   moqom-cc/           media-aware congestion controller behind quinn's Controller trait
   moqom-transport/    quinn endpoints, SO_REUSEPORT sharding, ALPN dispatch, CID gen
@@ -1348,49 +1437,40 @@ rs/
   moqom-ingest/       WHIP and RTMP termination in, RTMP restream out (transcoding)
   moqom-record/       recorder-as-subscriber, group-per-object storage, FETCH serving
   moqom-cli/          the CLI: publish, subscribe, tail, ops, dev stack
-go/
-  cmd/moqom-api/      control plane
-  cmd/moqom-director/ relay steering: RTT, capacity, namespace residency
-  internal/token/     CAT/CWT minting, DPoP verification
-  internal/rooms/     room lifecycle, roles, bans, mutes
-  internal/safety/    policy ladder, hysteresis, evidence, appeals, DSA notices
-  internal/outbox/    durable event dispatch
-agents/
-  python/ rust/       reference agents: captions, moderation, recommendations
-schemas/
-  catalog.md        catalog + data track layouts on the MOQOM record format
-  agent.md          agent output tracks: captions, verdicts, recommendations
-  control.md        room control: stage events, roster, watchdogs, terminal events
-  warehouse/        BigQuery table and property-graph definitions
-sdk/
-  kotlin/ web/ desktop/
-samples/
-  quickstart/       <30 lines to publish, <30 to subscribe, per platform
-  reference/        one creator app on iOS, Android, web - built in CI
-  showcase/         visionOS immersive, Watch + Wear companion, WebXR
-  tokens/           shared design tokens; native components per platform
-deploy/
-  terraform/gcp/ terraform/aws/
+  vendor/quinn/       pinned, unmodified, via [patch.crates-io] - patch-ready insurance
+
+moqom-swift/          MoqomKit and the MoqomRoom sample
+moqom-go/             server-side SDK
+moqom-rust/           server-side SDK
 ```
 
-### What lives outside this repo, and why
+Later: `moqom-android`, `moqom-web`, `moqom-desktop` for the remaining client
+SDKs, and `moqom-obs` for the host plugin.
 
-The default is the monorepo, because a protocol still moving through drafts
-wants the codec, the relay, and the SDKs to change in one commit. Something
-leaves only when keeping it here breaks it. Two things do.
+### What lives where, and why
 
-| Repository | License | Why it cannot live here |
+The default was a monorepo, because a protocol still moving through drafts wants
+the codec, the relay, and the SDKs to change in one commit. Each split was
+forced by something specific rather than chosen.
+
+| Repository | License | What forced it |
 | --- | --- | --- |
 | `moqom-swift` | Apache-2.0 | SwiftPM resolves a git dependency by looking for `Package.swift` at the repository *root* and cannot be pointed at a subdirectory, so a nested package is not consumable by URL at all. Verified, not assumed. |
-| `moqom-obs` | GPL-2.0-or-later | An OBS plugin links `libobs` and is a combined work under the GPL, so its source must be public and GPL-licensed. This repo is private and its relay half is BUSL-1.1. |
+| `moqom-go` | Apache-2.0 | A Go import path is a URL. `go get` resolves a module by fetching its path, so a module named `github.com/moqom-cloud/moqom-go` must be published from a repository of that name. |
+| `moqom-rust` | Apache-2.0 | Not forced by Cargo, which resolves published crates wherever they were written. Forced by the engine's `[patch.crates-io]`, which applies to a whole workspace: staying inside it would put a QUIC stack in the dependency graph of every backend that only wants to change somebody's grants. |
+| `moqom-engine` | Mixed | Not forced by a tool. The media path shares no code and no build with the control plane, so the split follows a line the architecture had already drawn — and it keeps the BUSL relay in one place rather than spread across the tree. |
+| `moqom-obs` | GPL-2.0-or-later | An OBS plugin links `libobs` and is a combined work under the GPL, so its source must be public and GPL-licensed. This repo is private and its control-plane half is BUSL-1.1. |
 
-Neither is an architectural preference. One is a package manager's resolution
-rule and the other is a license boundary, and both would still apply to a
-project that wanted everything in one place.
+Only two of those are architectural preferences, and the rest would still apply
+to a project that wanted everything in one place. What the splits cost is that
+the interesting failures moved to the seams, so three checks in `moqom/tools`
+run against sibling checkouts and CI clones them: the plan against its evidence,
+the token fixture against the relay that verifies it, and both SDKs against a
+real control plane.
 
 The distinction that matters for effects: `moqom-fx` is the effects *runtime* —
 the frame contract, the tier-1 shader interpreter, the deadline watchdog — and
-it is client core, so it stays in `rs/`. Individual effects are not code we
+it is client core, so it belongs with the engine. Individual effects are not code we
 link. A tier-1 effect is WGSL plus a parameter schema that our runtime executes,
 and a tier-2 effect is a third-party native binary under contract. Both are
 authored and versioned by whoever ships them, which is what makes their

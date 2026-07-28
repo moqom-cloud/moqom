@@ -10,11 +10,17 @@ product is source-available.
 | Relay, control plane, director, ingest, `moqom-cc` | BUSL-1.1 → Apache-2.0 |
 | Host plugins that link a GPL host (OBS) | GPL, in their own repos |
 
-Full texts are in [`LICENSES/`](LICENSES/). Every crate declares its own
-`license` field; **a crate without one is a bug**, since the workspace spans
-both halves and there is no safe default to fall back on.
+Full texts are in [`LICENSES/`](LICENSES/). The split is by role rather than by
+repository, so knowing where a file lives does not tell you which half it is in:
+[`moqom-engine`](https://github.com/moqom-cloud/moqom-engine) holds the
+Apache-2.0 protocol and transport beside the BUSL-1.1 relay, and this repository
+holds the Apache-2.0 contract in `proto/` beside the BUSL-1.1 control plane in
+`go/`. Every crate declares its own `license` field; **a crate without one is a
+bug**, since there is no safe default to fall back on. The engine's own
+[LICENSING.md](https://github.com/moqom-cloud/moqom-engine/blob/main/LICENSING.md)
+maps its crates and explains why both halves share a workspace.
 
-"SDKs" includes the server-side ones. `sdk/go` and `sdk/rust` are Apache-2.0
+"SDKs" includes the server-side ones. `moqom-go` and `moqom-rust` are Apache-2.0
 even though the control plane they call is BUSL-1.1, and the line between them
 is the gRPC contract in `proto/`: an SDK holds generated stubs and the wire
 vocabulary, never any part of the server. That is what keeps a customer's
