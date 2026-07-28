@@ -133,11 +133,51 @@ todos:
   - id: events
     content: "Build the event layer with no external broker. Live events (cluster metadata, origin discovery, presence, viewer counts) ride MOQOM tracks with a root node for discovery and leaves announcing broadcasts. Durable events (stream lifecycle, billing, webhooks, audit) go through a Postgres outbox table written in the same transaction as the state change, drained by a Go worker with idempotency keys."
     status: pending
-  - id: catalog
-    content: "Define the FlatBuffers schema for the catalog and data tracks (tracks, codecs, resolutions, temporal layers, projection type for immersive content) and generate Rust, Swift, Kotlin, and TypeScript accessors from it. Keep MOQT wire messages on spec-defined varints."
+  - id: record-format
+    content: "Define the encoding for application data on MOQOM tracks: tag-length-value over the QUIC varints already implemented in every language here, four wire types, skip-unknown so the format grows without a registry, and contiguous fixed-layout arrays for the one case that is read at tick rate. Little-endian, deliberately opposite to MOQT's big-endian framing, because an array a reader can point at is the entire point and a big-endian float array is not one. Bound every read: these bytes come from another participant by way of a relay that does not inspect them, and under E2EE they are authenticated only as coming from somebody with the room key, which is everybody in the room."
+    status: completed
+    evidence:
+      - docs/data-format.md
+      - repo: moqom-swift
+        path: Sources/MoqomCore/DataRecord.swift
+  - id: space-track
+    content: "Replicate a shared 3D space so cohosts, guests, and viewers can play AR games together. A synthetic shared coordinate space that every participant agrees on, anchored privately into each device's own world so that where the board sits in somebody's living room never crosses the wire. State replicates as a numbered log with snapshots, inheriting the room control log's two survivability rules - every value absolute rather than incremental so applying a delta twice is applying it once, and every group opening with a snapshot so joining and repairing are the same operation. Unlike the control log there are two publishers to fear, since the authority is a participant's phone rather than the relay, so ticks carry an epoch that fences a stale authority's writes after a handover. Encoded on the record format with entity names interned to 32-bit handles, and movement as parallel handle and pose arrays so a renderer walks the poses in the received buffer without allocating."
+    status: in_progress
+    remaining: "Geometry, anchoring, replicated state, and the wire format are done and measured. Still to build: the authority model tied to existing grants with handover, intent tracks so cohosts and guests can act plus a bounded aggregate channel for viewers, the tick timeline against trusted time with honest degradation on a fallback clock, and wiring into RoomSession so a space publishes, subscribes, and catches up on join."
+    evidence:
+      - repo: moqom-swift
+        path: Sources/MoqomKit/Space/SpaceState+Wire.swift
+  - id: usage-records
+    content: "Give the relay a metering path separate from its metrics, because the cardinality rule that keeps Prometheus healthy is exactly what disqualifies it from billing: metrics.rs strips tenant, room, and username from every label on purpose, and a counter with no tenant on it that resets on restart cannot produce an invoice. Emit tenant-attributed usage records over the existing relay link - per-track egress so cross-audience cohost bandwidth is a policy choice rather than archaeology, ingress, connected duration, and layer actually served. Aggregate in the relay and send a session summary rather than per-object rows, which would be billions a day; checkpoint every ~60s so the unbilled window on a relay crash is bounded and a six-hour stream is not one row written at the end. A reconnect is one session with a gap, matching the watchdog rule."
     status: pending
     evidence:
-      - schemas/catalog.fbs
+      - rs/moqom-relay/src/usage.rs
+  - id: metering-ledger
+    content: "Build the usage ledger in Postgres, derived from the durable event log rather than from a parallel counter, so the invoice and the audit trail cannot drift and a disputed charge can be shown exactly when it started. Usage records land in the same outbox transaction as the state change that caused them; the ledger is an append-only table with idempotency keys, and rated line items are a projection over it that can be recomputed rather than a running total that can be wrong. Exploit the trusted clock: every event already carries a Timecode with an uncertainty and a trust level, so a billing dispute can be answered with whether the measurement was made against a synchronised clock, and honestly caveated when it was not - almost nothing else in this market can answer that. Roster and meter must read the same entity classification, per watchdog-metering."
+    status: pending
+    evidence:
+      - go/internal/metering/*.go
+  - id: warehouse
+    content: "Stand up BigQuery as the analytics and per-session telemetry store, loaded by the same outbox worker that feeds webhooks and billing, plus relay session records and client QoE batches. Partition by day and cluster by tenant. This is deliberately not where metering lives - a warehouse is for questions, a ledger is for invoices, and conflating them produces a system that is authoritative about nothing. It is also where the per-session detail currently trapped in the relay's /sessions JSON goes, since that endpoint answers a question about now and every interesting support question is about an hour ago."
+    status: pending
+    evidence:
+      - deploy/modules/warehouse/*.tf
+  - id: graph-analytics
+    content: "Answer the graph-shaped questions with BigQuery property graphs and GQL over the warehouse tables, rather than by adding a fifth datastore. Only two workloads here genuinely need variable-depth traversal, and both are real: cohost recommendation, where audience overlap is a bipartite walk over who watched whom; and ban evasion, where the query is every account reachable from a banned one through shared devices, addresses, or payment instruments, which is awkward in SQL and natural in GQL. Everything else people reach for a graph database for here - tenant to room to participant, usage rollups - is a two-hop join that a columnar engine does better. Revisit a dedicated graph engine only if traversal moves onto the serving path with a latency budget; retrieval for recommendations is Qdrant's job, not a graph engine's."
+    status: pending
+    evidence:
+      - schemas/warehouse/graph.sql
+  - id: client-telemetry
+    content: "Give RoomStatistics a way off the device. It is the richer half of every support conversation - encode drops, jitter buffer behaviour, decode failures, and time to first frame are invisible to the relay because those frames never became packets - and today it is local-only with no upload path, so 'why was this stream bad for this user' is unanswerable after the fact. Sampled, batched, and off by default per tenant policy, carrying the session correlation ID so it joins to the relay's view of the same session. Keep it metadata: E2EE means content never leaves, and nothing here needs it to."
+    status: pending
+    evidence:
+      - repo: moqom-swift
+        path: Sources/MoqomKit/Telemetry/*.swift
+  - id: catalog
+    content: "Define the catalog and data track schemas on the MOQOM record format (docs/data-format.md) and implement accessors in Rust, Swift, Kotlin, and TypeScript. Not FlatBuffers, which was the plan of record until the space track forced the question: its runtime is roughly 7,400 lines of Swift and the same again in three more languages, in an SDK that has no third-party dependencies at all, and what it sells over a hand-rolled encoding is random access through vtables that none of these tracks need since each is read front to back once. Keep MOQT wire messages on spec-defined varints."
+    status: pending
+    evidence:
+      - schemas/catalog.md
   - id: ios-sdk
     content: "Build the iOS SDK: UniFFI bindings over moqom-client packaged as an XCFramework, a RealityKit capture layer on customPostProcessing with no pre-26 fallback, a Metal RGB-to-NV12 compute pass writing into the VTCompressionSession pool, HEVC with low-latency rate control plus temporal SVC and LTR, and an AVSampleBufferDisplayLayer viewer. Secure Enclave key generation for device identity."
     status: in_progress
@@ -1079,7 +1119,7 @@ The sequence, and note the deliberate asymmetry — **the host is cut immediatel
 5. `SUBSCRIBE_DONE` to viewers with a status code matching the published reason.
 6. Revoke the publisher's token so `moqt-reval` fails the reconnect rather than letting them immediately restart.
 
-Why a lifecycle track rather than `SUBSCRIBE_DONE`'s reason phrase: the reason phrase is an unstructured string with no room for localization or an application payload. A track carries FlatBuffers objects, which is what makes the client hook useful.
+Why a lifecycle track rather than `SUBSCRIBE_DONE`'s reason phrase: the reason phrase is an unstructured string with no room for localization or an application payload. A track carries structured objects in the MOQOM record format, which is what makes the client hook useful.
 
 ### The client hook
 
@@ -1271,17 +1311,23 @@ Likewise, do not write a database row per group. An index of (track, group) → 
 
 Pushing a room out to YouTube or Twitch is a frequent creator-platform ask and looks adjacent, but it is a different shape: those endpoints want H.264 and AAC in FLV over RTMP, so it requires real transcode. It is the inverse of `moqom-ingest` and belongs in the same crate, but it should be scoped and priced as a compute feature rather than folded into recording because both involve "media leaving the room."
 
-## Serialization: where FlatBuffers helps and where it doesn't
+## Serialization: three layers, and only one of them was a question
 
-Worth splitting into three layers, because the answer differs for each.
+Worth splitting into three, because the answer differs for each.
 
-**MOQT wire messages — no, and we couldn't anyway.** The message layouts are fixed by draft-19 and changing them means we no longer speak MOQT. Even setting interop aside, FlatBuffers would be the wrong choice: it prepends vtables and offset tables, so a MOQT object header that costs 4–8 bytes as varints becomes tens of bytes, and reading it means an indirection through the vtable rather than a sequential byte scan. At one object per frame per track, we'd be adding wire bytes and cache misses to buy nothing. QUIC varints are already the zero-copy-friendly encoding here.
+**MOQT wire messages — fixed, and we would not want to change them anyway.** The layouts are set by draft-19 and departing from them means we no longer speak MOQT. Even setting interop aside, a vtable-based encoding would be the wrong choice here: it prepends offset tables, so an object header that costs 4–8 bytes as varints becomes tens of bytes, and reading it means an indirection rather than a sequential byte scan. At one object per frame per track that adds wire bytes and cache misses to buy nothing. QUIC varints are already the right encoding.
 
 **Media payloads — nothing to serialize.** These are HEVC/AV1 bitstreams. They pass through the relay opaquely and go straight to a hardware decoder.
 
-**Catalog and data tracks — yes, this is the real opportunity.** The catalog (track list, codecs, resolutions, layer structure) and app-defined data tracks (chat, telemetry, presence, RealityKit scene deltas) are formats we control, and the reference implementations use JSON here. Switching to FlatBuffers gives genuine zero-copy field access with no parse step, forward and backward schema evolution without versioning code, and one schema generating Rust, Swift, Kotlin, and TypeScript accessors. For a scene-delta track at 60Hz, avoiding a JSON parse per tick on the main thread is a real win.
+**Catalog, control, and data tracks — the real question, and it has been answered.** These are formats we define, and they started as JSON. FlatBuffers was the plan of record for them and the shared space track is what forced the decision, because it is the only one where the cost is measurable: it carries every moving entity at tick rate to every viewer, so a parse per tick lands on the frame budget of the device least able to afford it.
 
-**Set expectations honestly, though:** client-side cost in a video pipeline is dominated by decode and color conversion, not by parsing a few KB of catalog. FlatBuffers for the catalog is worth doing because it is cheap, type-safe across four languages, and removes a class of schema-drift bugs — not because it will move the latency number. The GPU path is where latency is won.
+**The answer is a hand-rolled record format, specified in `docs/data-format.md`.** Tag-length-value over the QUIC varints already implemented in every language here, skip-unknown for evolution, and one deliberate exception where the cost actually is — contiguous fixed-layout arrays that a reader points at rather than decodes. Measured on a fifty-entity tick against the JSON it replaced: 1.9x smaller, and about 25x faster to read.
+
+What decided it against FlatBuffers was not the encoding, which is good, but the runtime: roughly 7,400 lines of Swift and the same again in Rust, Kotlin, and TypeScript, in an SDK that has no third-party dependencies at all and that hand-ported an entire draft-19 codec rather than acquire one. What FlatBuffers sells over the format above is random access into an unparsed buffer through vtables, and none of these tracks need it — each is read front to back, once, by whoever asked for it. The cost was real and the thing it bought was not needed.
+
+**Set expectations honestly:** this moves the number on the space track and nowhere else. A catalog arrives once per broadcast and a control entry eight times in thirty seconds; neither notices a parse, and client-side cost in a video pipeline is dominated by decode and colour conversion regardless. Moving those two off JSON is still worth doing, for the reason it always was — one codec per language instead of a codec plus a JSON schema, and no drift between four clients — but not because it will show up in a latency measurement. The GPU path is where latency is won.
+
+**One consequence to carry forward.** The space track's encoding is stateful: entity names are interned so that a delta carries a 32-bit handle rather than a string, which is safe only because every group opens with a snapshot and a subscriber joins at a group boundary. Any future track that adopts the same trick inherits that requirement, and a handle nobody has seen must be an error rather than a skipped record — it means a snapshot was missed and the whole update is suspect.
 
 ## Repo layout
 
@@ -1312,9 +1358,10 @@ go/
 agents/
   python/ rust/       reference agents: captions, moderation, recommendations
 schemas/
-  catalog.fbs       FlatBuffers catalog + data tracks, generates all 4 languages
-  agent.fbs         agent output tracks: captions, verdicts, recommendations
-  control.fbs       room control: stage events, roster, watchdogs, terminal events
+  catalog.md        catalog + data track layouts on the MOQOM record format
+  agent.md          agent output tracks: captions, verdicts, recommendations
+  control.md        room control: stage events, roster, watchdogs, terminal events
+  warehouse/        BigQuery table and property-graph definitions
 sdk/
   kotlin/ web/ desktop/
 samples/
@@ -1359,7 +1406,7 @@ integration as a new repository by default.
 
 **Publish from a SwiftUI RealityKit view on iOS, watch in Chrome, through our own relay, authenticated end to end.** Everything else is deferred.
 
-**In scope:** `moqom-proto` (SETUP, SUBSCRIBE, PUBLISH, ANNOUNCE, FETCH, subgroup streams, datagrams), `moqom-transport`, single-node relay, Go control plane with device-bound tokens and the outbox, iOS publisher, web viewer, FlatBuffers catalog, Terraform for one GCP region, conformance and latency harness, and the iOS and web **quickstarts** — the last of these because the API needs a consumer before it is fixed in place, and thirty lines is cheap. The reference app and wearable companions are v2.
+**In scope:** `moqom-proto` (SETUP, SUBSCRIBE, PUBLISH, ANNOUNCE, FETCH, subgroup streams, datagrams), `moqom-transport`, single-node relay, Go control plane with device-bound tokens and the outbox, iOS publisher, web viewer, the catalog track, Terraform for one GCP region, conformance and latency harness, and the iOS and web **quickstarts** — the last of these because the API needs a consumer before it is fixed in place, and thirty lines is cheap. The reference app and wearable companions are v2.
 
 ### Structure the iOS work so most of it is testable without a device
 
@@ -1505,7 +1552,7 @@ A 3 Mbps stream at 60fps averages about 6,250 bytes per frame. On a 100 Mbps lin
 
 Where the bytes actually are, though, is the part that redirects the effort:
 
-- **Protocol overhead is already negligible.** A MOQT object header is 4–8 bytes on a 6 KB frame — about 0.1%. There is nothing to win here, and this is why FlatBuffers on the wire would have been a mistake.
+- **Protocol overhead is already negligible.** A MOQT object header is 4–8 bytes on a 6 KB frame — about 0.1%. There is nothing to win here, and this is why a vtable-based encoding on the wire would have been a mistake.
 - **QUIC, UDP, and IP headers** run ~4% at typical MTU. Marginal, and largely fixed.
 - **The video bitstream is ~99% of the bytes.** This is the only term worth attacking.
 
@@ -1956,6 +2003,58 @@ Participant identities render according to the sink's privacy policy: readable o
 **Unmeasured is not bad.** A room joined half a second ago has observed nothing. A red indicator for it is a lie in the direction that destroys trust in the indicator fastest, so quality starts at `unknown` and stays there until there is evidence.
 
 **Wanting a snapshot is not having a gap.** The room control log wants a snapshot from the moment of joining until the first one arrives, which is the right trigger for a repair fetch and the wrong thing to show a person. So the client reports both: the raw signal that drives the repair, and `hasGap`, which is only true once a log that had been whole develops a hole. The second is the one worth a warning, and it is worth it — until it heals, this client's idea of who may do what is stale, and stale grants present as a permissions bug rather than as the network problem they are.
+
+## The data platform: metering, telemetry, and analytics are three systems
+
+They get built as one and it never works, because their requirements are not merely different but opposed. Metering must be exact, auditable, and defensible years later. Telemetry is high-volume, low-value-per-point, and disposable within weeks. Analytics wants joins across history and tolerates being approximately right. A single store tuned for one of those is actively bad at the other two, and a store tuned for all three is authoritative about nothing.
+
+So: **Postgres is the ledger, BigQuery is the warehouse, Prometheus stays exactly what it is, and there is no fourth thing.**
+
+### The counter that looks like metering and is not
+
+`moqom_relay_egress_bytes_total` exists today. It is the wrong number to bill from, and the reason is worth stating because the trap is well disguised — the number is real, it is accurate, and it is right there.
+
+Prometheus labels in this codebase carry no tenant, no room, and no username. That is deliberate and it is correct: a label whose values grow with traffic turns a time-series database into an outage. But the same rule makes the series useless for an invoice, and two further properties finish the job — a counter resets when the process does, and a scrape is a sample rather than a record. None of that matters for the question metrics answer, which is *is the fleet healthy*. All of it matters for the question billing asks, which is *what does this specific customer owe*.
+
+These are two jobs and they need two pipes. The gap today is that only one of them exists.
+
+### Billing is a projection over the event log
+
+Already settled for watchdogs and it generalises to everything: bill from the audit log rather than a parallel counter, so the invoice and the audit trail cannot drift and a disputed charge can be shown exactly when it started.
+
+Concretely, the relay emits tenant-attributed usage records over the link it already has to the control plane; those land in the outbox transaction alongside the state change that caused them; the ledger is append-only with idempotency keys; and a rated line item is a *projection* over the ledger rather than a running total. The difference matters the first time a rating bug ships — a projection is recomputed, a running total is a support ticket per customer.
+
+Two decisions inside that:
+
+**Aggregate at the relay.** Per-object usage rows would be billions a day and would cost more to store than the media cost to serve. A session summary plus a checkpoint every minute or so is enough, and the checkpoint interval is a revenue decision rather than a performance one: it is exactly how much unbilled usage a relay crash destroys.
+
+**The trusted clock is a billing feature.** Every event already carries a `Timecode` with an uncertainty and a trust level, which was built for audit ordering. It happens to answer the question a billing dispute actually turns on — were these minutes measured against a synchronised clock, and how tightly. Being able to say "yes, to within four milliseconds" or honestly "no, this relay had fallen back to local time and here is the error bound" is a stronger position than any competitor can take, and it costs nothing more because the field is already there.
+
+### Where a graph database earns its place, and where it does not
+
+A graph engine pays when traversal depth is variable and unknown at query time. When the depth is fixed, the query is a join, and a columnar engine does joins better than a graph engine does scans. Most of what looks graph-shaped here is fixed depth: tenant to room to participant is two hops, and usage rollups are aggregation.
+
+Two workloads are genuinely not.
+
+**Cohost recommendation.** Audience overlap is a bipartite walk — the people who watched A, and what else they watched — and past collaboration outcomes form a real graph over creators. This is already the plan's position, that cohost matching is a recommender problem rather than an agent one, and that the accuracy comes from the interaction flywheel.
+
+**Ban evasion.** Not currently in this plan and it should be. Identity is device-bound through DPoP thumbprints and bans are enforced per participant, which makes "banned user returns on a new device" the obvious next move. Detecting it is a reachability question — every account connected to a banned one through any path of shared devices, addresses, or payment instruments — with no fixed depth, which is precisely the query SQL is bad at and GQL is built for.
+
+Neither needs a graph *database*. BigQuery declares property graphs over tables you already have and queries them in GQL, so the graph is a view of the warehouse rather than a copy of it. That avoids the failure mode where the graph and the tables disagree and nobody can say which is right, and it avoids operating a fifth stateful system for two queries. A dedicated engine becomes worth reconsidering only if traversal moves onto the serving path under a latency budget — and note that the retrieval half of recommendation is Qdrant's job, which is a different shape of problem from traversal and is already scoped that way.
+
+### What E2EE takes off the table, and why it barely matters here
+
+Content-derived analytics cannot survive end-to-end encryption, which is already established. Everything metering and product analytics actually need is metadata — who joined what, when, for how long, at which layer, and what happened to a cohost invitation — and none of that is encrypted. The constraint bites recommendation quality, not billing, and the plan already routes around it with client-side classification.
+
+Worth stating explicitly all the same, because a data model designed on the assumption that content signals will be available is a data model that has to be rebuilt.
+
+### The two gaps to close first
+
+**The control plane does not persist.** It defaults to an in-memory store that logs a warning saying all state including the moderation log is lost on restart. Everything above depends on a durable, sequenced event log, so Postgres and the outbox worker are not one item among several — they are the item the others wait on.
+
+**`RoomStatistics` never leaves the device.** The client half of every support conversation is measured, structured, and thrown away. Encode drops and decode failures are invisible to the relay by construction, because those frames never became packets, so without an upload path the paired diagnosis this design is built around is only available live and only to the user experiencing it.
+
+One input is also expiring while the rest is being built: cohost invitations, acceptances, declines, and timeouts are recommender training data, and that flywheel cannot be backfilled. It is cheap to log now into a table nothing reads and impossible to recover later.
 
 ## Video effects: beauty filters and third-party re-renders
 

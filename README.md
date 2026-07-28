@@ -103,7 +103,7 @@ rs/          Rust: protocol, transport, relay, client core, CLI
 go/          Go: control plane and director (identity, tokens, rooms, policy)
 proto/       The gRPC contract: admin API, and the internal relay link
 sdk/         SDKs: go and rust for backends, android and web for clients
-schemas/     FlatBuffers schemas for catalog, data, and agent tracks
+schemas/     Track layouts on the MOQOM record format, and warehouse schemas
 agents/      Reference AI agents
 samples/     Quickstarts, reference app, platform showcases
 deploy/      Terraform
