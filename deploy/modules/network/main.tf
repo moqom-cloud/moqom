@@ -4,10 +4,25 @@ locals {
     [for r in var.regions : r.serverless_cidr],
   )
 
-  # Published by Google and stable. Every health check, whatever its type,
-  # originates here; a relay that is not reachable from these ranges will be
-  # marked unhealthy no matter how well it is actually serving.
-  health_check_ranges = ["35.191.0.0/16", "130.211.0.0/22"]
+  # Published by Google, and not one list but two.
+  #
+  # Most load balancers probe from 35.191.0.0/16 and 130.211.0.0/22. The
+  # external passthrough Network Load Balancer -- which is what fronts the relay
+  # tier, because it is the only thing that forwards a UDP datagram -- probes
+  # from 35.191.0.0/16 and the two 209.85 ranges instead. Allowing only the
+  # first pair produces a fleet that is healthy on the machine, answers 200 to
+  # anyone who asks locally, and is marked unhealthy by its own load balancer
+  # with "Timeout waiting for connect".
+  #
+  # Both sets are allowed here rather than one per rule: the surface is a single
+  # health-check port that serves nothing but liveness, and being specific about
+  # which Google prober may reach it buys nothing over being right.
+  health_check_ranges = [
+    "35.191.0.0/16",
+    "130.211.0.0/22",
+    "209.85.152.0/22",
+    "209.85.204.0/22",
+  ]
 
   # google_compute_firewall has no count/for_each on log_config, so build it
   # once and splat it into every rule.
@@ -266,6 +281,58 @@ resource "google_compute_firewall" "relay_egress_https" {
   allow {
     protocol = "tcp"
     ports    = ["443"]
+  }
+}
+
+# NTP, which the egress default would otherwise deny.
+#
+# The relay boots with a chrony configuration pointing at Cloudflare rather than
+# at the metadata server, because the clients take their time from Cloudflare
+# and mixing a leap-smearing source with a non-smearing one puts a relay up to
+# half a second away from the phones publishing to it. Blocking 123 does not
+# undo that decision, it just makes it fail: chrony cannot reach anything, the
+# clock free-runs, and every timecode the relay stamps is wrong by however far
+# the VM has drifted since boot.
+resource "google_compute_firewall" "relay_egress_ntp" {
+  name    = "${var.name_prefix}-allow-relay-egress-ntp"
+  project = var.project_id
+  network = google_compute_network.this.name
+
+  direction          = "EGRESS"
+  priority           = 1000
+  destination_ranges = ["0.0.0.0/0"]
+  target_tags        = [var.relay_target_tag]
+
+  allow {
+    protocol = "udp"
+    ports    = ["123"]
+  }
+}
+
+# The relay's one call outward that is not media: the long-lived RelayLink
+# stream to the control plane, which carries moderation and roster changes.
+#
+# It needs its own rule because the egress default here is deny and the HTTPS
+# rule above only opens 443, while the control plane's internal load balancer
+# answers on 8443. Without this a relay starts, serves, passes its health check,
+# and silently enforces nothing but what the tokens themselves say -- the
+# failure is a reconnect loop in the logs and no change in behaviour anyone
+# watching the load balancer would notice.
+resource "google_compute_firewall" "relay_egress_control" {
+  count = length(var.control_plane_cidrs) == 0 ? 0 : 1
+
+  name    = "${var.name_prefix}-allow-relay-egress-control"
+  project = var.project_id
+  network = google_compute_network.this.name
+
+  direction          = "EGRESS"
+  priority           = 1000
+  destination_ranges = var.control_plane_cidrs
+  target_tags        = [var.relay_target_tag]
+
+  allow {
+    protocol = "tcp"
+    ports    = [tostring(var.control_plane_port)]
   }
 }
 

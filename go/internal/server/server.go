@@ -22,6 +22,8 @@ import (
 	"github.com/moqom-cloud/moqom/go/internal/timecode"
 	"github.com/moqom-cloud/moqom/go/internal/token"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/health"
+	healthpb "google.golang.org/grpc/health/grpc_health_v1"
 )
 
 // Config is everything the control plane needs to run.
@@ -173,6 +175,14 @@ func (s *Server) Register(grpcServer grpc.ServiceRegistrar) {
 	adminpb.RegisterTokensServer(grpcServer, &tokensService{core: s.core})
 	adminpb.RegisterEventsServer(grpcServer, &eventsService{core: s.core})
 	registerRelayLink(grpcServer, s.core)
+
+	// The standard health service, for Kubernetes probes that speak gRPC and for
+	// clients that check before dialling. Overall SERVING and nothing per
+	// service: the services here share a store and a set of keys, so there is no
+	// state in which one of them is servable and another is not.
+	checker := health.NewServer()
+	checker.SetServingStatus("", healthpb.HealthCheckResponse_SERVING)
+	healthpb.RegisterHealthServer(grpcServer, checker)
 }
 
 // Interceptors returns the authentication interceptors to install.

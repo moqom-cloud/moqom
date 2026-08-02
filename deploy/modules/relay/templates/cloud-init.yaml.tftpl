@@ -19,6 +19,15 @@ write_files:
       net.core.netdev_max_backlog = 65536
       net.core.somaxconn = 8192
 
+      # The relay runs as an unprivileged user in a container that shares this
+      # host's network namespace, and it has to bind 443 -- which the kernel
+      # reserves for root. The alternatives are worse: running the relay as root
+      # to bind one socket, or a redirect from 4443 that adds a hop to every
+      # datagram on a machine whose entire job is forwarding datagrams. These
+      # VMs run one workload and nothing else listens here, so the reservation
+      # protects nothing.
+      net.ipv4.ip_unprivileged_port_start = 0
+
       # UDP memory accounting in pages, not bytes.
       net.ipv4.udp_mem = 262144 524288 1048576
       net.ipv4.udp_rmem_min = 262144
@@ -86,6 +95,111 @@ write_files:
       rtcsync
       logdir /var/log/chrony
 
+  - path: /etc/moqom/open-ports.sh
+    permissions: "0700"
+    owner: root
+    content: |
+      #!/bin/bash
+      # Open the relay's ports in the host firewall.
+      #
+      # Container-Optimized OS boots with `-P INPUT DROP` and allows almost
+      # nothing: loopback, ICMP, established flows, and SSH. A VPC firewall rule
+      # is therefore necessary and not sufficient -- the packet is permitted onto
+      # the wire and then dropped by the machine it was addressed to. The health
+      # check reports "Timeout waiting for connect" against a process that is
+      # listening and answers the same request locally, and media on UDP/443
+      # would fail the same way with no log line anywhere to say so.
+      #
+      # Run from the relay unit rather than once at first boot, so a reboot
+      # cannot leave the rules behind: iptables state does not survive one, and
+      # cloud-init's runcmd does not run again.
+      set -eu
+
+      open() {
+          local protocol="$1" port="$2"
+          # -C tests for the rule and fails if it is absent, which makes this
+          # safe to run on every start.
+          iptables -C INPUT -p "$protocol" --dport "$port" -j ACCEPT 2>/dev/null ||
+              iptables -A INPUT -p "$protocol" --dport "$port" -j ACCEPT
+          ip6tables -C INPUT -p "$protocol" --dport "$port" -j ACCEPT 2>/dev/null ||
+              ip6tables -A INPUT -p "$protocol" --dport "$port" -j ACCEPT
+      }
+
+      # Media, from anywhere. Who may reach it is the VPC firewall's decision.
+      open udp ${udp_port}
+
+      # The probe port. Left open at the host and narrowed to Google's prober
+      # ranges by the VPC rule, so there is one place that decides who may ask a
+      # relay whether it is well.
+      open tcp ${health_check_port}
+
+  # /etc, not /opt. Container-Optimized OS mounts its root read-only under
+  # dm-verity and only a few trees are writable; a write_files entry under /opt
+  # fails, and it takes the rest of the list with it -- which presents as a
+  # missing systemd unit rather than as a permissions error.
+  - path: /etc/moqom/fetch-secrets.sh
+    permissions: "0700"
+    owner: root
+    content: |
+      #!/bin/bash
+      # Fetch the relay's secrets from Secret Manager into tmpfs.
+      #
+      # Into /run rather than /etc because /run is tmpfs: the private key and the
+      # control-plane credential never touch the boot disk, so a snapshot of it
+      # holds neither. They are re-fetched on every start, which also means
+      # rotating one is a rolling restart rather than a rebuild.
+      #
+      # curl and the metadata server rather than gcloud: the Container-Optimized
+      # OS image has no SDK, and pulling one to read three strings would be a
+      # container start on the critical path of every boot.
+      set -euo pipefail
+
+      mkdir -p /run/moqom/tls
+      chmod 0755 /run/moqom
+
+      token() {
+          curl -sf -H "Metadata-Flavor: Google" \
+              "http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/token" \
+              | sed -n 's/.*"access_token":"\([^"]*\)".*/\1/p'
+      }
+
+      TOKEN="$(token)"
+      if [ -z "$TOKEN" ]; then
+          echo "no access token from the metadata server" >&2
+          exit 1
+      fi
+
+      # The response is pretty-printed JSON, so the payload is on its own line.
+      # `"data": "` does not match the `"dataCrc32c"` line beside it.
+      fetch() {
+          curl -sf -H "Authorization: Bearer $TOKEN" \
+              "https://secretmanager.googleapis.com/v1/projects/${project_id}/secrets/$1/versions/latest:access" \
+              | sed -n 's/.*"data": "\([^"]*\)".*/\1/p' \
+              | base64 -d
+      }
+
+%{ if tls_certificate_secret_id != "" ~}
+      fetch "${tls_certificate_secret_id}" > /run/moqom/tls/cert.pem
+      fetch "${tls_private_key_secret_id}" > /run/moqom/tls/key.pem
+      # The container runs as the distroless nonroot user, which is this uid.
+      # Root-owned files it cannot read would present as a relay that starts and
+      # then exits complaining about its certificate.
+      chown ${container_uid}:${container_uid} /run/moqom/tls/cert.pem /run/moqom/tls/key.pem
+      chmod 0444 /run/moqom/tls/cert.pem
+      chmod 0400 /run/moqom/tls/key.pem
+%{ endif ~}
+
+      # An env file rather than `--env` on the command line, because a systemd
+      # unit is world-readable and `docker inspect` is not privileged. This is
+      # 0600 and root-owned; the daemon reads it, the container never sees the
+      # file.
+      umask 077
+      : > /run/moqom/relay.env
+%{ if credential_secret_id != "" ~}
+      printf 'MOQOM_CONTROL_CREDENTIAL=%s\n' "$(fetch "${credential_secret_id}")" >> /run/moqom/relay.env
+%{ endif ~}
+      chmod 0600 /run/moqom/relay.env
+
   - path: /etc/systemd/system/moqom-relay.service
     permissions: "0644"
     owner: root
@@ -102,6 +216,13 @@ write_files:
       Environment=HOME=/home/chronos
       ExecStartPre=/usr/bin/docker-credential-gcr configure-docker --registries=${registry_host}
       ExecStartPre=-/usr/bin/docker rm -f moqom-relay
+      # Re-fetched on every start, so a rotated secret needs a restart and not a
+      # new instance template.
+      # Through the interpreter rather than executed directly, so the mount
+      # options on the filesystem holding it cannot matter.
+      ExecStartPre=/bin/bash /etc/moqom/open-ports.sh
+      ExecStartPre=/bin/bash /etc/moqom/fetch-secrets.sh
+      ExecStartPre=/usr/bin/docker pull ${image}
       # Host networking, not a port mapping. Docker's userland proxy adds a hop
       # and a copy per datagram, and SO_REUSEPORT sharding across accept
       # threads — the standard way to scale a QUIC server past one core — only
@@ -110,9 +231,22 @@ write_files:
         --network host \
         --ulimit nofile=1048576:1048576 \
         --ulimit memlock=-1:-1 \
-        --log-driver=json-file --log-opt max-size=64m --log-opt max-file=3 \
-        --env MOQOM_RELAY_UDP_PORT=${udp_port} \
-        --env MOQOM_RELAY_HEALTH_PORT=${health_check_port} \
+        # gcplogs, not json-file. These machines have no external address and
+        # SSH to them is a deliberate act, so logs that only exist on local disk
+        # are logs nobody reads -- and a relay that crashes on startup takes its
+        # only explanation with it. The cost is that `docker logs` on the
+        # instance returns nothing; the daemon streams straight to Cloud
+        # Logging instead.
+        --log-driver=gcplogs \
+        --log-opt gcp-log-cmd=true \
+        --volume /run/moqom/tls:/etc/moqom/tls:ro \
+        --env-file /run/moqom/relay.env \
+        --env MOQOM_RELAY_ADDR=0.0.0.0:${udp_port} \
+        --env MOQOM_RELAY_ADMIN_ADDR=0.0.0.0:${health_check_port} \
+%{ if tls_certificate_secret_id != "" ~}
+        --env MOQOM_RELAY_CERT=/etc/moqom/tls/cert.pem \
+        --env MOQOM_RELAY_KEY=/etc/moqom/tls/key.pem \
+%{ endif ~}
 %{ for key, value in container_env ~}
         --env ${key}=${value} \
 %{ endfor ~}

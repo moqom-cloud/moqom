@@ -1,16 +1,24 @@
-output "relay_endpoint" {
-  value       = module.relay.external_ip
-  description = "Address to dial on UDP/443."
+output "relay_endpoints" {
+  value       = { for region, relay in module.relay : region => relay.external_ip }
+  description = "Address to dial on UDP/443, per region."
 }
 
-output "control_url" {
-  value       = module.control.uri
-  description = "Control plane run.app URL."
+output "control_endpoint" {
+  value       = module.control.endpoint
+  description = "What a relay in this VPC puts in MOQOM_CONTROL_ENDPOINT. Internal, so nothing outside the VPC can reach it."
 }
 
-output "director_url" {
-  value       = module.director.uri
-  description = "Director run.app URL."
+output "cluster" {
+  value = {
+    name     = module.gke.cluster_name
+    location = module.gke.location
+  }
+  description = "Cluster to point kubectl at: gcloud container clusters get-credentials NAME --region LOCATION."
+}
+
+output "control_database_user" {
+  value       = module.data.iam_usernames[module.gke.workload_service_accounts["control"]]
+  description = "Postgres role the control plane logs in as. Cloud SQL derives it from the service account email, and it is the value PGUSER must carry."
 }
 
 output "registry" {

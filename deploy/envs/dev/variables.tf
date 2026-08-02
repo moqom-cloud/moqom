@@ -5,8 +5,14 @@ variable "project_id" {
 
 variable "region" {
   type        = string
-  description = "Single region dev runs in. Dev deliberately does not exercise multi-region steering; prod does."
+  description = "Primary region. The cluster and the database live here, and so does one relay tier."
   default     = "us-central1"
+}
+
+variable "second_region" {
+  type        = string
+  description = "Second relay region. Dev runs two so the latency comparison the benchmarks make -- a relay beside the phones against one a region away -- is reproducible in the environment it was measured in."
+  default     = "us-west2"
 }
 
 variable "relay_image" {
@@ -17,11 +23,6 @@ variable "relay_image" {
 variable "control_image" {
   type        = string
   description = "moqom-control container image."
-}
-
-variable "director_image" {
-  type        = string
-  description = "moqom-director container image."
 }
 
 variable "dns_domain" {

@@ -13,9 +13,11 @@
 // than convenient: moqom-go has no published tag yet, so there is no version
 // for the network to resolve, and go/go.mod carries a matching `replace` for
 // anyone building with GOWORK=off. Both go away at the first release.
-go 1.23
+go 1.23.0
+
+toolchain go1.23.1
 
 use (
-	./go
 	../moqom-go
+	./go
 )

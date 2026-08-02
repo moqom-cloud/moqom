@@ -58,6 +58,7 @@ locals {
   secret_ids = compact([
     var.tls_certificate_secret_id,
     var.tls_private_key_secret_id,
+    var.credential_secret_id,
   ])
 }
 
@@ -104,7 +105,7 @@ resource "google_storage_bucket_iam_member" "relay_recordings" {
   member = google_service_account.relay.member
 }
 
-resource "google_secret_manager_secret_iam_member" "relay_tls" {
+resource "google_secret_manager_secret_iam_member" "relay_secrets" {
   for_each = toset(local.secret_ids)
 
   project   = var.project_id
@@ -146,10 +147,17 @@ resource "google_compute_instance_template" "relay" {
   }
 
   metadata = {
-    user-data                    = local.cloud_init
-    google-logging-enabled       = "true"
-    google-monitoring-enabled    = "true"
-    block-project-ssh-keys       = "true"
+    user-data                 = local.cloud_init
+    google-logging-enabled    = "true"
+    google-monitoring-enabled = "true"
+    block-project-ssh-keys    = "true"
+
+    # With project keys blocked, this is what leaves a way in: OS Login gates
+    # SSH on IAM rather than on a key someone pasted into project metadata, and
+    # it removes access when the role is removed. Blocking project keys without
+    # it produces a tier nobody can log into, which is only a security property
+    # until the first relay boots and does not serve.
+    enable-oslogin               = "TRUE"
     cos-update-strategy          = "update_disabled"
     google-logging-use-fluentbit = "true"
   }
@@ -226,13 +234,17 @@ resource "google_compute_region_health_check" "liveness" {
   project = var.project_id
   region  = var.region
 
-  check_interval_sec = 30
-  timeout_sec        = 10
-  healthy_threshold  = 1
   # Ten minutes of consecutive failure before a relay is destroyed. Deleting a
   # machine holding live streams is the most expensive action in this module, so
   # it should require more evidence than removing it from the load balancer.
-  unhealthy_threshold = 20
+  #
+  # Ten minutes as a minute apart ten times, rather than thirty seconds apart
+  # twenty times: GCP caps the threshold at ten, so the interval carries the
+  # rest. Coarser, and the same patience.
+  check_interval_sec  = 60
+  timeout_sec         = 10
+  healthy_threshold   = 1
+  unhealthy_threshold = 10
 
   http_health_check {
     port         = var.health_check_port
@@ -361,6 +373,11 @@ resource "google_compute_region_backend_service" "relay" {
 
   backend {
     group = google_compute_region_instance_group_manager.relay.instance_group
+
+    # A passthrough load balancer does not measure backends, so it accepts only
+    # this mode. It is a declaration rather than a policy: the provider's
+    # default is UTILIZATION, which the API rejects for this kind of balancer.
+    balancing_mode = "CONNECTION"
   }
 
   # QUIC survives a client changing address — that is what connection IDs are
@@ -369,18 +386,24 @@ resource "google_compute_region_backend_service" "relay" {
   # arrives at a different relay, which has no session state for it, and the
   # migration that QUIC was designed to make invisible becomes a reconnect.
   #
-  # CLIENT_IP with PER_SESSION tracking hashes on the source address alone, so a
-  # NAT rebinding that only changes the port still lands on the same relay. It
-  # does nothing for a genuine address change; closing that properly needs
-  # QUIC-LB style routable connection IDs so any relay can forward a stray
-  # packet to the one holding the session.
+  # CLIENT_IP hashes new flows on the source address alone, so a NAT rebinding
+  # that only changes the port still lands on the same relay. It does nothing
+  # for a genuine address change; closing that properly needs QUIC-LB style
+  # routable connection IDs so any relay can forward a stray packet to the one
+  # holding the session.
   #
   # The cost of CLIENT_IP is load skew: everyone behind one carrier-grade NAT
   # hashes to the same backend. Watch per-instance session counts, not just CPU.
   session_affinity = "CLIENT_IP"
 
   connection_tracking_policy {
-    tracking_mode = "PER_SESSION"
+    # PER_CONNECTION rather than PER_SESSION, because GCP refuses to combine
+    # PER_SESSION with the persistence below and the persistence is what makes
+    # draining work. Little is lost: affinity for a new flow is still by client
+    # address, so the rebinding case above behaves the same. What changes is
+    # that an established flow is tracked by its full tuple, which is precisely
+    # what lets it survive its backend going unhealthy.
+    tracking_mode = "PER_CONNECTION"
 
     # Without this, a relay that fails its serving health check loses its
     # existing flows as well as its new ones, which turns a drain into a mass
@@ -388,7 +411,10 @@ resource "google_compute_region_backend_service" "relay" {
     # ones already there run to completion.
     connection_persistence_on_unhealthy_backends = "ALWAYS_PERSIST"
 
-    idle_timeout_sec = var.connection_idle_timeout_sec
+    # No idle timeout. An external passthrough load balancer rejects any value
+    # but its own default, so `connection_idle_timeout_sec` governs the internal
+    # case only and is deliberately not passed here -- setting it fails the
+    # apply rather than being ignored.
   }
 
   log_config {

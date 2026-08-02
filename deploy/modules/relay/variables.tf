@@ -124,14 +124,14 @@ variable "health_check_port" {
 
 variable "health_check_path" {
   type        = string
-  description = "Path the relay serves its serving-readiness probe on. Must go unhealthy while draining."
-  default     = "/healthz"
+  description = "Path the relay serves its serving-readiness probe on. Must go unhealthy while draining. The relay calls this one /readyz."
+  default     = "/readyz"
 }
 
 variable "liveness_check_path" {
   type        = string
-  description = "Path the relay serves its liveness probe on. Must stay healthy while draining; it answers 'is this process wedged', not 'should I get new sessions'."
-  default     = "/livez"
+  description = "Path the relay serves its liveness probe on. Must stay healthy while draining; it answers 'is this process wedged', not 'should I get new sessions'. The relay calls this one /healthz, which is the opposite of the convention the control plane uses -- so both are named here rather than assumed."
+  default     = "/healthz"
 }
 
 variable "enable_tcp_fallback_rule" {
@@ -179,6 +179,18 @@ variable "tls_private_key_secret_id" {
   type        = string
   description = "Secret Manager secret holding the PEM private key."
   default     = null
+}
+
+variable "credential_secret_id" {
+  type        = string
+  description = "Secret Manager secret holding the bearer credential the relay presents to the control plane on RelayLink. Null means the relay attaches to nothing and enforces tokens only."
+  default     = null
+}
+
+variable "container_uid" {
+  type        = number
+  description = "UID the relay runs as inside its container. The fetched certificate and key are chowned to it, because a root-owned key is one the container cannot read."
+  default     = 65532
 }
 
 variable "artifact_registry_repository" {

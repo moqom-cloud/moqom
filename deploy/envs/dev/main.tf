@@ -8,12 +8,35 @@ locals {
     system      = "moqom"
   }
 
+  # Two regions, which is a deliberate departure from "dev is single-region".
+  # The latency work compares a relay near the phones against one a region away,
+  # and a comparison you cannot reproduce in the environment you develop in is a
+  # measurement you stop trusting. It also means the control plane is reached
+  # across regions from the start, which is where an internal load balancer's
+  # regional scope would otherwise be discovered late.
   regions = {
     (var.region) = {
       relay_cidr      = "10.20.0.0/20"
       serverless_cidr = "10.20.16.0/26"
     }
+    (var.second_region) = {
+      relay_cidr      = "10.24.0.0/20"
+      serverless_cidr = "10.24.16.0/26"
+    }
   }
+
+  # The cluster's ranges, out of the same 10.20/10.21 space as everything else
+  # here. Pods get a /16 because GKE hands each node a /24 out of it, so the
+  # limit this sets is on node count rather than on pods.
+  # One number, three places: what the control plane binds, what its load
+  # balancer publishes, and what the relay tier's egress rule opens. Two of
+  # those disagreeing produces a relay that cannot reach a control plane that is
+  # working perfectly.
+  control_grpc_port = 8443
+
+  cluster_node_cidr    = "10.20.32.0/22"
+  cluster_pod_cidr     = "10.21.0.0/16"
+  cluster_service_cidr = "10.22.0.0/20"
 
   control_host = var.dns_domain == null ? "" : "api.${trimsuffix(var.dns_domain, ".")}"
   edge_host    = var.dns_domain == null ? "" : "edge.${var.dns_domain}"
@@ -22,7 +45,28 @@ locals {
     "${local.name_prefix}-cat-signing-key" = []
     "${local.name_prefix}-relay-tls-cert"  = []
     "${local.name_prefix}-relay-tls-key"   = []
+    # The relay's bearer credential for RelayLink. It is the same kind of thing
+    # as a signing key -- a string that grants access -- so it is held the same
+    # way, in a container Terraform creates and never reads.
+    "${local.name_prefix}-relay-credential" = []
+    # The service account file the control plane authenticates backends
+    # against. A file rather than a variable because it is a JSON document, and
+    # because a process's environment is readable by more things than its files.
+    "${local.name_prefix}-control-accounts" = []
+    # The bearer token an operator's own calls to the admin API carry. Held in
+    # the same place as the rest so that a laptop reads it rather than keeps it.
+    "${local.name_prefix}-admin-credential" = []
   }
+
+  # One namespace for the control plane's components. The director will join it
+  # when it exists.
+  namespace = "moqom"
+
+  # The Kubernetes secret the control plane's pod reads, populated out of band
+  # from the Secret Manager entries above by tools/sync-secrets.sh. Named here
+  # so the deployment can reference it; its contents never enter Terraform
+  # state, which is the rule the rest of this tree follows for secret material.
+  control_secret = "${local.name_prefix}-control"
 }
 
 module "services" {
@@ -34,12 +78,12 @@ module "services" {
     "artifactregistry.googleapis.com",
     "cloudresourcemanager.googleapis.com",
     "compute.googleapis.com",
+    "container.googleapis.com",
     "dns.googleapis.com",
     "iam.googleapis.com",
     "iamcredentials.googleapis.com",
     "logging.googleapis.com",
     "monitoring.googleapis.com",
-    "run.googleapis.com",
     "secretmanager.googleapis.com",
     "servicenetworking.googleapis.com",
     "sqladmin.googleapis.com",
@@ -59,6 +103,12 @@ module "network" {
   # without connection logs is guesswork.
   enable_firewall_logging = true
   enable_iap_ssh          = true
+
+  # The relays dial the control plane's internal load balancer, which lives on
+  # the cluster's node range. Named here rather than taken from the gke module
+  # so the firewall does not have to wait for a cluster to exist.
+  control_plane_cidrs = [local.cluster_node_cidr]
+  control_plane_port  = local.control_grpc_port
 
   create_dns_zone = var.dns_domain != null
   dns_zone_name   = "${local.name_prefix}-edge"
@@ -89,33 +139,44 @@ module "registry" {
   depends_on = [module.services]
 }
 
-module "federation" {
-  source = "../../modules/federation"
+# The cluster, and the Google identities its pods act as.
+#
+# The identities are created here rather than beside the workloads because the
+# database needs them first: Cloud SQL turns a service account into a Postgres
+# role, and the data module must know the email while the cluster is still
+# building. Putting them with the workloads would make data depend on control
+# and control depend on data.
+module "gke" {
+  source = "../../modules/gke"
 
   project_id  = var.project_id
+  region      = var.region
   name_prefix = local.name_prefix
-  pool_id     = "${local.name_prefix}-external"
+  network     = module.network.network_id
 
-  github = {
-    owner        = var.github_owner
-    repositories = var.github_repositories
-    allowed_refs = []
+  node_cidr    = local.cluster_node_cidr
+  pod_cidr     = local.cluster_pod_cidr
+  service_cidr = local.cluster_service_cidr
+
+  workloads = {
+    control = {
+      namespace       = local.namespace
+      service_account = "moqom-control"
+      roles = [
+        # IAM database authentication: `client` permits the connection,
+        # `instanceUser` turns the access token into a Postgres login. Neither
+        # can be scoped below the project, which is why this project holds
+        # nothing experimental.
+        "roles/cloudsql.client",
+        "roles/cloudsql.instanceUser",
+      ]
+    }
   }
 
-  # Dev CI deploys images and revisions. It cannot touch IAM, networking, or the
-  # database. Same shape as prod deliberately: dev is where a broken deploy is
-  # found, and it only finds the permission-shaped ones if the permissions
-  # match.
-  deployer_roles = [
-    "roles/run.developer",
-    "roles/compute.instanceAdmin.v1",
-  ]
+  artifact_registry_repository = module.registry.repository_ref
 
-  deployer_impersonates = [
-    module.relay.service_account_email,
-    module.control.service_account_email,
-    module.director.service_account_email,
-  ]
+  deletion_protection = false
+  labels              = local.labels
 
   depends_on = [module.services]
 }
@@ -132,6 +193,12 @@ module "data" {
   tier              = "db-custom-1-3840"
   availability_type = "ZONAL"
   disk_size_gb      = 10
+
+  databases = ["moqom"]
+
+  # The control plane logs in as itself. No password is generated, stored or
+  # rotated, because there is not one.
+  iam_service_accounts = [module.gke.workload_service_accounts["control"]]
 
   backup_retention_days          = 3
   transaction_log_retention_days = 1
@@ -157,15 +224,80 @@ module "data" {
   depends_on = [module.services]
 }
 
+module "control" {
+  source = "../../modules/workload"
+
+  name      = "${local.name_prefix}-control"
+  namespace = local.namespace
+
+  service_account        = module.gke.workload_identity_bindings["control"].service_account
+  google_service_account = module.gke.workload_service_accounts["control"]
+
+  # tools/sync-secrets.sh makes the namespace, because the secret this
+  # deployment mounts has to exist before the deployment does and the secret has
+  # to live somewhere. Terraform owning it as well would be a race on first
+  # apply and an import for every new environment.
+  create_namespace = false
+
+  image     = var.control_image
+  grpc_port = local.control_grpc_port
+
+  # One replica, and this is a correctness bound rather than a sizing choice.
+  # The registry of which relay is attached to which process is in memory, so a
+  # moderation call handled by one replica cannot push a directive to a relay
+  # attached to another -- it degrades to the relay's next snapshot, and reports
+  # `enforced: false` in the meantime. A second replica is safe once that
+  # registry is shared; until then this is the honest number.
+  replicas = 1
+
+  cpu    = "500m"
+  memory = "512Mi"
+
+  env = {
+    MOQOM_ENV                 = local.env
+    MOQOM_CONTROL_ADDR        = ":${local.control_grpc_port}"
+    MOQOM_CONTROL_HEALTH_ADDR = ":8080"
+    MOQOM_CONTROL_ISSUER      = local.control_host == "" ? "moqom.cloud" : local.control_host
+    MOQOM_CONTROL_STORE       = "postgres"
+
+    # Cloud SQL over IAM. The connector resolves the instance and supplies a
+    # short-lived token as the credential; PGUSER is the service account email
+    # with `.gserviceaccount.com` removed, which is the role name Cloud SQL
+    # derives and the one thing that is easy to get wrong here.
+    MOQOM_CONTROL_SQL_INSTANCE = module.data.instance_connection_name
+    PGUSER                     = module.data.iam_usernames[module.gke.workload_service_accounts["control"]]
+    PGDATABASE                 = "moqom"
+
+    MOQOM_CONTROL_ACCOUNTS = "/etc/moqom/accounts.json"
+  }
+
+  secret_env = {
+    MOQOM_CONTROL_SIGNING_KEYS = {
+      secret = local.control_secret
+      key    = "signing-keys"
+    }
+  }
+
+  file_secrets = {
+    accounts = {
+      secret     = local.control_secret
+      mount_path = "/etc/moqom"
+    }
+  }
+
+  labels = merge(local.labels, { component = "control" })
+}
+
 module "relay" {
-  source = "../../modules/relay"
+  source   = "../../modules/relay"
+  for_each = local.regions
 
   project_id  = var.project_id
-  region      = var.region
+  region      = each.key
   name_prefix = local.name_prefix
 
   network      = module.network.network_id
-  subnetwork   = module.network.relay_subnets[var.region]
+  subnetwork   = module.network.relay_subnets[each.key]
   network_tags = [module.network.relay_target_tag]
 
   image         = var.relay_image
@@ -179,18 +311,30 @@ module "relay" {
   # smaller than its zone count, so this is a floor rather than a choice.
   update_max_surge = 3
 
+  # One certificate across both regions, because the phones pin its hash: a
+  # per-region certificate would mean a per-region hash and a client that has to
+  # know which relay it is about to reach before it reaches it.
   tls_certificate_secret_id = "${local.name_prefix}-relay-tls-cert"
   tls_private_key_secret_id = "${local.name_prefix}-relay-tls-key"
+  credential_secret_id      = "${local.name_prefix}-relay-credential"
 
   artifact_registry_repository = module.registry.repository_ref
   recording_bucket             = module.data.recording_bucket
 
+  # These are the variables the relay binary actually reads. An earlier version
+  # of this file named ports that nothing looks for; a relay started with those
+  # binds its defaults and the mismatch shows up as a health check that never
+  # passes.
   container_env = {
-    MOQOM_ENV              = local.env
-    MOQOM_REGION           = var.region
-    MOQOM_LOG_LEVEL        = "debug"
+    MOQOM_RELAY_REGION = each.key
+    RUST_LOG           = "info"
+
+    # Where moderation comes from. Plaintext h2c to an address that exists only
+    # inside this VPC: the alternative is a certificate for an RFC1918 address,
+    # which no public authority will issue.
+    MOQOM_CONTROL_ENDPOINT = module.control.endpoint
+
     MOQOM_RECORDING_BUCKET = module.data.recording_bucket
-    MOQOM_CONTROL_HOST     = local.control_host
   }
 
   labels = merge(local.labels, { component = "relay" })
@@ -198,77 +342,34 @@ module "relay" {
   depends_on = [module.data]
 }
 
-module "control" {
-  source = "../../modules/control-plane"
+module "federation" {
+  source = "../../modules/federation"
 
-  project_id   = var.project_id
-  region       = var.region
-  service_name = "${local.name_prefix}-control"
-  image        = var.control_image
+  project_id  = var.project_id
+  name_prefix = local.name_prefix
+  pool_id     = "${local.name_prefix}-external"
 
-  network      = module.network.network_id
-  subnetwork   = module.network.serverless_subnets[var.region]
-  network_tags = [module.network.serverless_target_tag]
-
-  min_instances = 0
-  max_instances = 3
-  cpu           = "1"
-  memory        = "512Mi"
-
-  deletion_protection = false
-
-  sql_instance_name = module.data.instance_name
-
-  env = {
-    MOQOM_ENV       = local.env
-    MOQOM_LOG_LEVEL = "debug"
-    PGHOST          = module.data.private_ip
-    PGDATABASE      = "moqom"
-    PGSSLMODE       = "require"
-    PGIAMAUTH       = "true"
+  github = {
+    owner        = var.github_owner
+    repositories = var.github_repositories
+    allowed_refs = []
   }
 
-  secret_env = {
-    MOQOM_CAT_SIGNING_KEY = module.data.secret_ids["${local.name_prefix}-cat-signing-key"]
-  }
+  # Dev CI deploys images and rolls the relay tier. It cannot touch IAM,
+  # networking, or the database. Same shape as prod deliberately: dev is where a
+  # broken deploy is found, and it only finds the permission-shaped ones if the
+  # permissions match.
+  deployer_roles = [
+    "roles/container.developer",
+    "roles/compute.instanceAdmin.v1",
+  ]
 
-  readable_buckets             = [module.data.recording_bucket]
-  artifact_registry_repository = module.registry.repository_ref
+  deployer_impersonates = merge(
+    { control = module.gke.workload_service_accounts["control"] },
+    { for region, relay in module.relay : "relay-${region}" => relay.service_account_email },
+  )
 
-  labels = merge(local.labels, { component = "control" })
-}
-
-module "director" {
-  source = "../../modules/control-plane"
-
-  project_id   = var.project_id
-  region       = var.region
-  service_name = "${local.name_prefix}-director"
-  image        = var.director_image
-
-  network      = module.network.network_id
-  subnetwork   = module.network.serverless_subnets[var.region]
-  network_tags = [module.network.serverless_target_tag]
-
-  min_instances = 0
-  max_instances = 2
-  cpu           = "1"
-  memory        = "256Mi"
-
-  deletion_protection = false
-
-  env = {
-    MOQOM_ENV = local.env
-
-    # The director hands clients a relay. With one region it has nothing to
-    # choose between, which is the point of keeping dev single-region: the
-    # steering logic has to be correct in the degenerate case first.
-    MOQOM_RELAY_ENDPOINTS = jsonencode({ (var.region) = module.relay.external_ip })
-  }
-
-  artifact_registry_repository = module.registry.repository_ref
-
-  labels = merge(local.labels, { component = "director" })
+  depends_on = [module.services]
 }
 
 module "observability" {
@@ -286,12 +387,14 @@ module "observability" {
   notification_emails = var.notification_emails
 
   sql_instance_id = module.data.instance_name
-  cloud_run_services = [
-    module.control.service_name,
-    module.director.service_name,
-  ]
 
-  uptime_check_host = local.control_host == "" ? null : local.control_host
+  # Empty: the control plane moved to the cluster, and there is nothing on Cloud
+  # Run any more. Cluster and workload metrics come from GKE's own pipeline.
+  cloud_run_services = []
+
+  # Nothing public to check yet. The control plane answers on an internal
+  # address, and an uptime check runs from outside.
+  uptime_check_host = null
 
   labels = local.labels
 }
@@ -304,6 +407,6 @@ module "edge_dns" {
   project_id  = var.project_id
   zone_name   = module.network.dns_zone_name
   record_name = local.edge_host
-  endpoints   = { (var.region) = module.relay.external_ip }
+  endpoints   = { for region, relay in module.relay : region => relay.external_ip }
   ttl         = 60
 }

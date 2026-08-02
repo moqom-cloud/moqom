@@ -120,3 +120,15 @@ variable "labels" {
   description = "Labels applied to resources that accept them."
   default     = {}
 }
+
+variable "control_plane_cidrs" {
+  type        = list(string)
+  description = "Ranges holding the control plane's address, which the relays dial for RelayLink. Empty means no egress rule is written, which is correct only when nothing here talks to a control plane."
+  default     = []
+}
+
+variable "control_plane_port" {
+  type        = number
+  description = "Port the control plane's gRPC surface answers on."
+  default     = 8443
+}

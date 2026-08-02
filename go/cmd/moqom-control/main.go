@@ -18,6 +18,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net"
+	"net/http"
 	"os"
 	"os/signal"
 	"strings"
@@ -31,13 +32,23 @@ import (
 	"github.com/moqom-cloud/moqom/go/internal/server"
 	"github.com/moqom-cloud/moqom/go/internal/store"
 	"github.com/moqom-cloud/moqom/go/internal/store/memory"
+	"github.com/moqom-cloud/moqom/go/internal/store/postgres"
 	"github.com/moqom-cloud/moqom/go/internal/timecode"
 	"github.com/moqom-cloud/moqom/go/internal/token"
 )
 
+// version is stamped by the container build with `-X main.version`.
+//
+// A running process has to be able to say which commit it is. A container has no
+// git directory to infer it from, and matching a misbehaving replica to a change
+// during an incident is not the moment to be guessing from a deployment
+// timestamp.
+var version = "dev"
+
 func main() {
 	logger := slog.New(slog.NewJSONHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
 	slog.SetDefault(logger)
+	logger.Info("moqom control plane starting", "version", version)
 
 	if err := run(); err != nil {
 		logger.Error("control plane stopped", "error", err)
@@ -113,6 +124,28 @@ func run() error {
 		"address", listener.Addr().String(), "issuer", issuer,
 		"keys", len(keys), "note", "expects TLS termination in front")
 
+	// A second listener for the probes, on a port of its own.
+	//
+	// Separate from the gRPC port because the things that read it cannot speak
+	// gRPC -- a Google Cloud uptime check is HTTP over TCP, and so is the
+	// simplest load balancer health check -- and because that port can then stay
+	// closed to everything but the orchestrator while the API port is public.
+	probes := &http.Server{
+		Addr:              env("MOQOM_CONTROL_HEALTH_ADDR", ":8080"),
+		Handler:           instance.HealthHandler(),
+		ReadHeaderTimeout: 5 * time.Second,
+	}
+	go func() {
+		if err := probes.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			// Not fatal. A control plane that is serving media control but has
+			// lost its health port should be reported and left running: killing
+			// it would turn a monitoring fault into an outage.
+			slog.Error("health endpoint stopped", "error", err)
+		}
+	}()
+	slog.Info("health endpoint listening", "address", probes.Addr,
+		"liveness", server.LivenessPath, "readiness", server.ReadinessPath)
+
 	stopped := make(chan error, 1)
 	go func() { stopped <- grpcServer.Serve(listener) }()
 
@@ -124,6 +157,13 @@ func run() error {
 		return err
 	case <-interrupted.Done():
 		slog.Info("draining")
+		// The probes go first, and the wait is the point: an orchestrator needs
+		// a moment to notice this replica is leaving and stop sending it work.
+		// Closing both at once means the requests already in flight towards it
+		// arrive at a socket that is gone.
+		shutdown, done := context.WithTimeout(context.Background(), 5*time.Second)
+		defer done()
+		_ = probes.Shutdown(shutdown)
 		// Graceful, so relays see a clean close and reattach rather than timing out.
 		// Their grace period covers the gap, which is the whole reason it exists.
 		grpcServer.GracefulStop()
@@ -305,10 +345,69 @@ func backingStore(now func() time.Time) (store.Store, error) {
 			"consequence", "all state, including the moderation log, is lost on restart")
 		return memory.New(now, nil), nil
 	case "postgres":
-		return nil, errors.New("the Postgres store is not wired up yet; see docs/PLAN.md")
+		settings, err := databaseConfig()
+		if err != nil {
+			return nil, err
+		}
+		settings.Now = now
+
+		// Bounded, because a database that cannot be reached at startup is a
+		// misconfiguration and the useful thing to do about it is to fail
+		// visibly rather than sit at a health check that never passes.
+		ctx, done := context.WithTimeout(context.Background(), 30*time.Second)
+		defer done()
+
+		subject, err := postgres.Open(ctx, settings)
+		if err != nil {
+			return nil, fmt.Errorf("opening the postgres store: %w", err)
+		}
+		slog.Info("using the postgres store", "instance", settings.Instance)
+		return subject, nil
 	default:
 		return nil, fmt.Errorf("unknown store %q, want memory or postgres", kind)
 	}
+}
+
+// databaseConfig assembles how to reach Postgres.
+//
+// Two ways in, and the deployment uses the first. MOQOM_CONTROL_SQL_INSTANCE
+// names a Cloud SQL instance and connects as the runtime's own Google identity:
+// no password is configured, stored, or rotated, because there is not one.
+// MOQOM_CONTROL_DATABASE_URL is the ordinary libpq route, for a Postgres that is
+// not Cloud SQL and for a developer running against a proxy.
+func databaseConfig() (postgres.Config, error) {
+	instance := os.Getenv("MOQOM_CONTROL_SQL_INSTANCE")
+	if instance == "" {
+		dsn := os.Getenv("MOQOM_CONTROL_DATABASE_URL")
+		if dsn == "" {
+			return postgres.Config{}, errors.New(
+				"the postgres store needs MOQOM_CONTROL_SQL_INSTANCE (Cloud SQL, IAM auth) " +
+					"or MOQOM_CONTROL_DATABASE_URL (anything else)")
+		}
+		return postgres.Config{DSN: dsn}, nil
+	}
+
+	// Cloud SQL derives the Postgres role from a service account's email by
+	// stripping `.gserviceaccount.com`, and connecting as the full email fails
+	// with "password authentication failed" for an account that has no password.
+	// The deployment injects the truncated form; saying so here is cheaper than
+	// debugging it there.
+	user := os.Getenv("PGUSER")
+	if user == "" {
+		return postgres.Config{}, errors.New(
+			"MOQOM_CONTROL_SQL_INSTANCE needs PGUSER: the service account email " +
+				"with .gserviceaccount.com removed")
+	}
+
+	return postgres.Config{
+		DSN:      fmt.Sprintf("user=%s dbname=%s sslmode=disable", user, env("PGDATABASE", "moqom")),
+		Instance: instance,
+		// The instance has no public address, so this is not a preference.
+		PrivateIP: env("MOQOM_CONTROL_SQL_PRIVATE_IP", "true") == "true",
+	}, nil
+	// sslmode=disable is not a downgrade: the connector dials a socket it has
+	// already wrapped in mutual TLS against the instance's own certificate, and
+	// asking pgx to negotiate TLS again inside that would fail.
 }
 
 var capabilityByName = map[string]control.Capability{

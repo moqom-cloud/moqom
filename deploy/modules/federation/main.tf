@@ -22,6 +22,10 @@
 # Everything else in this file is the first direction.
 
 locals {
+  # Whether anything outside GCP federates in at all. Derived from the inputs
+  # rather than from the resources, so it is known at plan time.
+  byoc_wanted = length(var.aws_accounts) + length(var.oidc_providers) > 0
+
   # Read back rather than assembled from the project number, because a
   # principalSet built from the wrong number is accepted by the API and simply
   # never matches, which presents as an authentication failure with no
@@ -122,7 +126,7 @@ resource "google_project_iam_member" "deployer" {
 # Scoped per account, the ceiling is whatever the listed identities can already
 # do. The relay account, by design, can do very little.
 resource "google_service_account_iam_member" "deployer_acts_as" {
-  for_each = var.github == null ? toset([]) : toset(var.deployer_impersonates)
+  for_each = var.github == null ? {} : var.deployer_impersonates
 
   service_account_id = "projects/${var.project_id}/serviceAccounts/${each.value}"
   role               = "roles/iam.serviceAccountUser"
@@ -174,7 +178,7 @@ resource "google_iam_workload_identity_pool_provider" "oidc" {
 }
 
 resource "google_service_account" "byoc" {
-  count = length(var.aws_accounts) + length(var.oidc_providers) > 0 ? 1 : 0
+  count = local.byoc_wanted ? 1 : 0
 
   account_id   = substr("${var.name_prefix}-byoc", 0, 30)
   project      = var.project_id
@@ -183,7 +187,11 @@ resource "google_service_account" "byoc" {
 }
 
 resource "google_project_iam_member" "byoc" {
-  for_each = length(google_service_account.byoc) == 0 ? toset([]) : toset(var.byoc_roles)
+  # Conditioned on the same variables the account itself is, rather than on
+  # whether the account exists. They say the same thing, but a count on another
+  # resource is not knowable until that resource is created, and Terraform
+  # cannot plan a for_each whose size it does not yet know.
+  for_each = local.byoc_wanted ? toset(var.byoc_roles) : toset([])
 
   project = var.project_id
   role    = each.value

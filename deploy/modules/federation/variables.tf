@@ -54,9 +54,18 @@ variable "deployer_roles" {
 }
 
 variable "deployer_impersonates" {
-  type        = list(string)
-  description = "Service account emails the CI deployer may run workloads as. Granted roles/iam.serviceAccountUser on each account individually rather than project-wide."
-  default     = []
+  type        = map(string)
+  description = <<-EOT
+    Service account emails the CI deployer may run workloads as, keyed by a
+    short name for the component. Granted roles/iam.serviceAccountUser on each
+    account individually rather than project-wide.
+
+    A map rather than a list because the keys become resource addresses, and an
+    email is usually an attribute of an account this same apply is creating --
+    so with a list, Terraform cannot know the addresses until after the accounts
+    exist, and refuses to plan. The name is known up front; the email is not.
+  EOT
+  default     = {}
 }
 
 variable "aws_accounts" {

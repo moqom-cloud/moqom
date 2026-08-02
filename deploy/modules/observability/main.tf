@@ -36,19 +36,16 @@ resource "google_logging_project_sink" "relay" {
   EOT
 
   # A dedicated writer identity per sink, rather than the shared project one.
-  # It costs an extra IAM binding and means revoking one sink's access does not
-  # touch the others.
+  # It costs nothing here and means a sink pointed at something outside this
+  # project later can be revoked without touching the others.
   unique_writer_identity = true
 }
 
-# bucketWriter has no resource-level form for log buckets, so the grant is
-# project-wide. The identity it is granted to is created by and only usable by
-# this sink, which is what keeps the effective scope narrow.
-resource "google_project_iam_member" "relay_sink_writer" {
-  project = var.project_id
-  role    = "roles/logging.bucketWriter"
-  member  = google_logging_project_sink.relay.writer_identity
-}
+# No bucketWriter binding, and none is missing. Cloud Logging routes to a log
+# bucket in the same project internally: it creates no writer identity at all,
+# so `writer_identity` comes back empty and a binding for it is rejected as an
+# invalid member. A sink pointed at BigQuery, Cloud Storage, Pub/Sub, or another
+# project does get one, and that is when this needs to come back.
 
 # A session that ends in an error is the signal that matters and the one that is
 # invisible in infrastructure metrics: CPU, bandwidth, and instance count all

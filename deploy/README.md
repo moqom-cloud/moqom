@@ -153,7 +153,17 @@ the tracked files means they change nothing tracked.
 
 `envs/dev` and `envs/prod` are separate states with separate lifecycles. There
 are no workspaces, because workspaces share a configuration and these two
-deliberately do not have the same shape — prod is multi-region and dev is not.
+deliberately do not have the same shape.
+
+Dev runs relays in two regions — `us-west1` and `us-west2` — while everything
+else in it is single-region. That is not prod in miniature; it exists because
+the latency work compares a relay beside the phones against one a region away,
+and a comparison that cannot be reproduced in the environment it was measured in
+stops being trusted. It also means the control plane is reached across regions
+from the first day, which is where an internal load balancer's regional scope
+would otherwise be discovered late: the `Service` carries
+`internal-load-balancer-allow-global-access`, and without it the relays in the
+second region cannot reach a control plane that is working perfectly.
 
 ### What is not created, and why nothing works until it is
 
@@ -277,11 +287,49 @@ module "relay" {
 }
 ```
 
-They also need the firewall rules — UDP/443 from anywhere to the relay tag, and
-TCP on the health port from `35.191.0.0/16` and `130.211.0.0/22`. Those live in
-`modules/network` and are readable in isolation; taking the whole network module
-is easier than reproducing them, and it will not conflict with an existing VPC
-as long as `name_prefix` differs.
+They also need the firewall rules — UDP/443 from anywhere to the relay tag, TCP
+on the health port from the prober ranges, and egress for NTP and for the
+control plane's port. Those live in `modules/network` and are readable in
+isolation; taking the whole network module is easier than reproducing them, and
+it will not conflict with an existing VPC as long as `name_prefix` differs.
+
+### Four ways a relay looks healthy and serves nothing
+
+Every one of these produced a relay that was running, answering its own probes
+on the machine, and useless. They are written down because none of them appears
+in a log the relay itself writes.
+
+**The prober range is not the one you think.** Most load balancers probe from
+`35.191.0.0/16` and `130.211.0.0/22`. The external passthrough Network Load
+Balancer — the only kind that forwards UDP, so the only kind that can front this
+tier — probes from `35.191.0.0/16` and `209.85.152.0/22` and `209.85.204.0/22`
+instead. Allowing the usual pair gives every backend `UNHEALTHY` with "Timeout
+waiting for connect" against a process that answers the same request locally.
+
+**Container-Optimized OS has its own firewall.** It boots `-P INPUT DROP` and
+permits loopback, ICMP, established flows and SSH. A VPC rule is necessary and
+not sufficient: the packet is allowed onto the wire and dropped by the machine it
+was addressed to. The relay unit opens UDP/443 and the health port with
+`iptables` on every start, rather than once at first boot, so a reboot cannot
+lose them.
+
+**443 is a privileged port and the container is not privileged.** The relay runs
+as a non-root user in a container sharing the host's network namespace, so
+binding 443 fails with `EACCES` and the container exits immediately with status
+1. `net.ipv4.ip_unprivileged_port_start = 0` is the fix; running as root to bind
+one socket is not.
+
+**Egress is deny by default, and that includes NTP.** The chrony configuration
+points at Cloudflare so relays and clients smear leap seconds the same way.
+Blocking UDP/123 does not fall back to something reasonable — the clock
+free-runs from boot and every timecode the relay stamps is wrong by the drift.
+
+Two things make this diagnosable at all. Container logs go straight to Cloud
+Logging with the `gcplogs` driver, because a machine with no external address
+keeps its local logs to itself and a crash on startup takes its only explanation
+with it. And `tools/quic-probe.py <address>` forces a QUIC version negotiation,
+which is the only check here that actually observes the media socket — Google
+Cloud has no UDP health check, so nothing else does.
 
 `artifact_registry_repository`, `recording_bucket`, and the TLS secret variables
 are all nullable, so a relay that pulls from elsewhere and records nowhere is a
