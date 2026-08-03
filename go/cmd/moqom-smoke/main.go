@@ -27,6 +27,8 @@ import (
 	"time"
 
 	moqom "github.com/moqom-cloud/moqom-go"
+
+	"github.com/moqom-cloud/moqom/go/internal/admintls"
 )
 
 func main() {
@@ -50,10 +52,17 @@ func run() error {
 		moqom.WithCredential(credential),
 		moqom.WithTenant(tenant),
 	}
-	// Plaintext by default, because the deployed control plane expects TLS to be
-	// terminated in front of it and the ways to reach it -- an internal load
-	// balancer inside the VPC, or a port-forward -- are both already private.
-	if value("MOQOM_SMOKE_TLS", "false") != "true" {
+	// A certificate where one is configured, and plaintext where none is. The
+	// deployed control plane asks every caller on this port for one -- being
+	// reachable only through a port-forward is not the same as knowing who is
+	// on the other end of it -- so this is part of what the smoke test proves.
+	transport, err := admintls.Credentials()
+	if err != nil {
+		return err
+	}
+	if transport != nil {
+		options = append(options, moqom.WithTLS(transport))
+	} else {
 		options = append(options, moqom.WithoutTransportSecurity())
 	}
 

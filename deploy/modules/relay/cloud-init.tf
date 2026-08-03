@@ -21,6 +21,13 @@ locals {
     credential_secret_id      = coalesce(var.credential_secret_id, "")
     container_uid             = var.container_uid
 
+    # The link's own certificates, which are a different thing from the two
+    # above: those are what a phone verifies, these are what the control plane
+    # verifies and what this relay verifies the control plane with.
+    link_ca_secret_id          = coalesce(var.link_ca_secret_id, "")
+    link_client_cert_secret_id = coalesce(var.link_client_cert_secret_id, "")
+    link_client_key_secret_id  = coalesce(var.link_client_key_secret_id, "")
+
     # GCE allows roughly 90 seconds between the delete call and the machine
     # going away, and a live stream is longer than that. This timeout governs
     # the tail of a shutdown that has already been drained at the load balancer;

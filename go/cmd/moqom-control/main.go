@@ -12,6 +12,8 @@ package main
 import (
 	"context"
 	"crypto/ed25519"
+	"crypto/tls"
+	"crypto/x509"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -26,6 +28,7 @@ import (
 	"time"
 
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/keepalive"
 
 	"github.com/moqom-cloud/moqom/go/internal/control"
@@ -89,8 +92,13 @@ func run() error {
 		return err
 	}
 
+	transport, described, err := transportCredentials()
+	if err != nil {
+		return err
+	}
+
 	unary, streaming := instance.Interceptors()
-	grpcServer := grpc.NewServer(
+	options := []grpc.ServerOption{
 		grpc.UnaryInterceptor(unary),
 		grpc.StreamInterceptor(streaming),
 		// Relays hold one stream open indefinitely and may be idle for hours in a
@@ -104,7 +112,11 @@ func run() error {
 			MinTime:             15 * time.Second,
 			PermitWithoutStream: true,
 		}),
-	)
+	}
+	if transport != nil {
+		options = append(options, grpc.Creds(transport))
+	}
+	grpcServer := grpc.NewServer(options...)
 	instance.Register(grpcServer)
 
 	listener, err := net.Listen("tcp", address)
@@ -112,17 +124,12 @@ func run() error {
 		return fmt.Errorf("listening on %s: %w", address, err)
 	}
 
-	// No TLS here, deliberately: this expects to sit behind a terminator that has the
-	// certificate -- Cloud Run, or an internal load balancer. Exposing this port
-	// directly to anything but localhost or a mesh is a misconfiguration, and it is
-	// worth saying so in the log that an operator will read while doing it.
-	//
 	// The address logged is the one the socket actually has, not the one that was
 	// requested. They differ whenever the port is 0, which is how a test finds the
 	// server it just started without racing to reserve a port first.
 	slog.Info("control plane listening",
 		"address", listener.Addr().String(), "issuer", issuer,
-		"keys", len(keys), "note", "expects TLS termination in front")
+		"keys", len(keys), "transport", described)
 
 	// A second listener for the probes, on a port of its own.
 	//
@@ -176,6 +183,79 @@ func env(name, fallback string) string {
 		return value
 	}
 	return fallback
+}
+
+// transportCredentials builds the gRPC port's TLS, and returns nil for none.
+//
+// # Why a control plane holds a certificate at all
+//
+// It used to sit behind a terminator that had one, which is right for the admin
+// API -- that is a request/response surface reached through a load balancer or a
+// port-forward. It is not right for RelayLink. Over that stream the control
+// plane sends a relay the keys it will authenticate every session with, and a
+// relay taking keys from an unauthenticated peer is a relay that will take them
+// from whatever answers to the address. Terminating TLS in front does not help:
+// what needs authenticating is the process, to the relay, and a terminator can
+// only prove it is the terminator.
+//
+// So both directions. The client certificate is what proves a peer is one of
+// this deployment's relays; the bearer credential it also presents is what says
+// which one, and whether it may use the admin API at all. Two mechanisms because
+// they answer different questions, and the certificate answers the one that a
+// stolen credential would otherwise settle on its own.
+//
+// Unset everywhere means plaintext, which is what a laptop and the test suites
+// run with -- and the log says which of the two this process is, because "the
+// relays cannot attach" and "the relays attached to something else" look the
+// same from here.
+func transportCredentials() (credentials.TransportCredentials, string, error) {
+	certificate := os.Getenv("MOQOM_CONTROL_TLS_CERT")
+	key := os.Getenv("MOQOM_CONTROL_TLS_KEY")
+	clientCA := os.Getenv("MOQOM_CONTROL_CLIENT_CA")
+
+	if certificate == "" && key == "" {
+		if clientCA != "" {
+			return nil, "", errors.New(
+				"MOQOM_CONTROL_CLIENT_CA is set without MOQOM_CONTROL_TLS_CERT, " +
+					"so client certificates could never be presented, let alone verified")
+		}
+		return nil, "plaintext", nil
+	}
+	if certificate == "" || key == "" {
+		return nil, "", errors.New("MOQOM_CONTROL_TLS_CERT and MOQOM_CONTROL_TLS_KEY go together")
+	}
+
+	pair, err := tls.LoadX509KeyPair(certificate, key)
+	if err != nil {
+		return nil, "", fmt.Errorf("reading the server certificate: %w", err)
+	}
+
+	config := &tls.Config{
+		Certificates: []tls.Certificate{pair},
+		// Both ends are ours and both are current. Nothing here has to talk to a
+		// client too old for 1.3, and saying so removes every downgrade and
+		// renegotiation question at once.
+		MinVersion: tls.VersionTLS13,
+	}
+	described := "tls"
+
+	if clientCA != "" {
+		pool := x509.NewCertPool()
+		pem, err := os.ReadFile(clientCA)
+		if err != nil {
+			return nil, "", fmt.Errorf("reading the client CA: %w", err)
+		}
+		if !pool.AppendCertsFromPEM(pem) {
+			return nil, "", fmt.Errorf("the client CA at %s holds no certificates", clientCA)
+		}
+		config.ClientCAs = pool
+		// Required rather than requested. Verifying a certificate when one turns
+		// up, and shrugging when it does not, is the configuration that reads as
+		// mutual TLS in a diagram and authenticates nobody in practice.
+		config.ClientAuth = tls.RequireAndVerifyClientCert
+		described = "mutual tls"
+	}
+	return credentials.NewTLS(config), described, nil
 }
 
 // signingKeys reads the token signing keys.

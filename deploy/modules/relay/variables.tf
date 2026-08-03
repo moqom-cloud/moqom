@@ -187,6 +187,24 @@ variable "credential_secret_id" {
   default     = null
 }
 
+variable "link_ca_secret_id" {
+  type        = string
+  description = "Secret Manager secret holding the PEM authority that signed the control plane's certificate. This is what stops a relay taking verification keys, room state and moderation from whatever answers to the control plane's address; without it the link is authenticated in one direction only. Null leaves the link on whatever the endpoint's scheme implies."
+  default     = null
+}
+
+variable "link_client_cert_secret_id" {
+  type        = string
+  description = "Secret Manager secret holding this tier's client certificate for the link, in PEM. Goes with link_ca_secret_id and link_client_key_secret_id: a control plane that requires a certificate refuses a relay that has none."
+  default     = null
+}
+
+variable "link_client_key_secret_id" {
+  type        = string
+  description = "Secret Manager secret holding the private key for link_client_cert_secret_id."
+  default     = null
+}
+
 variable "container_uid" {
   type        = number
   description = "UID the relay runs as inside its container. The fetched certificate and key are chowned to it, because a root-owned key is one the container cannot read."

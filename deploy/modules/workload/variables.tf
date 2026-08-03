@@ -117,6 +117,12 @@ variable "internal_load_balancer" {
   default     = true
 }
 
+variable "transport_security" {
+  type        = bool
+  description = "Whether the workload terminates TLS on its own gRPC port, which decides the scheme in the endpoint output. This module does not configure it — the workload reads its certificate from a mounted secret — but callers are given the URL to dial, and a scheme that disagrees with what the process is doing is a link that never comes up."
+  default     = false
+}
+
 variable "global_access" {
   type        = bool
   description = "Let clients in any region of the VPC reach the internal load balancer, not only its own. Required as soon as anything that dials it runs somewhere else."

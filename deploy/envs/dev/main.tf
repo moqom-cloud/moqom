@@ -56,7 +56,36 @@ locals {
     # The bearer token an operator's own calls to the admin API carry. Held in
     # the same place as the rest so that a laptop reads it rather than keeps it.
     "${local.name_prefix}-admin-credential" = []
+
+    # RelayLink's mutual TLS: a private authority, and a certificate for each of
+    # the three things that speak on that port.
+    #
+    # Private because the endpoint is an internal load balancer and no public
+    # authority issues for an RFC1918 address, and because pinning one authority
+    # is stronger than trusting every root a machine ships with. What it buys is
+    # the direction the bearer credential never covered — a relay knowing that
+    # the peer sending it verification keys, room state and moderation is the
+    # control plane, rather than whatever is currently answering to its address.
+    #
+    # The authority's private key is here too, which is the part to be careful
+    # about: whoever holds it can mint a certificate this deployment trusts.
+    # tools/sync-secrets.sh is the only thing that reads it, and only to issue a
+    # leaf that is missing.
+    "${local.name_prefix}-link-ca"          = []
+    "${local.name_prefix}-link-ca-key"      = []
+    "${local.name_prefix}-link-server-cert" = []
+    "${local.name_prefix}-link-server-key"  = []
+    "${local.name_prefix}-link-relay-cert"  = []
+    "${local.name_prefix}-link-relay-key"   = []
+    "${local.name_prefix}-link-admin-cert"  = []
+    "${local.name_prefix}-link-admin-key"   = []
   }
+
+  # The name the control plane's certificate carries, and the name every client
+  # verifies it against. Not the address: the load balancer's address is a fact
+  # about today's infrastructure, and a certificate that names it has to be
+  # reissued whenever that changes.
+  link_server_name = "moqom-control"
 
   # One namespace for the control plane's components. The director will join it
   # when it exists.
@@ -242,6 +271,11 @@ module "control" {
   image     = var.control_image
   grpc_port = local.control_grpc_port
 
+  # The process holds the certificate rather than a terminator in front of it,
+  # which is what lets a relay authenticate the control plane itself instead of
+  # authenticating whatever is terminating for it.
+  transport_security = true
+
   # One replica, and this is a correctness bound rather than a sizing choice.
   # The registry of which relay is attached to which process is in memory, so a
   # moderation call handled by one replica cannot push a directive to a relay
@@ -269,6 +303,19 @@ module "control" {
     PGDATABASE                 = "moqom"
 
     MOQOM_CONTROL_ACCOUNTS = "/etc/moqom/accounts.json"
+
+    # Mutual TLS on the gRPC port, from the same mounted secret. Both ends of
+    # RelayLink are authenticated: the client certificate says the peer is one
+    # of this deployment's relays, and the bearer credential it also presents
+    # says which one and what it may do.
+    #
+    # This is the port's only transport now, so the admin tools present a
+    # certificate too. There is no plaintext fallback on purpose — one would be
+    # reached by anything that could not do the handshake, which is exactly the
+    # set of callers this exists to exclude.
+    MOQOM_CONTROL_TLS_CERT  = "/etc/moqom/link-cert.pem"
+    MOQOM_CONTROL_TLS_KEY   = "/etc/moqom/link-key.pem"
+    MOQOM_CONTROL_CLIENT_CA = "/etc/moqom/link-ca.pem"
   }
 
   secret_env = {
@@ -318,6 +365,13 @@ module "relay" {
   tls_private_key_secret_id = "${local.name_prefix}-relay-tls-key"
   credential_secret_id      = "${local.name_prefix}-relay-credential"
 
+  # The link's own certificates, which are not the ones above: those are what a
+  # phone pins, these are what the control plane checks and what this tier
+  # checks the control plane with.
+  link_ca_secret_id          = "${local.name_prefix}-link-ca"
+  link_client_cert_secret_id = "${local.name_prefix}-link-relay-cert"
+  link_client_key_secret_id  = "${local.name_prefix}-link-relay-key"
+
   artifact_registry_repository = module.registry.repository_ref
   recording_bucket             = module.data.recording_bucket
 
@@ -329,10 +383,23 @@ module "relay" {
     MOQOM_RELAY_REGION = each.key
     RUST_LOG           = "info"
 
-    # Where moderation comes from. Plaintext h2c to an address that exists only
-    # inside this VPC: the alternative is a certificate for an RFC1918 address,
-    # which no public authority will issue.
+    # Where moderation comes from, and now over TLS in both directions: the
+    # certificates below say which relay this is, and which control plane that
+    # is. The authority is a private one, because no public authority will
+    # issue for an address that exists only inside this VPC.
     MOQOM_CONTROL_ENDPOINT = module.control.endpoint
+
+    # Whose tokens to believe, and the same string the control plane stamps into
+    # every one it mints. No MOQOM_RELAY_JWKS to go with it: the keys arrive over
+    # the link above and are replaced on every rotation, where a file would go
+    # stale at exactly the moment the two have to agree. What this pins is that a
+    # token minted by some other deployment is refused even if it happens to
+    # carry a key identifier this one also uses.
+    MOQOM_RELAY_ISSUER = local.control_host == "" ? "moqom.cloud" : local.control_host
+
+    # What the control plane's certificate has to say it is. The endpoint above
+    # is an address, and an address is not an identity.
+    MOQOM_CONTROL_SERVER_NAME = local.link_server_name
 
     MOQOM_RECORDING_BUCKET = module.data.recording_bucket
   }

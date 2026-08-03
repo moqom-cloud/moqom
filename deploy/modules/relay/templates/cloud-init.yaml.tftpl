@@ -188,6 +188,21 @@ write_files:
       chmod 0444 /run/moqom/tls/cert.pem
       chmod 0400 /run/moqom/tls/key.pem
 %{ endif ~}
+%{ if link_ca_secret_id != "" ~}
+
+      # The link's certificates, which answer a different question from the two
+      # above. Those prove this relay to a phone. These prove it to the control
+      # plane, and -- the direction that matters -- prove the control plane to
+      # it: what arrives over that stream includes the keys every session on
+      # this machine is authenticated against.
+      mkdir -p /run/moqom/link
+      fetch "${link_ca_secret_id}" > /run/moqom/link/ca.pem
+      fetch "${link_client_cert_secret_id}" > /run/moqom/link/cert.pem
+      fetch "${link_client_key_secret_id}" > /run/moqom/link/key.pem
+      chown -R ${container_uid}:${container_uid} /run/moqom/link
+      chmod 0444 /run/moqom/link/ca.pem /run/moqom/link/cert.pem
+      chmod 0400 /run/moqom/link/key.pem
+%{ endif ~}
 
       # An env file rather than `--env` on the command line, because a systemd
       # unit is world-readable and `docker inspect` is not privileged. This is
@@ -246,6 +261,12 @@ write_files:
 %{ if tls_certificate_secret_id != "" ~}
         --env MOQOM_RELAY_CERT=/etc/moqom/tls/cert.pem \
         --env MOQOM_RELAY_KEY=/etc/moqom/tls/key.pem \
+%{ endif ~}
+%{ if link_ca_secret_id != "" ~}
+        --volume /run/moqom/link:/etc/moqom/link:ro \
+        --env MOQOM_CONTROL_CA=/etc/moqom/link/ca.pem \
+        --env MOQOM_CONTROL_CLIENT_CERT=/etc/moqom/link/cert.pem \
+        --env MOQOM_CONTROL_CLIENT_KEY=/etc/moqom/link/key.pem \
 %{ endif ~}
 %{ for key, value in container_env ~}
         --env ${key}=${value} \

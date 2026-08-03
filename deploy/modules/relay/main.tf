@@ -59,6 +59,9 @@ locals {
     var.tls_certificate_secret_id,
     var.tls_private_key_secret_id,
     var.credential_secret_id,
+    var.link_ca_secret_id,
+    var.link_client_cert_secret_id,
+    var.link_client_key_secret_id,
   ])
 }
 
