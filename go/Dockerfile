@@ -39,6 +39,17 @@ RUN cd moqom/go && \
     go build -trimpath -ldflags="-s -w -X main.version=${VERSION}" \
     -o /out/ ./cmd/moqom-control ./cmd/moqom-dbadmin
 
+# The store's conformance suite, compiled as a binary so it can be run where the
+# database is. It is skipped by `go test ./...` for want of a Postgres, and the
+# Postgres it should be run against has no public address -- so the only place
+# the suite means anything is a pod in this cluster, and this is how it gets
+# there. `go test -c` rather than a `main`, because the contract is written
+# against testing.T and a copy of it that was not would be a second suite
+# claiming to be the first.
+RUN cd moqom/go && \
+    GOWORK=off CGO_ENABLED=0 GOOS=linux \
+    go test -trimpath -c -o /out/moqom-conformance ./internal/store/postgres
+
 # Distroless, and nonroot: there is no shell to exec into, which is a real
 # limitation during an incident and a real reduction in what a remote code
 # execution gets to do. The debug variant of this image exists for the former.
@@ -50,6 +61,10 @@ COPY --from=build /out/moqom-control /moqom-control
 # own. It runs as a Job in this cluster, because the database has no public
 # address and a pod is the nearest thing to it that can be scheduled on demand.
 COPY --from=build /out/moqom-dbadmin /moqom-dbadmin
+
+# So does the store's conformance suite, for the same reason: it has to run
+# beside a database that only this network can reach.
+COPY --from=build /out/moqom-conformance /moqom-conformance
 
 # 8443 is gRPC, 8080 is the probes. Documentation rather than enforcement --
 # EXPOSE opens nothing -- but the deployment reads these numbers back.
