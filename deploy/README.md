@@ -310,6 +310,29 @@ the tenant, the username, the room, and the device. The last is the awkward one
 the sample announces the fixed string `sample-device-key`, which is what
 `moqom-mint` defaults `-device` to.
 
+### Taking one away again
+
+`go run ./cmd/moqom-ban -user ada -room bench` is the other half, and the one
+worth running after any change to the link: a ban is the only admin call that
+has to travel back down it. The control plane writes the ban, finds the relays
+holding a session for that account, and pushes a directive; everything else in
+the admin API is a write the client discovers on its next request. So the reply
+answers a question about RelayLink rather than about moderation:
+
+```
+moqom-ban: banned: publisher is out of ban2 and cannot rejoin (entry …-3, enforced=true)
+INFO moqom_relay::link: directive carried out directive=…-1 action="ban" tenant=moqom room=ban2 sessions=1
+INFO moqom_relay::link: directive carried out directive=…-2 action="eject" tenant=moqom room=ban2 sessions=0
+```
+
+`enforced=false` with a session plainly live means the link is down and the ban
+is waiting for the relay's next snapshot, which is the degradation the grace
+period exists to bound.
+
+Leave `-on-behalf-of` unset for an action the service account takes on its own.
+Naming a moderator asks the control plane to check that they hold moderation in
+that room, and an operator at a terminal usually holds nothing in it.
+
 ## The database has no passwords
 
 The control plane authenticates to Postgres with IAM: `cloudsql.iam_authentication`
