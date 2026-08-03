@@ -167,21 +167,46 @@ second region cannot reach a control plane that is working perfectly.
 
 ### What is not created, and why nothing works until it is
 
-`terraform apply` finishes with three empty secrets. This is deliberate: a
+`terraform apply` finishes with a dozen empty secrets. This is deliberate: a
 `google_secret_manager_secret_version` stores its payload in plaintext in
 Terraform state, and state has a wider audience than any of these keys should.
+Terraform makes the containers; what goes in them it never sees.
+
+`tools/sync-secrets.sh` fills all but two of them, generating what can be
+generated — the token signing key, the relay and admin credentials, the service
+account file, and the link's certificate authority with its three leaves. Run it
+after the first apply and after any change to that list; it only adds what is
+missing, so it is safe to run repeatedly.
+
+The two it cannot generate are the certificate a phone will pin:
 
 ```sh
-gcloud secrets versions add moqom-prod-cat-signing-key --data-file=-
 gcloud secrets versions add moqom-prod-relay-tls-cert --data-file=cert.pem
 gcloud secrets versions add moqom-prod-relay-tls-key  --data-file=key.pem
 ```
 
-The relay will not serve TLS and the control plane will not mint tokens until
-these have versions. Certificate renewal is out of scope here on purpose: a
+The relay will not serve TLS until those have versions, and the control plane
+will not mint tokens until `sync-secrets.sh` has run. Certificate renewal is out of scope here on purpose: a
 fleet of N relays needs one certificate distributed to N machines, which is a
 distribution problem rather than an issuance problem, and Secret Manager is the
 distribution mechanism. Whatever runs ACME writes here.
+
+### Nothing in the project is hand-made
+
+Everything in `moqom-503700` is now in this tree's state: the network and its
+peering, the registry, the GKE Autopilot cluster, the Cloud SQL instance
+`moqom-dev-pg` with its IAM users, the recording bucket, both relay managed
+instance groups with their load balancers and firewall rules, the control
+plane's Kubernetes deployment, and every Secret Manager container.
+
+It was not always. Bring-up left a hand-built `moqom-control-db` instance and a
+`moqom-control-db-password` secret beside the real ones, which is the failure
+mode worth naming: a project where some resources answer to `terraform destroy`
+and some do not has no reliable way to be torn down, costed, or reproduced, and
+the hand-made ones are invisible in review. Both were deleted once the Terraform
+instance was serving. `gcloud sql instances list` and `gcloud secrets list`
+should agree with `terraform state list`; where they do not, one of them is
+wrong and it is usually not Terraform.
 
 ### Delegating the zone will take email with it
 
@@ -332,6 +357,41 @@ period exists to bound.
 Leave `-on-behalf-of` unset for an action the service account takes on its own.
 Naming a moderator asks the control plane to check that they hold moderation in
 that room, and an operator at a terminal usually holds nothing in it.
+
+## Proving the store against the database it will use
+
+`deploy/tools/conformance.sh` runs the store's contract — the suite that makes
+the in-memory and Postgres implementations interchangeable — as a Job in the
+cluster, against the deployed Cloud SQL instance:
+
+```
+==> running the contract in the cluster
+    PASS
+==> the store keeps its contract against moqom-dev-pg
+```
+
+In the cluster because the instance has no public address, and against that
+instance rather than a container because a suite green on Postgres 17 in Docker
+and red on the managed 16 with a different collation has told nobody anything.
+`go test ./...` skips it for want of a database, which is the right default for
+a laptop and the reason this exists.
+
+It runs in a `conformance` database of its own, created and dropped around the
+run. The suite makes a schema per case and drops it, so pointing it at `moqom`
+would probably be harmless — and "probably harmless" is not a reason to run DDL
+beside live rows. The Job is left behind when the suite fails, because whatever
+it was in the middle of is the only evidence of why.
+
+Against any other Postgres, the suite is an environment variable and a test run:
+
+```sh
+MOQOM_TEST_POSTGRES='postgres://…' go -C go test ./internal/store/... -count=1
+```
+
+There used to be a `tools/postgres-test.sh` that did this through the Cloud SQL
+proxy against a hand-made instance. Both are gone: the instance was a scratch
+one from bring-up, and a proxy on a laptop cannot reach the private address the
+deployed instance now has.
 
 ## The database has no passwords
 

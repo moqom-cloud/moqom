@@ -19,13 +19,15 @@ import (
 //
 // Skipped without MOQOM_TEST_POSTGRES, because `go test ./...` has to work on a
 // machine with no database and a laptop is not going to have one. That makes a
-// green run of the package list weak evidence about this store specifically:
-// tools/postgres-test.sh is what points it at Cloud SQL and runs it, and it is
-// the run that counts.
+// green run of the package list weak evidence about this store specifically.
+// The run that counts is deploy/tools/conformance.sh, which builds this file
+// into a binary and runs it as a Job beside the deployed Cloud SQL instance --
+// the same version and collation as the database that will serve, and one with
+// no address a laptop could reach.
 func TestConformance(t *testing.T) {
 	dsn := os.Getenv("MOQOM_TEST_POSTGRES")
 	if dsn == "" {
-		t.Skip("MOQOM_TEST_POSTGRES is not set; run tools/postgres-test.sh")
+		t.Skip("MOQOM_TEST_POSTGRES is not set; run deploy/tools/conformance.sh")
 	}
 
 	var counter atomic.Uint64

@@ -97,14 +97,21 @@ metadata:
   namespace: $NAMESPACE
 spec:
   backoffLimit: 0
-  ttlSecondsAfterFinished: 300
   template:
     spec:
       restartPolicy: Never
+      volumes:
+        # A test binary writes to TMPDIR, and the root filesystem is read-only
+        # for the same reason it is everywhere else here.
+        - name: tmp
+          emptyDir: {}
       containers:
         - name: conformance
           image: $IMAGE
           command: ["/moqom-conformance", "-test.v", "-test.timeout=10m"]
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
           env:
             - name: MOQOM_TEST_POSTGRES
               valueFrom:
@@ -125,11 +132,41 @@ spec:
 YAML
 kube apply -f "$WORK/job.yaml" >/dev/null
 
-if kube wait --for=condition=complete "job/$JOB" --timeout=600s >/dev/null 2>&1; then
-    kube logs "job/$JOB" 2>&1 | tail -20 | sed 's/^/    /'
-    say "the store keeps its contract against $INSTANCE"
-else
-    say "the suite did not pass; its output follows"
-    kube logs "job/$JOB" 2>&1 | sed 's/^/    /'
-    exit 1
-fi
+# Polled rather than `kubectl wait`, which takes one condition and so has to be
+# told to wait for success -- and then sits out the whole timeout after a
+# failure, by which point the pod it would have explained has been collected. No
+# ttlSecondsAfterFinished either, for the same reason: the Job is deleted on the
+# way out of this script, once its logs have been read.
+outcome=""
+for _ in $(seq 1 300); do
+    if [ "$(kube get "job/$JOB" -o jsonpath='{.status.succeeded}' 2>/dev/null)" = "1" ]; then
+        outcome="passed"
+        break
+    fi
+    if [ -n "$(kube get "job/$JOB" -o jsonpath='{.status.failed}' 2>/dev/null)" ]; then
+        outcome="failed"
+        break
+    fi
+    sleep 2
+done
+
+case "$outcome" in
+    passed)
+        kube logs "job/$JOB" 2>&1 | tail -15 | sed 's/^/    /'
+        say "the store keeps its contract against $INSTANCE"
+        ;;
+    failed)
+        say "the suite did not pass; its output follows"
+        kube logs "job/$JOB" 2>&1 | sed 's/^/    /'
+        kube describe "job/$JOB" 2>&1 | tail -15 | sed 's/^/    /'
+        exit 1
+        ;;
+    *)
+        say "the suite is still running after ten minutes; leaving the Job for inspection"
+        kube logs "job/$JOB" --tail=40 2>&1 | sed 's/^/    /'
+        # Trapped cleanup would delete it, and the point of saying this is that
+        # somebody is going to go and look.
+        trap - EXIT INT TERM
+        exit 1
+        ;;
+esac
