@@ -113,6 +113,21 @@ const (
 
 func (m MediaKind) Has(other MediaKind) bool { return m&other == other }
 
+// Each is the kinds named, one at a time, in a fixed order.
+//
+// For the places that hold a mute per kind rather than per mask -- the store
+// and the relay's policy both do, so that muting one kind cannot disturb
+// another and so that each kind can carry its own expiry.
+func (m MediaKind) Each() []MediaKind {
+	var kinds []MediaKind
+	for _, kind := range []MediaKind{MediaAudio, MediaVideo, MediaScreenShare} {
+		if m&kind != 0 {
+			kinds = append(kinds, kind)
+		}
+	}
+	return kinds
+}
+
 // MuteState is the four independent kinds of mute.
 //
 // Four, not one, because they have four different enforcement points and

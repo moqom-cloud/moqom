@@ -1,8 +1,12 @@
 package server_test
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"net"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 	"time"
 
@@ -51,6 +55,11 @@ type harness struct {
 	store      store.Store
 	now        func() time.Time
 	advance    func(time.Duration)
+
+	// server is kept for the parts that are not gRPC. The health endpoints are
+	// HTTP because a load balancer and an uptime check cannot speak anything
+	// else.
+	server *server.Server
 
 	// listener is kept so a test can open a second connection carrying its own
 	// credentials, which is what the SDK does.
@@ -142,6 +151,7 @@ func newHarness(t *testing.T, clocks ...timecode.Clock) *harness {
 		store:      memoryStore,
 		now:        now,
 		advance:    advance,
+		server:     instance,
 		listener:   listener,
 	}
 }
@@ -719,6 +729,84 @@ func TestForceMuteRecordsScopeAndSurvivesReads(t *testing.T) {
 	}
 }
 
+// Muting a camera says nothing about a microphone, in the durable state a relay
+// is handed as well as in the participant record. They used to disagree: the
+// record accumulated kinds and the mutes table replaced the row, so a moderator
+// who muted audio and then video had turned the microphone back on and could
+// read a participant that claimed otherwise.
+func TestASecondForceMuteDoesNotLiftTheFirst(t *testing.T) {
+	h := newHarness(t)
+	h.createRoom(t, "alice")
+	ctx := context.Background()
+
+	if err := h.store.SaveParticipant(ctx, tenant, roomName, control.Participant{
+		Identity: control.Identity{Username: "dave", Device: "d1"},
+		Grants:   control.Grants{Publish: control.PublishFull},
+		Presence: control.PresenceConnected,
+	}); err != nil {
+		t.Fatalf("seeding dave: %v", err)
+	}
+
+	mute := func(kind adminpb.MediaKind) {
+		t.Helper()
+		if _, err := h.moderation.ForceMute(as(ownerKey), &adminpb.ForceMuteRequest{
+			Tenant: tenant, Room: roomName,
+			Target: &adminpb.ParticipantRef{Username: "dave"},
+			Media:  []adminpb.MediaKind{kind},
+			Scope:  adminpb.MuteScope_MUTE_SCOPE_EVERYONE,
+		}); err != nil {
+			t.Fatalf("muting %v: %v", kind, err)
+		}
+	}
+	// What the relay would be handed, as one mask per scope.
+	held := func() control.MediaKind {
+		t.Helper()
+		mutes, err := h.store.ListMutes(ctx, tenant, roomName)
+		if err != nil {
+			t.Fatalf("listing mutes: %v", err)
+		}
+		var kinds control.MediaKind
+		for _, mute := range mutes {
+			if !mute.AudienceOnly {
+				kinds |= mute.Media
+			}
+		}
+		return kinds
+	}
+
+	mute(adminpb.MediaKind_MEDIA_KIND_AUDIO)
+	mute(adminpb.MediaKind_MEDIA_KIND_VIDEO)
+	if want := control.MediaAudio | control.MediaVideo; held() != want {
+		t.Fatalf("after muting both, the store holds %v, want %v", held(), want)
+	}
+
+	if _, err := h.moderation.Unmute(as(ownerKey), &adminpb.UnmuteRequest{
+		Tenant: tenant, Room: roomName,
+		Target: &adminpb.ParticipantRef{Username: "dave"},
+		Media:  []adminpb.MediaKind{adminpb.MediaKind_MEDIA_KIND_VIDEO},
+		Scope:  adminpb.MuteScope_MUTE_SCOPE_EVERYONE,
+	}); err != nil {
+		t.Fatalf("lifting the camera: %v", err)
+	}
+	if held() != control.MediaAudio {
+		t.Errorf("lifting the camera left %v muted, want audio", held())
+	}
+
+	// And the participant record says the same thing the store does.
+	participant, err := h.rooms.GetParticipant(as(ownerKey), &adminpb.GetParticipantRequest{
+		Tenant: tenant, Room: roomName,
+		Identity: &adminpb.Identity{Username: "dave", Device: "d1"},
+	})
+	if err != nil {
+		t.Fatalf("reading the participant: %v", err)
+	}
+	if len(participant.GetForcedMutedForEveryone()) != 1 ||
+		participant.GetForcedMutedForEveryone()[0] != adminpb.MediaKind_MEDIA_KIND_AUDIO {
+		t.Errorf("the participant reads back as %v, want audio only",
+			participant.GetForcedMutedForEveryone())
+	}
+}
+
 func TestSetGrantsCannotExceedTheGranter(t *testing.T) {
 	h := newHarness(t)
 	h.createRoom(t, "alice")
@@ -1085,6 +1173,63 @@ func TestTenantWideStreamCannotResume(t *testing.T) {
 	_, err = stream.Recv()
 	if status.Code(err) != codes.InvalidArgument {
 		t.Errorf("resuming a tenant-wide stream gave %v, want InvalidArgument", status.Code(err))
+	}
+}
+
+// Readiness carries the clock's own account of itself, and does not fail on it.
+//
+// The question this answers is the one an operator has after reading "clock
+// fell back to local time" in a log: how wide is the bound now, how wide is it
+// allowed to be, and how many stamps have gone out untrusted. Before this, that
+// needed a build. It stays out of the verdict deliberately -- a replica whose
+// clock has drifted can still mint tokens and answer moderators, and taking it
+// out of the load balancer would turn a measurement problem into an outage.
+func TestReadinessReportsTheClock(t *testing.T) {
+	h := newHarness(t, timecode.NewHost())
+
+	recorder := httptest.NewRecorder()
+	h.server.HealthHandler().ServeHTTP(
+		recorder, httptest.NewRequest(http.MethodGet, server.ReadinessPath, nil))
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("readiness = %d, want 200: a clock is not a reason to leave the load balancer", recorder.Code)
+	}
+	var body struct {
+		Status string `json:"status"`
+		Clock  *struct {
+			Trust         string `json:"trust"`
+			CeilingMs     int64  `json:"ceilingMs"`
+			FallbackCount uint64 `json:"fallbackCount"`
+		} `json:"clock"`
+	}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &body); err != nil {
+		t.Fatalf("readiness body: %v", err)
+	}
+	if body.Status != "ready" {
+		t.Errorf("status = %q, want ready", body.Status)
+	}
+	if body.Clock == nil {
+		t.Fatal("no clock in the readiness body")
+	}
+	if body.Clock.Trust == "" {
+		t.Error("the clock reported no trust")
+	}
+	if body.Clock.CeilingMs == 0 {
+		t.Error("the ceiling is what the bound is being measured against and has to be in the report")
+	}
+}
+
+// A clock that cannot say -- a fixed one, or an injected wall clock -- reports
+// nothing rather than reporting zeroes, which would read as a perfect clock.
+func TestReadinessOmitsAClockThatCannotReportOnItself(t *testing.T) {
+	h := newHarness(t)
+
+	recorder := httptest.NewRecorder()
+	h.server.HealthHandler().ServeHTTP(
+		recorder, httptest.NewRequest(http.MethodGet, server.ReadinessPath, nil))
+
+	if bytes.Contains(recorder.Body.Bytes(), []byte(`"clock"`)) {
+		t.Errorf("body claims a clock report it cannot make: %s", recorder.Body.String())
 	}
 }
 

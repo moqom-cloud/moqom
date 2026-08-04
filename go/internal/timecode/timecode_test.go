@@ -380,3 +380,88 @@ func TestTrustedStampsAreNotCountedAsFallbacks(t *testing.T) {
 		t.Errorf("Fallbacks() = %d, want 0", got)
 	}
 }
+
+// The distinction the warning has to carry: a clock nobody is disciplining and
+// a clock whose bound merely grew past a ceiling produce the same verdict and
+// want opposite fixes -- restart the daemon, or admit the ceiling is tighter
+// than this host can hold.
+func TestTheFallbackWarningSaysHowWideAndWhy(t *testing.T) {
+	sink := &captured{}
+	clock, _ := host(Health{Synchronised: true, MaxError: 400 * time.Millisecond}, nil)
+	clock.Logger = slog.New(sink)
+
+	clock.Now()
+
+	record := sink.records[0]
+	fields := map[string]string{}
+	record.Attrs(func(attr slog.Attr) bool {
+		fields[attr.Key] = attr.Value.String()
+		return true
+	})
+	if fields["maxErrorMs"] != "400" {
+		t.Errorf("maxErrorMs = %q, want the kernel's 400", fields["maxErrorMs"])
+	}
+	if fields["ceilingMs"] != "100" {
+		t.Errorf("ceilingMs = %q, want the ceiling it was measured against", fields["ceilingMs"])
+	}
+	if fields["because"] != "the kernel's error bound grew past the ceiling" {
+		t.Errorf("because = %q, want the bound rather than a dead daemon", fields["because"])
+	}
+}
+
+func TestADeadDaemonIsDistinguishedFromAWideBound(t *testing.T) {
+	sink := &captured{}
+	clock, _ := host(Health{Synchronised: false}, nil)
+	clock.Logger = slog.New(sink)
+
+	clock.Now()
+
+	var because string
+	sink.records[0].Attrs(func(attr slog.Attr) bool {
+		if attr.Key == "because" {
+			because = attr.Value.String()
+		}
+		return true
+	})
+	if because != "no time daemon is disciplining the clock" {
+		t.Errorf("because = %q, want the missing daemon", because)
+	}
+}
+
+// A probe asking after the clock must not move what it is measuring.
+func TestReportingDoesNotStampOrAnnounce(t *testing.T) {
+	sink := &captured{}
+	clock, _ := host(Health{Synchronised: false}, nil)
+	clock.Logger = slog.New(sink)
+
+	report := clock.Report()
+
+	if report.Trust != TrustFallback {
+		t.Errorf("trust = %v, want fallback", report.Trust)
+	}
+	if report.Ceiling != DefaultCeiling {
+		t.Errorf("ceiling = %v, want the default", report.Ceiling)
+	}
+	if report.Fallbacks != 0 {
+		t.Errorf("Fallbacks = %d after only a report, want 0", report.Fallbacks)
+	}
+	if len(sink.records) != 0 {
+		t.Errorf("a report announced %v", sink.messages())
+	}
+}
+
+func TestReportCarriesTheKernelsReading(t *testing.T) {
+	clock, _ := host(Health{Synchronised: true, MaxError: 12 * time.Millisecond}, nil)
+
+	report := clock.Report()
+
+	if !report.Readable || !report.Health.Synchronised {
+		t.Fatalf("report = %+v, want a readable synchronised clock", report)
+	}
+	if report.Health.MaxError != 12*time.Millisecond {
+		t.Errorf("MaxError = %v, want the kernel's 12ms", report.Health.MaxError)
+	}
+	if report.Trust != TrustSynchronised {
+		t.Errorf("trust = %v, want synchronised", report.Trust)
+	}
+}

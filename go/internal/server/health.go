@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/moqom-cloud/moqom/go/internal/store"
+	"github.com/moqom-cloud/moqom/go/internal/timecode"
 )
 
 // Two probes, because they answer different questions and an orchestrator acts
@@ -51,6 +52,9 @@ func (s *Server) HealthHandler() http.Handler {
 		defer done()
 
 		body := map[string]any{"relays": s.core.relayCount()}
+		if clock := s.clockReport(); clock != nil {
+			body["clock"] = clock
+		}
 		if err := s.reachable(ctx); err != nil {
 			body["status"] = "unready"
 			// The reason, not just the verdict. An operator reading a load
@@ -65,6 +69,33 @@ func (s *Server) HealthHandler() http.Handler {
 	})
 
 	return mux
+}
+
+// clockReport is what the host clock says about itself, or nil for a clock that
+// does not know -- a fixed one in a test, or an injected wall clock.
+//
+// On the readiness body rather than a page of its own, and deliberately not
+// part of the verdict: a replica whose clock has drifted can still mint tokens
+// and answer moderators, so taking it out of the load balancer would turn a
+// measurement problem into an outage. What it is for is the question an
+// operator has after reading "clock fell back to local time" in a log -- how
+// wide is it now, how wide is it allowed to be, and how often has this
+// happened -- which otherwise needs a build to answer.
+func (s *Server) clockReport() map[string]any {
+	reporter, ok := s.core.clock.(interface{ Report() timecode.Report })
+	if !ok {
+		return nil
+	}
+	report := reporter.Report()
+	return map[string]any{
+		"trust":         report.Trust.String(),
+		"synchronised":  report.Health.Synchronised,
+		"readable":      report.Readable,
+		"maxErrorMs":    report.Health.MaxError.Milliseconds(),
+		"ceilingMs":     report.Ceiling.Milliseconds(),
+		"leapPending":   report.Health.LeapPending,
+		"fallbackCount": report.Fallbacks,
+	}
 }
 
 // reachable is the cheapest question that proves the store answers.

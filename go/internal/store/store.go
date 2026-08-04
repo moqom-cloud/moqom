@@ -63,8 +63,13 @@ type Store interface {
 	// would be a second implementation of the rule.
 	ListBans(ctx context.Context, tenant, room string) ([]control.Ban, error)
 
+	// PutMute writes one row per media kind it names, replacing any row for the
+	// same participant, scope and kind. Kinds it does not name are untouched:
+	// muting a camera is not a statement about a microphone.
 	PutMute(ctx context.Context, mute Mute) (Mute, error)
-	DeleteMute(ctx context.Context, tenant, room string, id control.Identity, audienceOnly bool) error
+	// DeleteMute lifts only the kinds in media, for the given scope. Pass
+	// control.MediaAll to lift everything the scope holds.
+	DeleteMute(ctx context.Context, tenant, room string, id control.Identity, media control.MediaKind, audienceOnly bool) error
 	ListMutes(ctx context.Context, tenant, room string) ([]Mute, error)
 
 	// Grant overrides are what make a demotion immediate: they take precedence
@@ -97,10 +102,18 @@ type Store interface {
 
 // Mute is a force-mute in force.
 //
-// Keyed by identity and audience-only-ness, because a participant can be under
-// both at once: audio silenced for everybody and screenshare hidden from the
-// audience is one participant with two mutes, and merging them would lose which
-// is which.
+// Keyed by identity, audience-only-ness and media kind. The first two because a
+// participant can be under both scopes at once: audio silenced for everybody
+// and screenshare hidden from the audience is one participant with two mutes,
+// and merging them would lose which is which. The kind because the same is true
+// one level down, and it is the part that was wrong first — a mute keyed only by
+// scope meant the second one replaced the first, so muting a camera turned a
+// microphone back on.
+//
+// At rest each row names exactly one kind, which is also the only way an expiry
+// can be honest: a ten-minute mute of audio and an indefinite mute of video have
+// no single ExpiresAt between them. Media may name several kinds on the way into
+// PutMute, which writes a row for each.
 type Mute struct {
 	Tenant       string
 	Room         string

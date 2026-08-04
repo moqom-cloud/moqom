@@ -339,6 +339,8 @@ func (s *Store) ListBans(_ context.Context, tenant, room string) ([]control.Ban,
 	return live, nil
 }
 
+// One row per kind, so that a second mute cannot lift the first and each kind
+// keeps the expiry it was given.
 func (s *Store) PutMute(_ context.Context, mute store.Mute) (store.Mute, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -347,28 +349,56 @@ func (s *Store) PutMute(_ context.Context, mute store.Mute) (store.Mute, error) 
 		mute.CreatedAt = s.now()
 	}
 	key := roomKey{mute.Tenant, mute.Room}
-	for i, candidate := range s.mutes[key] {
-		if candidate.Identity == mute.Identity && candidate.AudienceOnly == mute.AudienceOnly {
-			s.mutes[key][i] = mute
-			return mute, nil
+	for _, kind := range mute.Media.Each() {
+		row := mute
+		row.Media = kind
+		if i := s.findMute(key, mute.Identity, kind, mute.AudienceOnly); i >= 0 {
+			s.mutes[key][i] = row
+			continue
 		}
+		s.mutes[key] = append(s.mutes[key], row)
 	}
-	s.mutes[key] = append(s.mutes[key], mute)
 	return mute, nil
 }
 
-func (s *Store) DeleteMute(_ context.Context, tenant, room string, id control.Identity, audienceOnly bool) error {
+// ErrNotFound only when nothing at all was lifted. A moderator lifting audio
+// and video from somebody who was only ever muted on audio has got what they
+// asked for.
+func (s *Store) DeleteMute(
+	_ context.Context, tenant, room string, id control.Identity,
+	media control.MediaKind, audienceOnly bool,
+) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	key := roomKey{tenant, room}
+	kept := make([]store.Mute, 0, len(s.mutes[key]))
+	lifted := false
+	for _, candidate := range s.mutes[key] {
+		if candidate.Identity == id && candidate.AudienceOnly == audienceOnly &&
+			candidate.Media&media != 0 {
+			lifted = true
+			continue
+		}
+		kept = append(kept, candidate)
+	}
+	s.mutes[key] = kept
+	if !lifted {
+		return fmt.Errorf("%w: no such mute", store.ErrNotFound)
+	}
+	return nil
+}
+
+func (s *Store) findMute(
+	key roomKey, id control.Identity, kind control.MediaKind, audienceOnly bool,
+) int {
 	for i, candidate := range s.mutes[key] {
-		if candidate.Identity == id && candidate.AudienceOnly == audienceOnly {
-			s.mutes[key] = append(s.mutes[key][:i], s.mutes[key][i+1:]...)
-			return nil
+		if candidate.Identity == id && candidate.AudienceOnly == audienceOnly &&
+			candidate.Media == kind {
+			return i
 		}
 	}
-	return fmt.Errorf("%w: no such mute", store.ErrNotFound)
+	return -1
 }
 
 func (s *Store) ListMutes(_ context.Context, tenant, room string) ([]store.Mute, error) {
@@ -386,7 +416,10 @@ func (s *Store) ListMutes(_ context.Context, tenant, room string) ([]store.Mute,
 		if live[i].Identity != live[j].Identity {
 			return live[i].Identity.String() < live[j].Identity.String()
 		}
-		return !live[i].AudienceOnly && live[j].AudienceOnly
+		if live[i].AudienceOnly != live[j].AudienceOnly {
+			return !live[i].AudienceOnly && live[j].AudienceOnly
+		}
+		return live[i].Media < live[j].Media
 	})
 	return live, nil
 }

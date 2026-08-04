@@ -413,9 +413,11 @@ func (s *moderationService) Unmute(ctx context.Context, request *adminpb.UnmuteR
 	}
 
 	audienceOnly := request.GetScope() == adminpb.MuteScope_MUTE_SCOPE_AUDIENCE
-	// Absent rather than an error when there was no such mute: a moderator lifting
-	// a mute that has already expired has got what they wanted.
-	_ = s.core.store.DeleteMute(ctx, request.GetTenant(), request.GetRoom(), target, audienceOnly)
+	// Only the kinds named, so lifting a camera leaves a microphone muted, and
+	// absent rather than an error when there was no such mute: a moderator
+	// lifting a mute that has already expired has got what they wanted.
+	_ = s.core.store.DeleteMute(
+		ctx, request.GetTenant(), request.GetRoom(), target, media, audienceOnly)
 
 	ref := roomRef{request.GetTenant(), request.GetRoom()}
 	_, enforced := s.core.dispatch(ctx, ref, &relaypb.Directive{

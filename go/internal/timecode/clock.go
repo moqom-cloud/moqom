@@ -110,16 +110,22 @@ func NewHost() *Host {
 
 // Now returns the current instant and how well it is known.
 func (h *Host) Now() Timecode {
-	code := h.stamp()
-	h.announce(code.Trust)
+	code, health, ok := h.stamp()
+	h.announce(code.Trust, health, ok)
 	return code
 }
 
-func (h *Host) stamp() Timecode {
+// The timecode, and the kernel reading behind it.
+//
+// The reading comes back as well as the verdict because a fallback timecode is
+// given a deliberately enormous width, so its own uncertainty says nothing
+// about how wrong the clock actually was. What an operator needs on that
+// transition is the kernel's number.
+func (h *Host) stamp() (Timecode, Health, bool) {
 	at := h.now()
 	health, ok := h.health()
 	if !ok || !health.Synchronised {
-		return Fallback(at)
+		return Fallback(at), health, ok
 	}
 
 	width := health.MaxError
@@ -135,9 +141,9 @@ func (h *Host) stamp() Timecode {
 	}
 
 	if width > h.Ceiling {
-		return New(at, width, TrustFallback)
+		return New(at, width, TrustFallback), health, true
 	}
-	return New(at, width, TrustSynchronised)
+	return New(at, width, TrustSynchronised), health, true
 }
 
 // announce says, once, when this clock starts or stops being believable.
@@ -150,7 +156,12 @@ func (h *Host) stamp() Timecode {
 //
 // Also counted, via Fallbacks, so the condition is alarmable and not only
 // greppable.
-func (h *Host) announce(trust Trust) {
+//
+// The kernel's reading goes on both lines. Without it the warning is a verdict
+// with no way to act on it: a host that has genuinely lost its time source and
+// one whose error bound merely grew past a ceiling that is too tight for it
+// produce the same sentence, and they want opposite fixes.
+func (h *Host) announce(trust Trust, health Health, ok bool) {
 	h.mutex.Lock()
 	if trust == TrustFallback {
 		h.fallbacks++
@@ -161,7 +172,7 @@ func (h *Host) announce(trust Trust) {
 	}
 	previous, first := h.announced, !h.said
 	h.announced, h.said = trust, true
-	logger := h.Logger
+	logger, ceiling := h.Logger, h.Ceiling
 	h.mutex.Unlock()
 
 	if logger == nil {
@@ -174,11 +185,64 @@ func (h *Host) announce(trust Trust) {
 		}
 		logger.Warn("clock fell back to local time",
 			"previously", was,
+			"because", reason(health, ok, ceiling),
+			"maxErrorMs", health.MaxError.Milliseconds(),
+			"ceilingMs", ceiling.Milliseconds(),
 			"consequence", "timecodes cannot be ordered against other hosts",
 		)
 		return
 	}
-	logger.Info("clock is disciplined", "trust", trust.String())
+	logger.Info("clock is disciplined",
+		"trust", trust.String(),
+		"maxErrorMs", health.MaxError.Milliseconds(),
+		"ceilingMs", ceiling.Milliseconds(),
+	)
+}
+
+// Which of the three ways a clock stops being believable this was.
+func reason(health Health, ok bool, ceiling time.Duration) string {
+	switch {
+	case !ok:
+		return "the kernel would not say"
+	case !health.Synchronised:
+		return "no time daemon is disciplining the clock"
+	case health.LeapPending:
+		return "a leap second is pending, which widens the bound by a second"
+	default:
+		return "the kernel's error bound grew past the ceiling"
+	}
+}
+
+// Report is everything this clock will say about itself.
+//
+// One struct rather than three getters because it is read by a health endpoint,
+// where the parts have to agree with each other: a bound and a ceiling sampled
+// a second apart can contradict the verdict printed beside them.
+type Report struct {
+	Trust     Trust
+	Health    Health
+	Readable  bool
+	Ceiling   time.Duration
+	Fallbacks uint64
+}
+
+// Report samples the clock without stamping anything.
+//
+// Deliberately not Now: a probe asking how the clock is should not move the
+// transition log or the fallback count, and reading the health is the whole
+// question.
+func (h *Host) Report() Report {
+	code, health, ok := h.stamp()
+
+	h.mutex.Lock()
+	defer h.mutex.Unlock()
+	return Report{
+		Trust:     code.Trust,
+		Health:    health,
+		Readable:  ok,
+		Ceiling:   h.Ceiling,
+		Fallbacks: h.fallbacks,
+	}
 }
 
 // Fallbacks is how many timecodes this clock has stamped from local time.

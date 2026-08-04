@@ -609,29 +609,44 @@ func (s *Store) ListBans(ctx context.Context, tenant, room string) ([]control.Ba
 
 // Mutes.
 
+// One statement per kind rather than one per request, because the key includes
+// the kind: a mute of the camera has to leave a mute of the microphone where it
+// is, with the expiry that mute was given.
 func (s *Store) PutMute(ctx context.Context, mute store.Mute) (store.Mute, error) {
 	if mute.CreatedAt.IsZero() {
 		mute.CreatedAt = s.now()
 	}
-	_, err := s.pool.Exec(ctx, `
-		INSERT INTO mutes (tenant, room, username, device, audience_only, media, expires_at, created_at)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
-		ON CONFLICT (tenant, room, username, device, audience_only) DO UPDATE SET
-			media = EXCLUDED.media, expires_at = EXCLUDED.expires_at,
-			created_at = EXCLUDED.created_at`,
-		mute.Tenant, mute.Room, mute.Identity.Username, mute.Identity.Device,
-		mute.AudienceOnly, int64(mute.Media), moment(mute.ExpiresAt), mute.CreatedAt)
-	if err != nil {
+
+	batch := &pgx.Batch{}
+	for _, kind := range mute.Media.Each() {
+		batch.Queue(`
+			INSERT INTO mutes (tenant, room, username, device, audience_only, media, expires_at, created_at)
+			VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
+			ON CONFLICT (tenant, room, username, device, audience_only, media) DO UPDATE SET
+				expires_at = EXCLUDED.expires_at, created_at = EXCLUDED.created_at`,
+			mute.Tenant, mute.Room, mute.Identity.Username, mute.Identity.Device,
+			mute.AudienceOnly, int64(kind), moment(mute.ExpiresAt), mute.CreatedAt)
+	}
+	if batch.Len() == 0 {
+		return mute, nil
+	}
+	if err := s.pool.SendBatch(ctx, batch).Close(); err != nil {
 		return store.Mute{}, fmt.Errorf("writing a mute: %w", err)
 	}
 	return mute, nil
 }
 
-func (s *Store) DeleteMute(ctx context.Context, tenant, room string, id control.Identity, audienceOnly bool) error {
+// Only the kinds named. ErrNotFound when the scope held none of them, which is
+// the same "already lifted" answer an expired mute gives.
+func (s *Store) DeleteMute(
+	ctx context.Context, tenant, room string, id control.Identity,
+	media control.MediaKind, audienceOnly bool,
+) error {
 	tag, err := s.pool.Exec(ctx, `
 		DELETE FROM mutes
-		WHERE tenant = $1 AND room = $2 AND username = $3 AND device = $4 AND audience_only = $5`,
-		tenant, room, id.Username, id.Device, audienceOnly)
+		WHERE tenant = $1 AND room = $2 AND username = $3 AND device = $4
+		  AND audience_only = $5 AND media & $6 <> 0`,
+		tenant, room, id.Username, id.Device, audienceOnly, int64(media))
 	if err != nil {
 		return fmt.Errorf("deleting a mute: %w", err)
 	}
@@ -647,7 +662,7 @@ func (s *Store) ListMutes(ctx context.Context, tenant, room string) ([]store.Mut
 		FROM mutes
 		WHERE tenant = $1 AND room = $2
 		  AND (expires_at IS NULL OR expires_at > $3)
-		ORDER BY (username || '/' || device) COLLATE "C", audience_only`,
+		ORDER BY (username || '/' || device) COLLATE "C", audience_only, media`,
 		tenant, room, s.now())
 	if err != nil {
 		return nil, fmt.Errorf("listing mutes: %w", err)

@@ -49,6 +49,7 @@ func Run(t *testing.T, newStore Factory) {
 		{"a ban on one subject replaces rather than accumulates", testBanReplacement},
 		{"an expired ban is not in force", testBanExpiry},
 		{"the two forced mutes coexist and lift separately", testMuteScopes},
+		{"muting one kind does not lift another", testMuteKinds},
 		{"grant overrides survive a read", testGrantOverrides},
 		{"the watchdog limit is enforced", testWatchdogLimit},
 		{"the moderation log reads newest first and filters", testLogQuery},
@@ -458,7 +459,7 @@ func testMuteScopes(t *testing.T, newStore Factory) {
 		t.Fatalf("one participant under both mutes produced %d rows, want 2", len(mutes))
 	}
 
-	if err := subject.DeleteMute(ctx, "acme", "room-1", alice, true); err != nil {
+	if err := subject.DeleteMute(ctx, "acme", "room-1", alice, control.MediaAll, true); err != nil {
 		t.Fatalf("lifting the audience mute: %v", err)
 	}
 	mutes, err = subject.ListMutes(ctx, "acme", "room-1")
@@ -471,6 +472,75 @@ func testMuteScopes(t *testing.T, newStore Factory) {
 	if mutes[0].AudienceOnly {
 		t.Error("the wrong mute was lifted")
 	}
+}
+
+// Muting a camera is not a statement about a microphone. The store keys a mute
+// by kind so that the second one cannot lift the first, and so that each kind
+// keeps the expiry it was given.
+func testMuteKinds(t *testing.T, newStore Factory) {
+	ctx, subject, advance := setup(t, newStore)
+	alice := control.Identity{Username: "alice", Device: "d1"}
+
+	if _, err := subject.PutMute(ctx, store.Mute{
+		Tenant: "acme", Room: "room-1", Identity: alice, Media: control.MediaAudio,
+	}); err != nil {
+		t.Fatalf("muting audio: %v", err)
+	}
+	if _, err := subject.PutMute(ctx, store.Mute{
+		Tenant: "acme", Room: "room-1", Identity: alice, Media: control.MediaVideo,
+	}); err != nil {
+		t.Fatalf("muting video: %v", err)
+	}
+
+	if held := mutedKinds(ctx, t, subject, alice, false); held != control.MediaAudio|control.MediaVideo {
+		t.Fatalf("muting the camera left %v muted, want audio and video", held)
+	}
+
+	// Lifting one kind leaves the other standing.
+	if err := subject.DeleteMute(ctx, "acme", "room-1", alice, control.MediaVideo, false); err != nil {
+		t.Fatalf("lifting video: %v", err)
+	}
+	if held := mutedKinds(ctx, t, subject, alice, false); held != control.MediaAudio {
+		t.Fatalf("lifting video left %v muted, want audio", held)
+	}
+
+	// And each kind carries its own clock, which a single row could not say.
+	if _, err := subject.PutMute(ctx, store.Mute{
+		Tenant: "acme", Room: "room-1", Identity: alice, Media: control.MediaScreenShare,
+		ExpiresAt: time.Date(2026, 7, 27, 12, 30, 0, 0, time.UTC),
+	}); err != nil {
+		t.Fatalf("muting screenshare for a while: %v", err)
+	}
+	advance(time.Hour)
+	if held := mutedKinds(ctx, t, subject, alice, false); held != control.MediaAudio {
+		t.Fatalf("after the timed mute lapsed %v is muted, want audio only", held)
+	}
+
+	// Lifting kinds nobody is muted on is not an error to a moderator, but it is
+	// distinguishable to a caller that cares.
+	err := subject.DeleteMute(ctx, "acme", "room-1", alice, control.MediaVideo, false)
+	if !errors.Is(err, store.ErrNotFound) {
+		t.Errorf("lifting a mute that was not held returned %v, want ErrNotFound", err)
+	}
+}
+
+// What alice is muted on, in one scope, as a single mask.
+func mutedKinds(
+	ctx context.Context, t *testing.T, subject store.Store,
+	who control.Identity, audienceOnly bool,
+) control.MediaKind {
+	t.Helper()
+	mutes, err := subject.ListMutes(ctx, "acme", "room-1")
+	if err != nil {
+		t.Fatalf("listing mutes: %v", err)
+	}
+	var held control.MediaKind
+	for _, mute := range mutes {
+		if mute.Identity == who && mute.AudienceOnly == audienceOnly {
+			held |= mute.Media
+		}
+	}
+	return held
 }
 
 func testGrantOverrides(t *testing.T, newStore Factory) {

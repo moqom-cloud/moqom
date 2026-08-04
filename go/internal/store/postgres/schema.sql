@@ -98,9 +98,12 @@ CREATE UNIQUE INDEX IF NOT EXISTS bans_subject
 
 CREATE INDEX IF NOT EXISTS bans_by_room ON bans (tenant, room);
 
--- Keyed by audience-only as well as by identity, because one participant can be
--- silenced for everybody and hidden from the audience at once. Merging them
--- would make lifting one lift both.
+-- Keyed by audience-only and by media kind as well as by identity. One
+-- participant can be silenced for everybody and hidden from the audience at
+-- once, and within either scope can be muted on the microphone and the camera
+-- for different lengths of time. A row per kind is the only shape that holds
+-- both: merging scopes would make lifting one lift both, and merging kinds made
+-- muting a camera turn a microphone back on, because the write replaced the row.
 CREATE TABLE IF NOT EXISTS mutes (
     tenant        text        NOT NULL,
     room          text        NOT NULL,
@@ -111,8 +114,44 @@ CREATE TABLE IF NOT EXISTS mutes (
     expires_at    timestamptz,
     created_at    timestamptz NOT NULL,
 
-    PRIMARY KEY (tenant, room, username, device, audience_only)
+    PRIMARY KEY (tenant, room, username, device, audience_only, media)
 );
+
+-- The first change of shape, and the reason the note at the top of this file
+-- says a versioned tool is needed. Done here rather than by hand because a
+-- force-mute has to survive the deployment that fixes force-mutes: dropping the
+-- table would silently unmute everybody who is muted right now.
+--
+-- Guarded on the old key, so it runs once and is a no-op on a database that has
+-- already been through it or was created above.
+DO $$
+BEGIN
+    IF EXISTS (
+        SELECT 1
+        FROM pg_index index_
+        JOIN pg_class table_ ON table_.oid = index_.indrelid
+        JOIN pg_attribute column_ ON column_.attrelid = table_.oid
+                                 AND column_.attname = 'media'
+        WHERE table_.relname = 'mutes'
+          AND index_.indisprimary
+          AND NOT column_.attnum = ANY (index_.indkey)
+    ) THEN
+        CREATE TABLE mutes_by_kind (LIKE mutes);
+
+        -- One row per bit set in the old mask. The three kinds are audio,
+        -- video and screenshare, and their bit positions are shared with Go,
+        -- Rust and Swift.
+        INSERT INTO mutes_by_kind
+        SELECT tenant, room, username, device, audience_only, kind,
+               expires_at, created_at
+        FROM mutes, unnest(ARRAY[1, 2, 4]) AS kind
+        WHERE media & kind <> 0;
+
+        DROP TABLE mutes;
+        ALTER TABLE mutes_by_kind RENAME TO mutes;
+        ALTER TABLE mutes ADD PRIMARY KEY (tenant, room, username, device, audience_only, media);
+    END IF;
+END $$;
 
 CREATE TABLE IF NOT EXISTS grant_overrides (
     tenant     text    NOT NULL,

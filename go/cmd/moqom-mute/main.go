@@ -132,6 +132,7 @@ func run() error {
 		log.Printf("lifted: %s may publish %s in %s again (entry %s, enforced=%t)",
 			*user, describe(kinds), *room, entry.ID, entry.Enforced)
 		log.Print("their camera stays off until they turn it back on, which is the client's to do")
+		report(ctx, handle, who)
 		return nil
 	}
 
@@ -141,7 +142,32 @@ func run() error {
 	}
 	log.Printf("muted: %s stops publishing %s in %s (entry %s, enforced=%t)",
 		*user, describe(kinds), *room, entry.ID, entry.Enforced)
+	report(ctx, handle, who)
 	return nil
+}
+
+// report says what the person is muted on now, across every call so far.
+//
+// Printed because a mute names kinds and only those kinds: muting a camera
+// leaves a microphone where it was, and lifting one lifts one. That is the
+// behaviour people get wrong from the output of a single call, and the state
+// after the call is the thing they actually wanted to know.
+//
+// Best effort, and after the fact: a target naming every device has no single
+// participant to read, and the mute has already been placed either way.
+func report(ctx context.Context, handle *moqom.RoomHandle, who moqom.ParticipantRef) {
+	if who.Device == "" {
+		return
+	}
+	participant, err := handle.Participant(ctx, moqom.Identity{
+		Username: who.Username, Device: who.Device,
+	})
+	if err != nil {
+		return
+	}
+	log.Printf("now muted for everyone: %s; for the audience: %s",
+		held(participant.ForcedMutedForEveryone),
+		held(participant.ForcedMutedForAudience))
 }
 
 // kinds parses the -media flag. Empty is every kind, which is what a moderator
@@ -166,9 +192,24 @@ func kinds(list string) ([]moqom.MediaKind, error) {
 	return parsed, nil
 }
 
+// What a request names, where naming nothing means all of it.
 func describe(kinds []moqom.MediaKind) string {
 	if len(kinds) == 0 {
 		return "anything"
+	}
+	names := make([]string, 0, len(kinds))
+	for _, kind := range kinds {
+		names = append(names, string(kind))
+	}
+	return strings.Join(names, " and ")
+}
+
+// What is held against somebody, where holding nothing means nothing. The
+// opposite convention to describe, and the difference is the whole reason both
+// exist: a request that names no kinds means all of them.
+func held(kinds []moqom.MediaKind) string {
+	if len(kinds) == 0 {
+		return "nothing"
 	}
 	names := make([]string, 0, len(kinds))
 	for _, kind := range kinds {

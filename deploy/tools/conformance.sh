@@ -108,6 +108,11 @@ spec:
       containers:
         - name: conformance
           image: $IMAGE
+          # The tag is mutable and the point of this Job is to run the build
+          # that was just pushed. Without this, a node that has run the suite
+          # before keeps the image it already has and reports on last week's
+          # code -- which it does convincingly, with line numbers.
+          imagePullPolicy: Always
           command: ["/moqom-conformance", "-test.v", "-test.timeout=10m"]
           volumeMounts:
             - name: tmp

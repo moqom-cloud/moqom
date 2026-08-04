@@ -139,6 +139,9 @@ todos:
         path: moqom-relay/tests/supervision.rs
         contains: 'a_force_mute_reaches_the_phone_and_stops_the_track'
       - repo: moqom-engine
+        path: moqom-relay/src/policy.rs
+        contains: 'a_second_mute_of_another_kind_does_not_lift_the_first'
+      - repo: moqom-engine
         path: moqom-relay/tests/interop_link.rs
         contains: 'a_ban_issued_through_the_admin_api_closes_a_session_here'
   - id: control-plane
@@ -164,6 +167,10 @@ todos:
         contains: 'extra control.Capability'
       - path: tools/interop.sh
         contains: 'the relay against the control plane'
+      - path: go/internal/store/storetest/storetest.go
+        contains: 'muting one kind does not lift another'
+      - path: go/internal/store/postgres/postgres_test.go
+        contains: 'TestTheMuteMigrationKeepsEveryKind'
   - id: backend-sdk
     content: "Ship server-side SDKs in Go and Rust so a customer's backend can mint tokens, run rooms, moderate them, and follow what happens in them without a MOQT stack in its dependency graph. One contract, two idiomatic surfaces: sentinel errors and errors.Is in Go, an error enum in Rust, idempotency keys generated per logical call rather than per attempt so a queue redelivering 'ban for 24 hours' does not extend the ban, and attribution the caller cannot forge -- the service account comes from the connection, and only the human it is acting for is per-call. Both must agree with the control plane about what a capability bit means, which is a cross-language claim and therefore needs a cross-language test."
     status: in_progress
