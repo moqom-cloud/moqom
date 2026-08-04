@@ -381,6 +381,48 @@ func TestTrustedStampsAreNotCountedAsFallbacks(t *testing.T) {
 	}
 }
 
+// Both ceilings are poll intervals in disguise, and the test says so in the
+// terms they were derived in.
+//
+// The kernel's bound grows at its own tolerance of 500ppm between corrections
+// rather than tracking the crystal, so the peak a healthy host reaches is the
+// poll interval times that and nothing else. A relay is pinned to 64 seconds
+// because 32ms is inside a frame at 30fps; a node whose daemon we do not own
+// backs off to a conventional 1024, which is 512ms of growth on a clock that is
+// behaving perfectly. A ceiling that does not admit its host's poll interval
+// reports a healthy clock as untrusted for most of every cycle, which is what
+// the control plane was doing before this was measured.
+func TestTheCeilingsAdmitTheirHostsPollInterval(t *testing.T) {
+	const tolerance = 500e-6 // What the kernel allows itself, per second.
+	peak := func(poll time.Duration) time.Duration {
+		return time.Duration(float64(poll) * tolerance)
+	}
+
+	// A relay: pinned to 64 seconds by its chrony configuration.
+	relayPeak := peak(64 * time.Second)
+	if relayPeak > DefaultCeiling {
+		t.Errorf("a healthy relay peaks at %v, past its %v ceiling", relayPeak, DefaultCeiling)
+	}
+	if frame := time.Second / 30; relayPeak > frame {
+		t.Errorf("a relay's peak %v is wider than a frame (%v), so frames cannot be ordered",
+			relayPeak, frame)
+	}
+
+	// A borrowed node: whatever it does, up to the conventional maximum.
+	borrowedPeak := peak(1024 * time.Second)
+	if borrowedPeak > CeilingWhereTheDaemonIsNotOurs {
+		t.Errorf("a healthy node on a long poll peaks at %v, past its %v ceiling",
+			borrowedPeak, CeilingWhereTheDaemonIsNotOurs)
+	}
+
+	// And the wider ceiling is still narrow enough to be a bound worth having:
+	// a clock nobody has corrected for an hour must not pass it.
+	if abandoned := peak(time.Hour); abandoned <= CeilingWhereTheDaemonIsNotOurs {
+		t.Errorf("an hour of growth is %v, which the %v ceiling would still accept",
+			abandoned, CeilingWhereTheDaemonIsNotOurs)
+	}
+}
+
 // The distinction the warning has to carry: a clock nobody is disciplining and
 // a clock whose bound merely grew past a ceiling produce the same verdict and
 // want opposite fixes -- restart the daemon, or admit the ceiling is tighter

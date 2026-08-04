@@ -104,6 +104,19 @@ resource "kubernetes_deployment_v1" "this" {
           name  = var.name
           image = var.image
 
+          # Always, because the images here carry a moving tag. The kubelet's
+          # default for any tag but `:latest` is to reuse whatever the node
+          # already has under that name, so pushing a new `:dev` and restarting
+          # the deployment gives a pod that is new, healthy, and running last
+          # week's binary — with nothing in the rollout to say so. That cost an
+          # hour once already, chasing a config change that was in the image and
+          # not in the container.
+          #
+          # The alternative is naming an image by digest, which is what a release
+          # should do and would make this line redundant. Until then this is what
+          # makes a restart mean what it appears to mean.
+          image_pull_policy = "Always"
+
           port {
             name           = "grpc"
             container_port = var.grpc_port

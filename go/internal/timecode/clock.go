@@ -84,13 +84,34 @@ type Host struct {
 	fallbacks uint64
 }
 
-// DefaultCeiling is a generous bound that still catches a broken host.
+// DefaultCeiling is three frames at 30fps, matching the relay's.
 //
-// A healthy machine on a nearby NTP server reports single-digit milliseconds.
-// A hundred is far outside that and far inside the seconds-level errors that
-// make an audit log meaningless, so it separates "slightly noisy" from
-// "something is wrong" without flapping.
+// The reasoning is the relay's too, because that is the tier this figure was
+// chosen for: timecodes order media captured on different machines, so the bound
+// that matters is the gap between two frames, and three of them leaves room for
+// the sawtooth the kernel's bound really is. It grows at the kernel's tolerance
+// of 500ppm between corrections rather than tracking the crystal, so the peak is
+// the poll interval times that — 32ms on a host polling every 64 seconds, which
+// is what the relays are pinned to.
 const DefaultCeiling = 100 * time.Millisecond
+
+// CeilingWhereTheDaemonIsNotOurs is for a host whose poll interval we do not set.
+//
+// The control plane runs on GKE Autopilot. There is no chrony.conf to write:
+// the node is disciplined on Google's schedule, and a time daemon backs a stable
+// clock off to a long poll — 1024 seconds is the conventional maximum, which at
+// 500ppm is 512ms of growth before the next correction. Measured on a dev pod,
+// the bound sawtoothed to 32ms and back on a freshly booted node and sat past
+// 100ms for most of every cycle on an older one, which is the same clock
+// behaving the same way with a different poll interval.
+//
+// So this is 512ms plus room for the residual offset at each correction. The
+// cost is honest and worth stating: the growing bound is also what notices a
+// daemon that died, and a wider ceiling notices it in twenty minutes rather than
+// three. That trade is acceptable here and would not be on a relay. What the
+// control plane stamps is audit entries, where the useful question is which day
+// and which minute; what a relay stamps is media, where it is which frame.
+const CeilingWhereTheDaemonIsNotOurs = 600 * time.Millisecond
 
 // pollInterval is how long a health reading is reused.
 //

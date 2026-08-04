@@ -53,7 +53,23 @@ write_files:
       #
       # So: one source family, chosen to match the clients, and the Google
       # source removed rather than deprioritised.
-      pool time.cloudflare.com iburst maxsources 4
+      #
+      # `maxpoll 6` pins the poll interval at 64 seconds instead of letting
+      # chrony back a stable clock off to its default 1024, and the number comes
+      # from the frame rate. The kernel's error bound is not a measurement of
+      # drift; it grows at the kernel's own tolerance of 500ppm between
+      # corrections, whatever the crystal is really doing. So the peak bound is
+      # simply the poll interval times that: 64s gives 32ms, which is inside one
+      # frame at 30fps, and the default 1024s would give 512ms — five times the
+      # ceiling this relay stamps against, so most of every cycle would be
+      # reported as untrusted by a clock that was in fact fine.
+      #
+      # A frame is the right unit because frames are what these timecodes order.
+      # A bound wider than the gap between two of them cannot say which of two
+      # phones' frames was captured first, which is the entire question a
+      # timecode on media exists to answer. Four packets a minute per relay is
+      # what that costs.
+      pool time.cloudflare.com iburst maxsources 4 maxpoll 6
 
       # Step rather than slew for the first few updates, then slew forever
       # after. A relay that boots with a wildly wrong clock should correct it

@@ -73,7 +73,14 @@ func run() error {
 	}
 	// One clock for the process, disciplined by the host's NTP daemon and
 	// honest about how well that is going. See internal/timecode.
+	//
+	// A wider ceiling than a relay's, because this runs on a node whose time
+	// daemon belongs to whoever built the node and polls on a schedule we cannot
+	// set. Not a lowered standard: the kernel's bound grows at a fixed 500ppm
+	// between corrections, so on a long poll interval it exceeds a relay's
+	// ceiling while the clock is behaving perfectly. See the constant.
 	clock := timecode.NewHost()
+	clock.Ceiling = timecode.CeilingWhereTheDaemonIsNotOurs
 	reportClockHealth(clock)
 
 	backing, err := backingStore(func() time.Time { return clock.Now().At })
@@ -412,6 +419,7 @@ func reportClockHealth(clock *timecode.Host) {
 	default:
 		slog.Info("host clock disciplined",
 			"maxErrorMs", health.MaxError.Milliseconds(),
+			"ceilingMs", clock.Ceiling.Milliseconds(),
 			"leapPending", health.LeapPending)
 	}
 }
