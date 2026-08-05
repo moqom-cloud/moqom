@@ -15,6 +15,13 @@ output "internal_address" {
   description = "Address of the internal load balancer, or null when there is not one. This is what a relay in the VPC dials."
 }
 
+output "public_address" {
+  value = var.public_port == null ? null : try(
+    kubernetes_service_v1.public[0].status[0].load_balancer[0].ingress[0].ip, null
+  )
+  description = "Address of the public load balancer, or null when there is not one. This is what a phone asks for a token."
+}
+
 output "endpoint" {
   value = var.internal_load_balancer ? try(
     "${var.transport_security ? "https" : "http"}://${kubernetes_service_v1.this.status[0].load_balancer[0].ingress[0].ip}:${var.grpc_port}", null

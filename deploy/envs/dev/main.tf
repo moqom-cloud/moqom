@@ -34,6 +34,11 @@ locals {
   # working perfectly.
   control_grpc_port = 8443
 
+  # Where a phone asks for a token. A port of its own because it is exposed
+  # differently from everything else here -- publicly -- and a port shared with
+  # the admin API would be an admin API on the internet.
+  control_join_port = 8444
+
   cluster_node_cidr    = "10.20.32.0/22"
   cluster_pod_cidr     = "10.21.0.0/16"
   cluster_service_cidr = "10.22.0.0/20"
@@ -56,6 +61,17 @@ locals {
     # The bearer token an operator's own calls to the admin API carry. Held in
     # the same place as the rest so that a laptop reads it rather than keeps it.
     "${local.name_prefix}-admin-credential" = []
+
+    # The credential a phone holds to ask the join endpoint for a token. The only
+    # secret here that is meant to leave the deployment, which is why the account
+    # behind it can do exactly one thing: mint participant tokens in this tenant,
+    # with no moderation and no ownership, whatever the request asks for.
+    #
+    # Long-lived, unlike the tokens it buys. That is the trade the endpoint makes:
+    # a credential that lasts means a phone can be set up once, and it means a
+    # phone that is lost stays able to join until this is rotated. Rotating it is
+    # a new version here and a rerun of sync-secrets.sh.
+    "${local.name_prefix}-device-credential" = []
 
     # RelayLink's mutual TLS: a private authority, and a certificate for each of
     # the three things that speak on that port.
@@ -271,6 +287,11 @@ module "control" {
   image     = var.control_image
   grpc_port = local.control_grpc_port
 
+  # The only public address in this deployment's control tier. See the module's
+  # `public_port` and the join endpoint's own file for why one exists and why
+  # opening it does not open the admin API beside it.
+  public_port = local.control_join_port
+
   # The process holds the certificate rather than a terminator in front of it,
   # which is what lets a relay authenticate the control plane itself instead of
   # authenticating whatever is terminating for it.
@@ -316,6 +337,21 @@ module "control" {
     MOQOM_CONTROL_TLS_CERT  = "/etc/moqom/link-cert.pem"
     MOQOM_CONTROL_TLS_KEY   = "/etc/moqom/link-key.pem"
     MOQOM_CONTROL_CLIENT_CA = "/etc/moqom/link-ca.pem"
+
+    # The device-facing route, on its own port and its own address. It serves the
+    # same certificate as the port above and, pointedly, asks for none in return:
+    # requiring a client certificate here would mean every phone needed one issued
+    # before it could ask for a credential, which is the bootstrapping problem this
+    # endpoint exists to solve. What stands in for it is the device account, whose
+    # grants are the ceiling on everything minted against it.
+    MOQOM_CONTROL_JOIN_ADDR = ":${local.control_join_port}"
+
+    # On, because this is the environment two phones are tested from and typing a
+    # room name into one of them should produce a room. The cost is that the
+    # device credential can create rooms as well as join them; in an environment
+    # with paying tenants in it, this stays off and rooms are made through the
+    # admin API by something that knows why.
+    MOQOM_CONTROL_JOIN_CREATES_ROOMS = "1"
   }
 
   secret_env = {

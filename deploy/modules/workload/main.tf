@@ -127,6 +127,14 @@ resource "kubernetes_deployment_v1" "this" {
             container_port = var.health_port
           }
 
+          dynamic "port" {
+            for_each = var.public_port == null ? [] : [var.public_port]
+            content {
+              name           = "join"
+              container_port = port.value
+            }
+          }
+
           dynamic "env" {
             for_each = var.env
             content {
@@ -287,6 +295,42 @@ resource "kubernetes_service_v1" "this" {
   # Without this the plan completes before the address exists and the output is
   # empty, which is the value everything downstream is waiting for.
   wait_for_load_balancer = var.internal_load_balancer
+}
+
+# The public way in, for the one route that has to be reachable from a phone.
+#
+# A second service rather than another port on the one above, and that is the
+# whole point: this one selects the same pods and publishes exactly one port, so
+# the admin surface stays on an address that only exists inside the VPC. Two
+# services with different exposure is the only way Kubernetes lets that be said.
+resource "kubernetes_service_v1" "public" {
+  count = var.public_port == null ? 0 : 1
+
+  metadata {
+    name      = "${var.name}-public"
+    namespace = var.namespace
+    labels    = local.labels
+
+    annotations = {
+      # Backed by network endpoint groups, so traffic reaches a pod directly and
+      # the health check describes the process serving rather than a node.
+      "cloud.google.com/neg" = jsonencode({ ingress = true })
+    }
+  }
+
+  spec {
+    type     = "LoadBalancer"
+    selector = local.selector
+
+    port {
+      name        = "join"
+      port        = var.public_port
+      target_port = var.public_port
+      protocol    = "TCP"
+    }
+  }
+
+  wait_for_load_balancer = true
 }
 
 # A budget rather than a hope. Autopilot drains nodes for upgrades on its own

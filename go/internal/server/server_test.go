@@ -37,10 +37,17 @@ import (
 // transport, the metadata, and the status codes, and costs nothing.
 
 const (
-	ownerKey  = "owner-key"
-	modKey    = "moderator-key"
-	joinKey   = "join-only-key"
-	relayKey  = "relay-key"
+	ownerKey = "owner-key"
+	modKey   = "moderator-key"
+	joinKey  = "join-only-key"
+	relayKey = "relay-key"
+
+	// An owner that names no publish scopes, which is the shape a real
+	// deployment's operator account has: `is_owner` covers everything the admin
+	// API asks about, so nobody writes a publish list beside it. It matters to the
+	// join endpoint, which mints an account's own publish rights and nothing
+	// broader -- see TestACredentialThatCouldPublishNothingIsRefusedRatherThanServed.
+	barrenKey = "owner-with-no-publish-key"
 	tenant    = "acme"
 	roomName  = "room-42"
 	issuerFor = "moqom-test"
@@ -100,7 +107,8 @@ func newHarness(t *testing.T, clocks ...timecode.Clock) *harness {
 		joinKey: {Name: "join-backend", Tenant: tenant, Grants: control.Grants{
 			Publish: control.PublishCamera,
 		}},
-		relayKey: {Name: "relay-1", IsRelay: true},
+		relayKey:  {Name: "relay-1", IsRelay: true},
+		barrenKey: {Name: "operator", Tenant: tenant, Grants: control.Grants{IsOwner: true}},
 	})
 
 	instance, err := server.New(server.Config{

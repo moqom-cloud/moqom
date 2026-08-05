@@ -111,6 +111,25 @@ variable "run_as_user" {
   default     = 65532
 }
 
+variable "public_port" {
+  type        = number
+  description = <<-EOT
+    Port to expose on a public load balancer, or null for none.
+
+    The one exception to this module's rule that everything it runs is reached
+    from inside the VPC, and it is a deliberate exception rather than a
+    loosening. A phone cannot fetch a credential from an address it cannot
+    reach, and a device on a mobile network is outside every private network
+    there is.
+
+    Its own service and its own address, so that opening this opens exactly this
+    port. Sharing the internal balancer would mean the gRPC admin surface --
+    rooms, moderation, minting with whatever the caller may grant -- became
+    reachable from the internet as a side effect of wanting one route to be.
+  EOT
+  default     = null
+}
+
 variable "internal_load_balancer" {
   type        = bool
   description = "Expose on an internal load balancer. False leaves it as a cluster IP, reachable only from inside the cluster."

@@ -8,6 +8,18 @@ output "control_endpoint" {
   description = "What a relay in this VPC puts in MOQOM_CONTROL_ENDPOINT. Internal, so nothing outside the VPC can reach it."
 }
 
+output "join_endpoint" {
+  value       = module.control.public_address
+  description = <<-EOT
+    Where a phone asks for its own token, on TCP/8444.
+
+    The one public address in the control tier. What a device presents here is
+    the `device` credential from Secret Manager, and everything minted against
+    it is bounded by that account's grants: publishing, in one tenant, never
+    moderation and never ownership.
+  EOT
+}
+
 output "cluster" {
   value = {
     name     = module.gke.cluster_name

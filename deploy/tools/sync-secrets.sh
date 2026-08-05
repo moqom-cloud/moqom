@@ -70,14 +70,25 @@ RELAY_CREDENTIAL="$(ensure "$PREFIX-relay-credential" "$credential_generator")"
 say "admin credential"
 ADMIN_CREDENTIAL="$(ensure "$PREFIX-admin-credential" "$credential_generator")"
 
+# The credential a phone holds, which is the only one of the three that leaves
+# the deployment. It buys exactly one thing: asking the join endpoint for a
+# participant token in this tenant. Not an owner, not a relay, no moderation --
+# and the endpoint refuses to mint moderation or ownership regardless of the
+# account behind it, so a copy of this on a lost phone is somebody who can join
+# rooms, which is what a phone is for.
+say "device credential"
+DEVICE_CREDENTIAL="$(ensure "$PREFIX-device-credential" "$credential_generator")"
+
 # The account file is derived from the two credentials above rather than
 # generated independently, so the token a relay presents is by construction the
 # one the control plane will accept.
 #
-# Two accounts and no more. `admin` is an operator's own key: owner of every
+# Three accounts and no more. `admin` is an operator's own key: owner of every
 # room in the tenant, which is what creating rooms and issuing bans from a
 # laptop requires. `relay` is the tier's key, and `is_relay` is what permits
-# attaching to RelayLink -- it is not an owner and cannot mint tokens.
+# attaching to RelayLink -- it is not an owner and cannot mint tokens. `device`
+# is what a phone holds, and its grants are the ceiling on every token the join
+# endpoint will mint against it: publishing, in this tenant, and nothing else.
 say "service accounts"
 cat > "$WORK/accounts.json" <<JSON
 {
@@ -93,6 +104,12 @@ cat > "$WORK/accounts.json" <<JSON
       "credential": "$RELAY_CREDENTIAL",
       "tenant": "$TENANT",
       "is_relay": true
+    },
+    {
+      "name": "device",
+      "credential": "$DEVICE_CREDENTIAL",
+      "tenant": "$TENANT",
+      "publish": ["audio", "video", "screen_share", "data"]
     }
   ]
 }
@@ -116,6 +133,22 @@ JSON
 # balancer can be given a different address without reissuing anything.
 SERVER_NAME="${MOQOM_LINK_SERVER_NAME:-moqom-control}"
 
+# The one exception to that, and it is not optional. The join endpoint is on this
+# same certificate and is reached by a phone, by address, because dev has no DNS
+# for it -- and iOS enforces the certificate's name against the address even when
+# the application has already accepted the certificate by pin. A certificate with
+# no address in it produces a connection that fails with `NSURLErrorDomain -1200`
+# on the phone and succeeds from every command-line tool that was used to check
+# it, which is a day to work out from the phone's end.
+#
+# Read from the deployment rather than written down, so the address in the
+# certificate is the address the load balancer actually has.
+HERE="$(cd "$(dirname "$0")" && pwd)"
+JOIN_ADDRESS="${MOQOM_JOIN_ADDRESS:-$(
+    cd "$HERE/../envs/dev" 2>/dev/null \
+        && terraform output -raw join_endpoint 2>/dev/null || true
+)}"
+
 # An extension file rather than -addext, because this has to run on whatever
 # openssl is in front: LibreSSL, which is what a Mac ships as `openssl`, has not
 # always had it, and a script that quietly issues a certificate without the
@@ -129,16 +162,50 @@ subjectAltName = $2
 EXT
 }
 
-# Issue a leaf from the CA and store both halves, if it is not already there.
-# Existing certificates are left alone: reissuing one on every run would mean
-# every run is a rolling restart of both tiers.
+# Whether the stored certificate already carries every name asked for here.
+#
+# Reissuing on every run would make every run a rolling restart of both tiers, and
+# leaving an existing certificate alone unconditionally means a name added above
+# never reaches the deployment -- the script reports success and the phone keeps
+# failing. So the certificate is left alone only while it still says what it is
+# supposed to say.
+#
+# Compared with the spaces removed, because openssl writes `IP Address:` where an
+# extension file says `IP:`.
+names_all_present() {
+    stored="$(
+        $GCLOUD secrets versions access latest --secret="$PREFIX-link-$1-cert" 2>/dev/null \
+            | openssl x509 -noout -ext subjectAltName 2>/dev/null \
+            | tr -d ' ' || true
+    )"
+    [ -n "$stored" ] || return 1
+
+    # With a trailing newline, because `read` reports failure on a final line that
+    # has none and the loop then never sees the last name -- which is the one just
+    # added, every time.
+    printf '%s\n' "$2" | tr ',' '\n' | while read -r want; do
+        [ -n "$want" ] || continue
+        case "$want" in
+            IP:*) want="IPAddress:${want#IP:}" ;;
+        esac
+        case "$stored" in
+            *"$want"*) ;;
+            *) exit 1 ;;
+        esac
+    done
+}
+
+# Issue a leaf from the CA and store both halves, if what is there will not do.
 leaf() {
     name="$1"
     usage="$2"
     sans="$3"
 
-    if $GCLOUD secrets versions access latest --secret="$PREFIX-link-$name-cert" >/dev/null 2>&1; then
+    if names_all_present "$name" "$sans"; then
         return 0
+    fi
+    if $GCLOUD secrets versions access latest --secret="$PREFIX-link-$name-cert" >/dev/null 2>&1; then
+        say "  reissuing the $name certificate: it does not carry every name it needs"
     fi
 
     say "  issuing the $name certificate"
@@ -175,8 +242,13 @@ fi
 
 say "link certificates"
 # The service's in-cluster name as well as the short one, so a caller inside the
-# cluster and a relay dialling the load balancer verify the same certificate.
-leaf server serverAuth "DNS:$SERVER_NAME,DNS:$PREFIX-control.$NAMESPACE.svc.cluster.local,DNS:$PREFIX-control,DNS:localhost"
+# cluster and a relay dialling the load balancer verify the same certificate. And
+# the join endpoint's public address, for the phones -- see JOIN_ADDRESS above.
+SERVER_SANS="DNS:$SERVER_NAME,DNS:$PREFIX-control.$NAMESPACE.svc.cluster.local,DNS:$PREFIX-control,DNS:localhost"
+if [ -n "$JOIN_ADDRESS" ]; then
+    SERVER_SANS="$SERVER_SANS,IP:$JOIN_ADDRESS"
+fi
+leaf server serverAuth "$SERVER_SANS"
 # One certificate for the tier rather than one per machine. A per-instance
 # identity is worth having and needs an issuing service to go with it, since a
 # managed instance group creates machines nobody is present for; this is the
@@ -192,6 +264,34 @@ else
     # Regenerated from the same credentials every run, so a difference here
     # means somebody edited the file directly. Keep theirs.
     $GCLOUD secrets versions access latest --secret="$PREFIX-control-accounts" > "$WORK/accounts.json"
+
+    # Except for accounts that did not exist when theirs was written. A
+    # deployment that predates the join endpoint has a perfectly good accounts
+    # file with no device account in it, and "keep theirs" would mean the phones
+    # can never be enrolled without somebody editing a secret by hand. Added
+    # rather than merged: an existing `device` entry is left exactly as it is,
+    # including its credential, because that credential is on somebody's phone.
+    if ! grep -q '"device"' "$WORK/accounts.json"; then
+        say "  adding the device account to an existing file"
+        DEVICE_CREDENTIAL="$DEVICE_CREDENTIAL" TENANT="$TENANT" python3 - "$WORK/accounts.json" <<'PY'
+import json, os, sys
+
+path = sys.argv[1]
+with open(path) as f:
+    document = json.load(f)
+
+document.setdefault("accounts", []).append({
+    "name": "device",
+    "credential": os.environ["DEVICE_CREDENTIAL"],
+    "tenant": os.environ["TENANT"],
+    "publish": ["audio", "video", "screen_share", "data"],
+})
+
+with open(path, "w") as f:
+    json.dump(document, f, indent=2)
+PY
+        $GCLOUD secrets versions add "$PREFIX-control-accounts" --data-file="$WORK/accounts.json" >/dev/null
+    fi
 fi
 
 # --- Kubernetes --------------------------------------------------------------

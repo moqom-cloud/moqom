@@ -160,6 +160,32 @@ func run() error {
 	slog.Info("health endpoint listening", "address", probes.Addr,
 		"liveness", server.LivenessPath, "readiness", server.ReadinessPath)
 
+	// A third listener, and the only one a phone ever reaches.
+	//
+	// Off unless an address is given, because it is the one port here that faces
+	// the internet and a surface like that should be something a deployment
+	// turned on rather than something it inherited. See internal/server/join.go
+	// for what it serves and why exposing it does not expose the admin API.
+	joins, err := joinEndpoint(instance)
+	if err != nil {
+		return err
+	}
+	if joins != nil {
+		go func() {
+			err := serveJoins(joins)
+			if err != nil && !errors.Is(err, http.ErrServerClosed) {
+				// Fatal to the feature and not to the process. A control plane
+				// that cannot hand out device tokens is still running rooms for
+				// every session already connected, and killing it would take
+				// those down to fix the ones that cannot start.
+				slog.Error("join endpoint stopped", "error", err)
+			}
+		}()
+		slog.Info("join endpoint listening", "address", joins.Addr,
+			"path", server.JoinPath, "creates rooms", joinCreatesRooms(),
+			"transport", joinTransport())
+	}
+
 	stopped := make(chan error, 1)
 	go func() { stopped <- grpcServer.Serve(listener) }()
 
@@ -178,6 +204,9 @@ func run() error {
 		shutdown, done := context.WithTimeout(context.Background(), 5*time.Second)
 		defer done()
 		_ = probes.Shutdown(shutdown)
+		if joins != nil {
+			_ = joins.Shutdown(shutdown)
+		}
 		// Graceful, so relays see a clean close and reattach rather than timing out.
 		// Their grace period covers the gap, which is the whole reason it exists.
 		grpcServer.GracefulStop()
@@ -190,6 +219,90 @@ func env(name, fallback string) string {
 		return value
 	}
 	return fallback
+}
+
+// joinEndpoint builds the device-facing listener, or nil for a deployment that
+// has not asked for one.
+//
+// Its own port rather than a route on an existing one, because the three
+// listeners here need three different answers to "who may reach this". The gRPC
+// port wants a client certificate and an internal address; the probe port wants
+// to be visible to the orchestrator and nobody else; this one has to be
+// reachable from a phone on a mobile network, which is to say from anywhere, and
+// putting it behind the same socket as either of the others would mean opening
+// that socket too.
+//
+// Its own certificate is not needed: it serves the same leaf as the gRPC port,
+// which is already issued for this deployment and whose hash the clients already
+// pin. What it must not do is ask for one back. A client CA here would mean
+// every phone needed an issued certificate before it could ask for a token,
+// which is the bootstrapping problem this endpoint exists to solve.
+func joinEndpoint(instance *server.Server) (*http.Server, error) {
+	address := os.Getenv("MOQOM_CONTROL_JOIN_ADDR")
+	if address == "" {
+		return nil, nil
+	}
+
+	endpoint := &http.Server{
+		Addr:    address,
+		Handler: instance.JoinHandler(joinCreatesRooms()),
+		// Short, because the work behind it is a signature and a row read. A
+		// request that has not finished sending its headers in five seconds is
+		// not a phone on a bad network, it is a socket being held open.
+		ReadHeaderTimeout: 5 * time.Second,
+		WriteTimeout:      10 * time.Second,
+	}
+
+	certificate := os.Getenv("MOQOM_CONTROL_TLS_CERT")
+	key := os.Getenv("MOQOM_CONTROL_TLS_KEY")
+	if certificate == "" || key == "" {
+		// Allowed, and only for a laptop. A credential travelling in a header
+		// over plaintext to an address on the internet is a credential anyone on
+		// the path collects, so the log line has to say which of the two this is
+		// -- see joinTransport, which is printed at startup.
+		return endpoint, nil
+	}
+
+	pair, err := tls.LoadX509KeyPair(certificate, key)
+	if err != nil {
+		return nil, fmt.Errorf("join endpoint certificate: %w", err)
+	}
+	endpoint.TLSConfig = &tls.Config{
+		Certificates: []tls.Certificate{pair},
+		MinVersion:   tls.VersionTLS12,
+	}
+	return endpoint, nil
+}
+
+// serveJoins starts the listener with whatever transport it was given.
+func serveJoins(endpoint *http.Server) error {
+	if endpoint.TLSConfig == nil {
+		return endpoint.ListenAndServe()
+	}
+	return endpoint.ListenAndServeTLS("", "")
+}
+
+func joinTransport() string {
+	if os.Getenv("MOQOM_CONTROL_TLS_CERT") == "" || os.Getenv("MOQOM_CONTROL_TLS_KEY") == "" {
+		return "plaintext — do not expose"
+	}
+	return "tls, no client certificate"
+}
+
+// joinCreatesRooms decides whether a device naming an unknown room gets one.
+//
+// A knob because it is a real trade: on, somebody types a room name on a phone
+// and it works, which is the whole demo; off, the room has to be created through
+// the admin API first, and a credential that leaks cannot fill the store with
+// rooms. Default off, so a deployment that has not thought about it has the
+// safer half.
+func joinCreatesRooms() bool {
+	switch strings.ToLower(os.Getenv("MOQOM_CONTROL_JOIN_CREATES_ROOMS")) {
+	case "1", "true", "yes":
+		return true
+	default:
+		return false
+	}
 }
 
 // transportCredentials builds the gRPC port's TLS, and returns nil for none.
