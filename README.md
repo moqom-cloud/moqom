@@ -50,12 +50,35 @@ customer's backend uses to reach it. Neither SDK speaks MOQT: administering a
 room and carrying media are different jobs, and making every backend link a QUIC
 stack to change somebody's grants would be a poor trade.
 
-**The gap between those two halves is the honest part.** The control plane can
-tell a relay to eject somebody, and no relay has ever listened — `RelayLink` is
-tested against a fake one. Until that is wired up, a kick is a durable decision
-and not yet an enforced one. State lives in memory, tokens are bearer rather
-than device-bound, and `tools/interop.sh` is what proves the two SDKs and the
-server agree about what a capability bit means.
+**The two halves now meet, and the seam is tested.** A kick is an enforced
+decision rather than only a durable one:
+`moqom-engine/moqom-relay/tests/interop_link.rs` starts this control plane's real
+binary, attaches a real relay to its link, joins a real client over QUIC with a
+token this server minted, and bans them through the admin API — and asserts the
+open connection closes, not merely that the next token is refused. Unbanning and
+closing a room travel the same way. Those tests are `#[ignore]`d because they
+need a Go toolchain, and `tools/interop.sh` is what runs them, along with the
+check that the two SDKs and the server agree about what a capability bit means —
+and about what a device thumbprint is, which is a committed fixture rather than a
+running process: the Swift client writes proofs and RFC 7638 vectors, the relay
+verifies the proofs, and this server recomputes the thumbprints, so the three
+cannot drift without one of them failing.
+
+**What is still honest about the gap.** The store defaults to memory, so a
+restart forgets every ban and the process says so in a warning when it starts. A
+Postgres store is written and reachable with `MOQOM_CONTROL_STORE=postgres`,
+against Cloud SQL as the runtime's own Google identity, so there is no password
+to configure, store, or rotate — but it is the choice rather than the default,
+and a default that loses the moderation log is the one that will be running
+somewhere. Tokens are Ed25519 over JSON rather than CAT/CWT's CBOR and COSE,
+which is an encoding away from the target and no longer a binding away from it:
+`cnf.jkt` is derived from a key the device sends at join, held in its Secure
+Enclave, and a relay set to `MOQOM_RELAY_POSSESSION=required` makes every session
+sign for it — so a stolen token works from nowhere. That is not yet the default,
+because a fleet upgrades one build at a time. And
+the relay registry is per-replica and in memory, which means a directive reaches
+the relays one replica happens to know about — enough for a single control plane,
+not for two.
 
 **The client is further along than the server it will face.**
 [`MoqomKit`](https://github.com/moqom-cloud/moqom-swift) covers the client logic

@@ -24,9 +24,24 @@ import (
 	adminpb "github.com/moqom-cloud/moqom-go/admin/adminpb"
 	"github.com/moqom-cloud/moqom/go/internal/control"
 	"github.com/moqom-cloud/moqom/go/internal/server"
+	"github.com/moqom-cloud/moqom/go/internal/token"
 )
 
 const deviceThumbprint = "MpXqvQAmv7Y3Kk9dHnJpLwRtUvXyZaBcDeFgHiJkLmN"
+
+// The EC key from RFC 7517 §A.1 and the thumbprint RFC 7638 computes over it.
+//
+// A published pair rather than one generated here, so that these tests assert
+// the same agreement the relay and the SDK assert: all three pin this example.
+var (
+	deviceKey = token.PublicKey{
+		Kty: "EC",
+		Crv: "P-256",
+		X:   "MKBCTNIcKUSDii11ySs3526iDZ8AiTo7Tu6KPAqv7D4",
+		Y:   "4Etl6SRW2YiLUrN5vfvVHuhp7x8PxltmWWlbbM4IFyM",
+	}
+	deviceKeyThumbprint = "cn-I_WNMClehiVp51i_0VpOENW1upEerA8sEam5hn-s"
+)
 
 // ask posts a join request and returns the status and decoded body.
 func ask(t *testing.T, handler http.Handler, credential string, body any) (int, server.JoinResponse, string) {
@@ -265,6 +280,82 @@ func TestAJoinWithoutADeviceIsRefused(t *testing.T) {
 	})
 	if code != http.StatusBadRequest {
 		t.Errorf("a join with no device got %d (%s), want 400", code, body)
+	}
+}
+
+// The binding that makes a token more than a label: `cnf.jkt` has to be the
+// thumbprint of a key the holder can sign with, and the only way to know that
+// is to derive it here from the key rather than take a name from the request.
+func TestATokenIsBoundToTheKeyTheDeviceSent(t *testing.T) {
+	h := newHarness(t)
+	h.createRoom(t, "alice")
+
+	code, response, body := ask(t, h.server.JoinHandler(false), joinKey, server.JoinRequest{
+		Tenant: tenant, Username: "alice", Room: roomName, Key: &deviceKey,
+	})
+	if code != http.StatusOK {
+		t.Fatalf("joining: %d %s", code, body)
+	}
+
+	if got := scopeOf(t, response.Token).Confirmation.Thumbprint; got != deviceKeyThumbprint {
+		t.Errorf("cnf.jkt = %q, want the thumbprint of the key sent: %q", got, deviceKeyThumbprint)
+	}
+	// Echoed, so a caller can see which key it was bound to instead of decoding
+	// the credential to find out.
+	if response.Device != deviceKeyThumbprint {
+		t.Errorf("device = %q, want %q", response.Device, deviceKeyThumbprint)
+	}
+}
+
+// A device may send the truncated thumbprint it knows itself by alongside the
+// key, and the two must describe one device.
+func TestADeviceMaySendBothWhenTheyAgree(t *testing.T) {
+	h := newHarness(t)
+	h.createRoom(t, "alice")
+
+	code, response, body := ask(t, h.server.JoinHandler(false), joinKey, server.JoinRequest{
+		Tenant: tenant, Username: "alice", Room: roomName,
+		Device: deviceKeyThumbprint[:16], Key: &deviceKey,
+	})
+	if code != http.StatusOK {
+		t.Fatalf("joining: %d %s", code, body)
+	}
+	if response.Device != deviceKeyThumbprint {
+		t.Errorf("device = %q, want the untruncated %q", response.Device, deviceKeyThumbprint)
+	}
+}
+
+// The two readings of a disagreement -- a confused client, and one asking for a
+// token bound to somebody else's key -- are not distinguishable from here, and
+// neither is worth serving.
+func TestADeviceThatDisagreesWithItsOwnKeyIsRefused(t *testing.T) {
+	h := newHarness(t)
+	h.createRoom(t, "alice")
+
+	code, _, body := ask(t, h.server.JoinHandler(false), joinKey, server.JoinRequest{
+		Tenant: tenant, Username: "alice", Room: roomName,
+		Device: deviceThumbprint, Key: &deviceKey,
+	})
+	if code != http.StatusBadRequest {
+		t.Fatalf("a device naming another key got %d (%s), want 400", code, body)
+	}
+	if !strings.Contains(body, "thumbprint") {
+		t.Errorf("the refusal does not say what disagrees: %q", body)
+	}
+}
+
+func TestAKeyThatCannotBeBoundToIsRefused(t *testing.T) {
+	h := newHarness(t)
+	h.createRoom(t, "alice")
+
+	// A curve the Secure Enclave does not do and the relay does not verify. A
+	// token bound to this would be one nobody could ever prove possession of.
+	wrong := token.PublicKey{Kty: "EC", Crv: "P-384", X: deviceKey.X, Y: deviceKey.Y}
+	code, _, body := ask(t, h.server.JoinHandler(false), joinKey, server.JoinRequest{
+		Tenant: tenant, Username: "alice", Room: roomName, Key: &wrong,
+	})
+	if code != http.StatusBadRequest {
+		t.Errorf("a P-384 key got %d (%s), want 400", code, body)
 	}
 }
 

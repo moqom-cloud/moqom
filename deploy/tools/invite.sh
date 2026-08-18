@@ -103,12 +103,19 @@ JOIN_HASH="${MOQOM_JOIN_CERT_HASH:-$(
         | tr -d '\n' || true
 )}"
 
-# A token as well, and only as a fallback. A phone that takes the service replaces
-# this before it dials; a phone on a build that predates the service still has
-# something to present.
-TOKEN="$("$HERE/join.sh" "$USER_NAME" "$ROOM" 2>/dev/null || true)"
+# A token as well, and only as a fallback, and only when the scanning phone has
+# been named. A token is bound to a key in one phone's Secure Enclave, so minting
+# one here needs to know which phone will scan the link -- which a link meant to
+# be handed to anybody does not. Left out, the link carries the device credential
+# instead and the phone fetches a token bound to its own key, which is the path
+# that works without knowing anything about the phone in advance.
+TOKEN=""
+if [ -n "${MOQOM_DEVICE:-}" ]; then
+    TOKEN="$("$HERE/join.sh" "$USER_NAME" "$ROOM" "$MOQOM_DEVICE" 2>/dev/null || true)"
+fi
 if [ -z "$TOKEN" ] && [ -z "$DEVICE_CREDENTIAL" ]; then
-    echo "no credential of either kind — check join.sh and the device-credential secret" >&2
+    echo "no credential of either kind: set MOQOM_DEVICE to the scanning phone's" >&2
+    echo "thumbprint for a pasted token, or check the device-credential secret" >&2
     exit 1
 fi
 

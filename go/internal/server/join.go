@@ -13,6 +13,7 @@ import (
 	adminpb "github.com/moqom-cloud/moqom-go/admin/adminpb"
 	"github.com/moqom-cloud/moqom/go/internal/control"
 	"github.com/moqom-cloud/moqom/go/internal/store"
+	"github.com/moqom-cloud/moqom/go/internal/token"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/types/known/durationpb"
@@ -67,12 +68,22 @@ type JoinRequest struct {
 
 	// Device is the thumbprint the token is bound to by its `cnf` claim.
 	//
-	// Sent by the device rather than assigned here, because it is a claim about
-	// a key the device holds and the control plane cannot produce one on its
-	// behalf. Not verified yet: proof of possession is the design target and
-	// this subset does not implement it, so today this is recorded rather than
-	// checked. See internal/token's package comment.
+	// Superseded by Key and kept for the clients that predate it. A thumbprint
+	// on its own is an assertion -- the device saying which key it holds --
+	// and the relay now demands a signature from whatever `cnf.jkt` names, so a
+	// token minted from a bare thumbprint is one whose holder may or may not be
+	// able to use it. That is legal and it is worse than it sounds: the failure
+	// arrives later, at a relay, as an authentication error with nothing there
+	// to explain it.
 	Device string `json:"device"`
+
+	// Key is the device's public signing key, as a JWK.
+	//
+	// The thumbprint is derived from this rather than taken from Device, which
+	// is the whole difference between binding a token to a key and labelling it
+	// with a name. Sending it costs a client four short strings it already has;
+	// see internal/token.PublicKey.
+	Key *token.PublicKey `json:"key,omitempty"`
 }
 
 // JoinResponse is the credential and enough about it to display.
@@ -86,6 +97,15 @@ type JoinResponse struct {
 	Room      string    `json:"room"`
 	Username  string    `json:"username"`
 	KeyID     string    `json:"keyId"`
+
+	// Device is the thumbprint this token was bound to, untruncated.
+	//
+	// Echoed so the caller can see which key the control plane decided the
+	// token belongs to, rather than assuming it was the one they meant. A
+	// mismatch here is the cheapest place to notice a token that will be
+	// refused by the relay: the alternative is a session that fails to
+	// authenticate with the reason buried in a credential nobody reads.
+	Device string `json:"device"`
 }
 
 // JoinPath is the only route this handler serves.
@@ -178,8 +198,9 @@ func (s *Server) join(
 	asked JoinRequest,
 	createsRooms bool,
 ) (JoinResponse, int, error) {
-	if asked.Device == "" {
-		return JoinResponse{}, http.StatusBadRequest, errors.New("device is required")
+	device, err := boundDevice(asked)
+	if err != nil {
+		return JoinResponse{}, http.StatusBadRequest, err
 	}
 
 	if asked.Room != "" && createsRooms {
@@ -214,7 +235,7 @@ func (s *Server) join(
 		&adminpb.MintClientTokenRequest{
 			Tenant:           asked.Tenant,
 			Username:         asked.Username,
-			DeviceThumbprint: asked.Device,
+			DeviceThumbprint: device,
 			Room:             asked.Room,
 			Grants:           grantsToProto(granted),
 			// Asked for explicitly rather than left to the default, so the
@@ -233,17 +254,61 @@ func (s *Server) join(
 		Room:      asked.Room,
 		Username:  minted.GetIdentity().GetUsername(),
 		KeyID:     minted.GetKeyId(),
+		Device:    device,
 	}, http.StatusOK, nil
+}
+
+// boundDevice decides which key the token will name.
+//
+// Derived from the JWK when there is one, because that is the only version of
+// this that means anything: the relay demands a signature from whatever
+// `cnf.jkt` names, so binding a token to a key the caller can prove it holds is
+// the difference between a credential and a label. A bare thumbprint is still
+// accepted, for the clients that predate proofs, and gets a token that will only
+// work against a relay not requiring one.
+//
+// A request that carries both and disagrees is refused rather than resolved. The
+// two readings -- "this client is confused about its own key" and "this client
+// is trying to have a token minted for somebody else's" -- are not
+// distinguishable from here, and neither is a request worth serving.
+func boundDevice(asked JoinRequest) (string, error) {
+	if asked.Key == nil {
+		if asked.Device == "" {
+			return "", errors.New("device or key is required")
+		}
+		return asked.Device, nil
+	}
+
+	thumbprint, err := asked.Key.Thumbprint()
+	if err != nil {
+		return "", fmt.Errorf("key: %w", err)
+	}
+
+	// Compared against the prefix rather than the whole, because that is what a
+	// client has: `DeviceID` truncates the thumbprint to sixteen characters for
+	// the namespace, and it is the truncated form that a device tends to know
+	// itself by and send here.
+	if asked.Device != "" && !strings.HasPrefix(thumbprint, asked.Device) {
+		return "", fmt.Errorf(
+			"device %q is not the key sent with it, whose thumbprint is %q",
+			asked.Device, thumbprint)
+	}
+	return thumbprint, nil
 }
 
 // howLongADeviceTokenLasts is the full cap.
 //
-// The maximum rather than something shorter, and that is not laziness. The
-// credential is checked when a session starts and never again, so the lifetime
-// only has to cover the walk from pressing Join to the relay accepting the
-// connection. Fifteen minutes covers a phone that is asked for a token, put in a
-// pocket, and taken out again; anything tighter starts failing for people rather
-// than for attackers.
+// The maximum rather than something shorter, and that is not laziness. Fifteen
+// minutes covers a phone that is asked for a token, put in a pocket, and taken
+// out again; anything tighter starts failing for people rather than for
+// attackers.
+//
+// This used to say the credential was checked when a session started and never
+// again, which was true of the relay then and is not now: it closes a session
+// whose token has lapsed, and a client presents a fresh one mid-call rather than
+// reconnecting. So this lifetime bounds a stolen token rather than only the act
+// of joining -- which is what a short lifetime was always supposed to be for,
+// since a token here is a bearer credential and nothing else limits one.
 const howLongADeviceTokenLasts = 15 * time.Minute
 
 // ensureRoom creates the room if it is not there.

@@ -262,6 +262,17 @@ for one that cannot reach a control plane — every session is anonymous and
 charged to its address. After they land, a session that presents no token is
 still admitted and may do nothing at all. Both are logged at startup.
 
+`MOQOM_RELAY_POSSESSION` decides whether holding a token is enough. A token names
+the device it was minted for in `cnf.jkt`; `required` makes a session prove it,
+by signing the token and this relay's certificate with the key that thumbprint
+identifies, at SETUP and again at every renewal, each signature usable once. A
+stolen token is then worth nothing without the Secure Enclave it was bound to.
+The default is `observed` — check a proof when one is offered, admit a session
+that offers none — because a fleet upgrades one build at a time and a relay that
+refused the older ones would be an outage. Move to `required` once the fleet is
+past it; the log at startup says which of the three is in force, and `observed`
+says out loud that it is not enforcing.
+
 ### Why the link is mutually authenticated
 
 Read the paragraph above again with an adversary in it. Whoever the relay is
@@ -321,7 +332,7 @@ asks, because a phone that could mint its own token could mint any token.
 The sample application has no server, so `deploy/tools/join.sh` is one:
 
 ```sh
-deploy/tools/join.sh ada bench     # prints a token, good for fifteen minutes
+deploy/tools/join.sh ada bench cn-I_WNMClehiVp5   # good for fifteen minutes
 ```
 
 It creates the room if it is missing, since minting checks that the room exists,
@@ -330,10 +341,19 @@ address. `MOQOM_MINT=1 Scripts/bench-two-phones.sh`, in moqom-swift, mints one
 per phone and passes them as launch arguments.
 
 Four things have to agree or the session connects and is refused every track:
-the tenant, the username, the room, and the device. The last is the awkward one
-— the namespace carries the first 16 characters of the token's `cnf.jkt`, and
-the sample announces the fixed string `sample-device-key`, which is what
-`moqom-mint` defaults `-device` to.
+the tenant, the username, the room, and the device. The last is the third
+argument above, and it used to be a fixed string every phone shared —
+`sample-device-key`, which `moqom-mint` defaulted to and which meant the field
+carried nothing. It is now the phone's own key, printed under the username on its
+join screen and typed in here. Getting it wrong is visible before the relay ever
+sees it: the join screen compares the token's `cnf.jkt` against the key it holds
+and says so.
+
+That matters more than it did when the field was decorative. On a relay running
+`MOQOM_RELAY_POSSESSION=required`, a token minted against one phone's thumbprint
+cannot be used from another — the session has to sign for it — so a token pasted
+into the wrong phone is refused rather than quietly publishing under a namespace
+nobody is watching.
 
 ### Taking one away again
 

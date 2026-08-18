@@ -9,15 +9,20 @@
 //
 // What the subset keeps: asymmetric signing, so a relay verifies without holding
 // anything that could mint; key rotation by identifier; the device thumbprint in
-// a `cnf` claim, so the binding is recorded even before it is enforced; short
-// lifetimes.
+// a `cnf` claim; short lifetimes.
 //
-// What it lacks: proof of possession. A token in flight is a bearer credential,
-// so whoever holds it is the user until it expires. That is why lifetimes are
-// capped in minutes rather than days, why the device is part of every identity so
-// a stolen token can be banned by device, and why `ListVerificationKeys` reports
-// the binding in force -- a client that wants to refuse bearer tokens can find
-// out without inspecting one.
+// What it lacks is now the encoding and not the binding, and this comment used
+// to say otherwise. `cnf.jkt` is derived here from a key the device sends -- see
+// PublicKey.Thumbprint -- and the relay demands an ES256 signature from that key
+// at every point it checks a token, so a token in flight is no longer a bearer
+// credential and a copy of one is worth nothing without the Secure Enclave it
+// was bound to. Lifetimes stay capped in minutes anyway: a relay may be
+// configured not to require proofs while a fleet is still being upgraded, and a
+// short life is what covers that window.
+//
+// `ListVerificationKeys` reports the binding in force, so a client that wants to
+// know whether it is talking to a deployment that enforces this can find out
+// without inspecting a token.
 //
 // Why JSON rather than CBOR, given the target: the relay has to parse this on
 // every session, and adding a CBOR/COSE stack to the media-path binary for a

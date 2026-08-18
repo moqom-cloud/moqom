@@ -6,35 +6,46 @@
 # plane, and hands back the token. The sample application has no server, so this
 # is one: a person at a terminal, deciding by hand.
 #
-#   deploy/tools/join.sh ada bench
+#   deploy/tools/join.sh ada bench Ku3nR9xTf2wQ1aBc
 #
 # The room is created if it does not exist, because minting checks that it does
 # and there is nothing else standing between a bench run and that error.
+#
+# The third argument is the phone's device thumbprint, which its join screen
+# prints under the username field. It used to be a constant nobody had to pass,
+# because the sample had no key; it has one in the Secure Enclave now, and a
+# token bound to any other thumbprint is refused by a relay that requires proof
+# of possession.
 #
 # The admin API has no public address on purpose -- it is an internal load
 # balancer inside the VPC -- so this reaches it the way every other tool here
 # does, through a port-forward into the cluster. Needs gcloud, kubectl, and Go.
 set -eu
 
-if [ "$#" -lt 1 ] || [ "$#" -gt 2 ]; then
+if [ "$#" -ne 3 ]; then
     cat >&2 <<'USAGE'
-usage: join.sh <username> [room]
+usage: join.sh <username> <room> <device>
+
+<device> is the thumbprint the phone's join screen prints beneath the username
+field. Pass "" for the room to mint a token with no room.
 
 Prints a token on stdout and everything else on stderr, so it can be
 substituted straight into a launch argument:
 
-  --relay-token "$(deploy/tools/join.sh ada bench)"
+  --relay-token "$(deploy/tools/join.sh ada bench Ku3nR9xTf2wQ1aBc)"
 
 The token is good for fifteen minutes, which is the control plane's ceiling.
-A session that is already established outlives it -- the credential is checked
-when the session starts and not again -- so a long run only needs the token to
-be valid at the moment the phone connects.
+That bounds the token rather than the call: a relay closes a session whose
+credential has lapsed, and the phone presents a fresh one mid-call when it has
+a token service configured. A pasted token cannot replace itself, so a session
+started with one ends when it expires.
 USAGE
     exit 2
 fi
 
 USER_NAME="$1"
-ROOM="${2:-}"
+ROOM="$2"
+DEVICE="$3"
 
 PROJECT="${MOQOM_PROJECT:-moqom-503700}"
 PREFIX="${MOQOM_PREFIX:-moqom-dev}"
@@ -106,7 +117,7 @@ $GCLOUD secrets versions access latest --secret="$PREFIX-link-admin-cert" > "$WO
 $GCLOUD secrets versions access latest --secret="$PREFIX-link-admin-key" > "$WORK/admin-key.pem"
 chmod 0600 "$WORK/admin-key.pem"
 
-say "minting for $USER_NAME in tenant $TENANT, room ${ROOM:-none}"
+say "minting for $USER_NAME in tenant $TENANT, room ${ROOM:-none}, device $DEVICE"
 MOQOM_MINT_TARGET="127.0.0.1:$PORT" \
 MOQOM_MINT_TENANT="$TENANT" \
 MOQOM_MINT_CREDENTIAL="$($GCLOUD secrets versions access latest --secret="$PREFIX-admin-credential")" \
@@ -114,4 +125,4 @@ MOQOM_ADMIN_CA="$WORK/link-ca.pem" \
 MOQOM_ADMIN_CERT="$WORK/admin-cert.pem" \
 MOQOM_ADMIN_KEY="$WORK/admin-key.pem" \
 MOQOM_ADMIN_SERVER_NAME="${MOQOM_LINK_SERVER_NAME:-moqom-control}" \
-    go -C "$HERE/go" run ./cmd/moqom-mint -user "$USER_NAME" -room "$ROOM"
+    go -C "$HERE/go" run ./cmd/moqom-mint -user "$USER_NAME" -room "$ROOM" -device "$DEVICE"

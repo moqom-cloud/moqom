@@ -51,12 +51,14 @@ func main() {
 func run() error {
 	user := flag.String("user", "", "the account this token speaks for")
 	room := flag.String("room", "", "which room; empty mints a token with no room")
-	// What MoqomRoom passes as its device, and not a thumbprint of anything:
-	// the sample has no key in a secure element for a real one to be taken
-	// from. The control plane treats it as an opaque identifier, so a device
-	// ban placed on it works and proof-of-possession -- when it lands -- will
-	// not.
-	device := flag.String("device", "sample-device-key", "the device's identifier, as the client announces it")
+	// The thumbprint of a key on the phone, which the join screen prints. This
+	// defaulted to `sample-device-key` for as long as the sample had no key --
+	// an opaque identifier a device ban could be placed on and nothing could
+	// sign for. It has a key now, so the default is gone: a token minted
+	// against the old string is bound to a thumbprint nobody holds, and a relay
+	// requiring proof of possession refuses the session with the reason inside
+	// a credential nobody reads. Being asked for it is cheaper than that.
+	device := flag.String("device", "", "the device's thumbprint, as its join screen prints it")
 	lifetime := flag.Duration("lifetime", 15*time.Minute, "how long it is good for; fifteen minutes is the server's ceiling")
 	owner := flag.Bool("owner", false, "make the holder the room's owner")
 	create := flag.Bool("create-room", true, "create the room if it does not exist yet")
@@ -64,6 +66,10 @@ func run() error {
 
 	if *user == "" {
 		return errors.New("-user is required")
+	}
+	if *device == "" {
+		return errors.New(
+			"-device is required: the thumbprint the phone's join screen prints under its username")
 	}
 
 	target := os.Getenv("MOQOM_MINT_TARGET")
