@@ -1,0 +1,29 @@
+name: Require the cross-repository token
+description: >
+  Fail with a legible message when MOQOM_REPO_TOKEN is absent, rather than
+  letting the sibling checkout that follows fail with "Input required and not
+  supplied: token" -- which names neither the secret nor the reason.
+
+inputs:
+  token:
+    description: The value of secrets.MOQOM_REPO_TOKEN.
+    required: false
+    default: ""
+
+runs:
+  using: composite
+  steps:
+    # Failing rather than skipping is deliberate. Three of the four jobs here
+    # check something that spans two repositories, and without the siblings they
+    # do not check less, they check nothing: the plan sees every piece of
+    # evidence as external and passes, and the interop table has no SDKs to
+    # compare. A job that skips itself reports the same green as one that ran.
+    - shell: bash
+      env:
+        MOQOM_REPO_TOKEN: ${{ inputs.token }}
+      run: |
+        if [[ -z "${MOQOM_REPO_TOKEN:-}" ]]; then
+          echo "::error::MOQOM_REPO_TOKEN is not set, so the sibling repositories cannot be cloned and this job would check nothing. It needs to be an organisation secret in moqom-cloud (or a secret on this repository) holding a token with read access to the organisation. See the \"Cross-repository checks\" section of README.md."
+          exit 1
+        fi
+        echo "MOQOM_REPO_TOKEN is present."

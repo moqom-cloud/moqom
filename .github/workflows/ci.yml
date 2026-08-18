@@ -17,6 +17,20 @@ concurrency:
 env:
   CARGO_TERM_COLOR: always
 
+# Every job here runs on a Mac we own rather than on ubuntu-latest. GitHub stopped
+# dispatching jobs entirely: each one fails in about three seconds with no runner
+# assigned, no steps and no log, and the reason appears only in the check
+# annotation -- "The job was not started because recent account payments have
+# failed or your spending limit needs to be increased". That is the account rather
+# than the monthly allowance, so it did not clear when August began, and nothing
+# here has been checked since 28 July.
+#
+# Less of a compromise than it is for the engine: the plan check is a Python
+# script, Terraform validates against provider schemas rather than against a
+# kernel, and the Go here is a control plane that talks gRPC. `cla.yml` is
+# deliberately left on ubuntu-latest -- it triggers on pull_request_target from
+# forks, which is the one thing that should never be handed a machine somebody
+# owns, and the private repository is why nothing has been reaching it anyway.
 jobs:
   # The plan is a document, so nothing about it fails to compile. Checking it
   # against the tree is what keeps it from quietly becoming fiction -- in both
@@ -29,11 +43,15 @@ jobs:
   # siblings are cloned to keep it meaningful.
   plan:
     name: Plan
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, macOS, ARM64]
     steps:
       - uses: actions/checkout@v7
         with:
           path: moqom
+
+      - uses: ./moqom/.github/actions/require-repo-token
+        with:
+          token: ${{ secrets.MOQOM_REPO_TOKEN }}
 
       - uses: actions/checkout@v7
         with:
@@ -75,7 +93,7 @@ jobs:
   # -- not quota, org policy, or IAM propagation, which need a plan.
   terraform:
     name: Terraform
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, macOS, ARM64]
     defaults:
       run:
         working-directory: deploy
@@ -109,11 +127,15 @@ jobs:
   # a stub. go.work is what points at the sibling, and it is committed.
   go:
     name: Go
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, macOS, ARM64]
     steps:
       - uses: actions/checkout@v7
         with:
           path: moqom
+
+      - uses: ./moqom/.github/actions/require-repo-token
+        with:
+          token: ${{ secrets.MOQOM_REPO_TOKEN }}
 
       - uses: actions/checkout@v7
         with:
@@ -173,11 +195,15 @@ jobs:
   # belongs to nobody stops running. It stays with the contract it is checking.
   interop:
     name: Interop (SDKs against the control plane)
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, macOS, ARM64]
     steps:
       - uses: actions/checkout@v7
         with:
           path: moqom
+
+      - uses: ./moqom/.github/actions/require-repo-token
+        with:
+          token: ${{ secrets.MOQOM_REPO_TOKEN }}
 
       - uses: actions/checkout@v7
         with:
@@ -196,9 +222,10 @@ jobs:
           go-version-file: moqom/go/go.mod
           cache: false
 
-      - uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: moqom-rust
+      # No rust-cache: the runner keeps its target directory between runs, and the
+      # action prunes ~/.cargo/bin, which on a machine somebody works on is
+      # theirs -- it deleted this one's rustup mid-session. See the note in
+      # moqom-engine's ci.yml.
 
       - name: Run
         working-directory: moqom
