@@ -1,7 +1,15 @@
 # deploy
 
 Terraform for MOQOM on GCP. Two tiers with genuinely different shapes: a relay
-tier of VMs behind a UDP load balancer, and a control plane on Cloud Run.
+tier of VMs behind a UDP load balancer, and a control plane that is a container
+somewhere else.
+
+Where exactly differs by environment, and this used to say Cloud Run without
+qualification. Dev runs the control plane on GKE Autopilot, because it holds its
+own certificate so a relay can authenticate the process rather than whatever
+terminates TLS for it, and because a relay reaches it over an internal address
+that never leaves the VPC. Prod's configuration still names Cloud Run and has not
+been applied, so treat that half as a design and this half as a description.
 
 ```
 bootstrap/                 State bucket. Run once, by hand, before anything else.
@@ -10,14 +18,16 @@ modules/
   network/                 VPC, subnets, firewall, Cloud NAT, private services access.
   artifact-registry/       Container images and their retention.
   relay/                   Instance template, regional MIG, autoscaler, UDP NLB.
-  control-plane/           One Cloud Run service, instantiated per component.
+  control-plane/           One Cloud Run service, instantiated per component. Prod only.
+  gke/                     Autopilot cluster and the workload identity bindings on it.
+  workload/                One Deployment and its services. What dev runs the control plane as.
   data/                    Cloud SQL Postgres, recording bucket, secret containers.
   federation/              Workload identity for CI and for non-GCP relays.
   observability/           Log routing, log-based metrics, alerts, uptime check.
   dns-steering/            Geolocation routing across relay regions.
 envs/
-  dev/                     One region, small, no alerts, no deletion protection.
-  prod/                    Three regions, HA database, digests pinned, alerts on.
+  dev/                     Two relay regions, control plane on GKE. The one that is applied.
+  prod/                    Three regions, HA database, control plane on Cloud Run. Not applied.
 ```
 
 Resources are defined in `modules/` and nowhere else. The environment roots hold
@@ -272,6 +282,25 @@ that offers none — because a fleet upgrades one build at a time and a relay th
 refused the older ones would be an outage. Move to `required` once the fleet is
 past it; the log at startup says which of the three is in force, and `observed`
 says out loud that it is not enforcing.
+
+Dev is on `required`, and the order it was reached in is the point. The control
+plane went first: until it derives `cnf.jkt` from the key a device sends, it puts
+the truncated thumbprint there instead, and a relay recomputing the full one from
+a proof reads that as the wrong key. Since `observed` refuses a *wrong* proof and
+only tolerates a *missing* one, rolling the relay first would have refused exactly
+the clients that had been upgraded. Then the phones, while the relays still ignored
+proofs, which is what separates "the device key and the minting work" from "the
+proofs verify" — two failures with one symptom otherwise. Then `required`.
+
+What that establishes, on the deployed pair rather than in a test:
+
+```
+INFO moqom_relay: sessions must prove they hold the key their token names
+INFO moqom_relay::session: token refused address=… error=no proof of possession was presented
+```
+
+The second line is a client holding a token this deployment minted a minute
+earlier, refused because it could not sign for it.
 
 ### Why the link is mutually authenticated
 
@@ -617,12 +646,17 @@ the origin and the steering module is replaced rather than edited.
 
 ## What this does not do
 
-- **No Cloud Armor or WAF.** The control plane is public Cloud Run with
-  `allUsers` invoker, because MOQOM's clients are browsers and mobile apps
-  carrying CAT tokens and have no Google identity to present. Authorisation is
-  CAT plus DPoP inside the application. Rate limiting and geo blocking need a
-  global external Application Load Balancer in front; `public_ingress = false`
-  is the switch that starts that migration.
+- **No Cloud Armor or WAF.** Exactly one port of the control plane faces the
+  internet — the join endpoint, on its own service so the admin API stays on an
+  address that only exists inside the VPC — and nothing in front of it filters.
+  It has to be reachable by anonymous callers: MOQOM's clients are phones and
+  browsers carrying a device credential, and they have no Google identity to
+  present. Authorisation is that credential plus, from there on, CAT and DPoP
+  inside the application. What is missing is rate limiting and geo blocking,
+  which need a global external Application Load Balancer in front; the join
+  handler's own per-credential limiter is what stands in, and it bounds one
+  credential rather than one source. The scanners in its logs are constant and
+  harmless, and they are also the argument for the balancer.
 - **No organisation policies, no VPC Service Controls, no CMEK key ring.** The
   `data` module accepts a `kms_key_name` but nothing creates one; key management
   belongs in an admin project with a different change cadence.
@@ -632,6 +666,21 @@ the origin and the steering module is replaced rather than edited.
   which belongs in the application repository.
 - **No multi-region control plane.** A token mint is a millisecond operation and
   moving it closer to the viewer buys less than a multi-region Postgres costs.
-- **Nothing is applied.** No plan in this tree has been run against a real
-  project; it validates, which is a claim about syntax and schema and not about
-  quota, organisation policy, or IAM propagation.
+- **Prod is not applied.** This line used to say nothing in the tree was, which
+  stopped being true of dev some time ago and is worth separating: `envs/dev` is
+  the live `moqom-503700` — cluster, database, both relay groups, both load
+  balancers — and has been rolled repeatedly, so quota, organisation policy and
+  IAM propagation are established facts there. `envs/prod` has never been
+  initialised; it has no `backend.hcl` and no state, and it validates, which is a
+  claim about syntax and schema and nothing else.
+
+- **Applies to dev fight the cluster over annotations.** Autopilot writes the
+  requests and limits it decided on back onto the control plane's Deployment, so
+  every plan offers to delete them, and accepting restarts the pod for no reason.
+  The two services are fixed — `ignore_changes` on the controller's own record of
+  the backend it built, which matters because that record is attached to the
+  address every relay dials — but the Deployment's `resources` block is not, and
+  ignoring it wholesale would mean Terraform no longer states what the control
+  plane asks for. Until that is settled, an apply meant for the relay tier should
+  say `-target=module.relay`, which is now precise: with the services ignored,
+  nothing in the control tier is dragged in behind it.

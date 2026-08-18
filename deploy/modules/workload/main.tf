@@ -249,6 +249,18 @@ resource "kubernetes_deployment_v1" "this" {
   wait_for_rollout = true
 
   depends_on = [kubernetes_namespace_v1.this]
+
+  lifecycle {
+    # Autopilot writes back the requests and limits it decided on, and warden
+    # writes the version that admitted the pod. Both are records of what the
+    # cluster did, so every subsequent plan offers to delete them and the cluster
+    # writes them again. Ignored for the same reason as the services below: a plan
+    # about an image should be about an image.
+    ignore_changes = [
+      metadata[0].annotations["autopilot.gke.io/resource-adjustment"],
+      metadata[0].annotations["autopilot.gke.io/warden-version"],
+    ]
+  }
 }
 
 resource "kubernetes_service_v1" "this" {
@@ -295,6 +307,24 @@ resource "kubernetes_service_v1" "this" {
   # Without this the plan completes before the address exists and the output is
   # empty, which is the value everything downstream is waiting for.
   wait_for_load_balancer = var.internal_load_balancer
+
+  lifecycle {
+    # GKE's service controller records the backend it built in an annotation here,
+    # so every plan after the first one offers to delete it. Accepting that offer
+    # patches a live load balancer to remove the controller's own note about
+    # itself, and the controller puts it back -- which is churn on the address the
+    # entire relay tier dials, in exchange for nothing.
+    #
+    # It is also the reason an unrelated apply cannot be trusted to be unrelated.
+    # A rollout of the relay reads this module's endpoint output, which makes this
+    # resource a dependency, which drags the annotation diff into a plan that was
+    # supposed to be about an image tag. Ignoring it here is what keeps a targeted
+    # apply targeted.
+    ignore_changes = [
+      metadata[0].annotations["networking.gke.io/backend-service"],
+      metadata[0].annotations["networking.gke.io/target-pool"],
+    ]
+  }
 }
 
 # The public way in, for the one route that has to be reachable from a phone.
@@ -331,6 +361,15 @@ resource "kubernetes_service_v1" "public" {
   }
 
   wait_for_load_balancer = true
+
+  # As above. This one is an external balancer, so the controller's note is about
+  # a target pool rather than a backend service, and the reasoning is identical.
+  lifecycle {
+    ignore_changes = [
+      metadata[0].annotations["networking.gke.io/backend-service"],
+      metadata[0].annotations["networking.gke.io/target-pool"],
+    ]
+  }
 }
 
 # A budget rather than a hope. Autopilot drains nodes for upgrades on its own

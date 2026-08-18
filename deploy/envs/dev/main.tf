@@ -439,6 +439,23 @@ module "relay" {
 
     MOQOM_RECORDING_BUCKET = module.data.recording_bucket
 
+    # Every session signs for its own token. The relay recomputes the thumbprint of
+    # the key that signed the proof and matches it to the token's `cnf.jkt`, so a
+    # copied token is worth nothing without the Secure Enclave it was bound to.
+    #
+    # `required` rather than the binary's `observed` default, and that default is
+    # the right one for a fleet being upgraded a build at a time while this is not:
+    # dev is two phones on a desk, both on the current build, and leaving it at
+    # `observed` would mean the property is configured everywhere and enforced
+    # nowhere -- which reads as done and is not. It is also the only setting under
+    # which a client that quietly stopped sending proofs gets noticed here rather
+    # than in production.
+    #
+    # Note that `observed` would not have been permissive about a *wrong* proof
+    # either; it admits a session that offers none. The difference this makes is to
+    # the older builds, and there are none left to protect.
+    MOQOM_RELAY_POSSESSION = "required"
+
     # MOQOM_RELAY_DSCP is deliberately unset. Turning it on asks the network for an interactive
     # class on the relay's egress, which is the half of the phone's radio hop that the client's
     # own marking does not cover -- marking the uplink was worth 15.6ms at the 95th percentile of
