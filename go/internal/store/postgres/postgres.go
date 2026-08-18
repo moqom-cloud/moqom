@@ -376,15 +376,16 @@ func (s *Store) SaveParticipant(ctx context.Context, tenant, room string, partic
 			tenant, room, username, device,
 			publish, moderation, is_owner,
 			presence, self_muted, muted_everyone, muted_audience,
-			spotlighted, backstage, arrived_via,
+			spotlighted, backstage, arrived_via, locale,
 			joined_at, last_seen_at, relay_id, session_id, remote_addr, published_now
-		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20)
+		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21)
 		ON CONFLICT (tenant, room, username, device) DO UPDATE SET
 			publish = EXCLUDED.publish, moderation = EXCLUDED.moderation,
 			is_owner = EXCLUDED.is_owner, presence = EXCLUDED.presence,
 			self_muted = EXCLUDED.self_muted, muted_everyone = EXCLUDED.muted_everyone,
 			muted_audience = EXCLUDED.muted_audience, spotlighted = EXCLUDED.spotlighted,
 			backstage = EXCLUDED.backstage, arrived_via = EXCLUDED.arrived_via,
+			locale = EXCLUDED.locale,
 			joined_at = EXCLUDED.joined_at, last_seen_at = EXCLUDED.last_seen_at,
 			relay_id = EXCLUDED.relay_id, session_id = EXCLUDED.session_id,
 			remote_addr = EXCLUDED.remote_addr, published_now = EXCLUDED.published_now`,
@@ -393,7 +394,7 @@ func (s *Store) SaveParticipant(ctx context.Context, tenant, room string, partic
 		participant.Grants.IsOwner, string(participant.Presence),
 		int64(participant.Mute.SelfMuted), int64(participant.Mute.ForcedForEveryone),
 		int64(participant.Mute.ForcedForAudience), participant.Spotlighted,
-		participant.Backstage, participant.ArrivedVia,
+		participant.Backstage, participant.ArrivedVia, participant.Locale,
 		participant.JoinedAt, participant.LastSeenAt, participant.RelayID,
 		participant.SessionID, participant.RemoteAddr, listed(participant.PublishedNow),
 	)
@@ -412,7 +413,7 @@ func (s *Store) SaveParticipant(ctx context.Context, tenant, room string, partic
 const participantColumns = `
 	username, device, publish, moderation, is_owner,
 	presence, self_muted, muted_everyone, muted_audience,
-	spotlighted, backstage, arrived_via,
+	spotlighted, backstage, arrived_via, locale,
 	joined_at, last_seen_at, relay_id, session_id, remote_addr, published_now`
 
 func scanParticipant(row pgx.Row) (control.Participant, error) {
@@ -424,6 +425,7 @@ func scanParticipant(row pgx.Row) (control.Participant, error) {
 		&publish, &moderation, &participant.Grants.IsOwner,
 		&presence, &self, &everyone, &audience,
 		&participant.Spotlighted, &participant.Backstage, &participant.ArrivedVia,
+		&participant.Locale,
 		&participant.JoinedAt, &participant.LastSeenAt, &participant.RelayID,
 		&participant.SessionID, &participant.RemoteAddr, &participant.PublishedNow,
 	)

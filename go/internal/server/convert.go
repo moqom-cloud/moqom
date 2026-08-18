@@ -351,6 +351,7 @@ func participantToProto(participant control.Participant) *adminpb.Participant {
 		JoinedAt:               timeToProto(participant.JoinedAt),
 		RelayId:                participant.RelayID,
 		ArrivedVia:             participant.ArrivedVia,
+		Locale:                 participant.Locale,
 	}
 }
 

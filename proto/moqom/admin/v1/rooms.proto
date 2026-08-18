@@ -192,6 +192,14 @@ message Participant {
   // re-deriving this from the new token would let a refresh quietly move
   // somebody between audiences.
   string arrived_via = 11;
+
+  // BCP 47 language tag this participant last published on their catalog.
+  // Empty until a catalog arrives, and updated when they change it mid-call.
+  //
+  // Taken from the catalog rather than the join token because a token cannot
+  // change midstream and a phone's locale can. The catalog is never encrypted,
+  // so the relay can read this without being a party to the media.
+  string locale = 12;
 }
 
 // How many viewers each cohost brought to a room.

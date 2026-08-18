@@ -628,6 +628,11 @@ type SessionState struct {
 	OpenedAt      *timestamppb.Timestamp `protobuf:"bytes,8,opt,name=opened_at,json=openedAt,proto3" json:"opened_at,omitempty"`
 	// When the session's token expires. The relay closes the session then unless
 	// it has been revalidated.
+	//
+	// Moves when the session presents a fresh token mid-call, so this is the
+	// deadline as of the message carrying it rather than the one the session was
+	// admitted on. Unset means there is nothing to enforce, which is a relay
+	// holding no verification keys — not a session that has already lapsed.
 	TokenExpiresAt *timestamppb.Timestamp `protobuf:"bytes,9,opt,name=token_expires_at,json=tokenExpiresAt,proto3" json:"token_expires_at,omitempty"`
 	// The username whose following this session came in through, from the token's
 	// `via` claim. Empty when nobody brought them.
@@ -857,8 +862,12 @@ type SessionChanged struct {
 	// Set when the session moved between backstage and the room proper.
 	BackstageChanged bool `protobuf:"varint,4,opt,name=backstage_changed,json=backstageChanged,proto3" json:"backstage_changed,omitempty"`
 	Backstage        bool `protobuf:"varint,5,opt,name=backstage,proto3" json:"backstage,omitempty"`
-	unknownFields    protoimpl.UnknownFields
-	sizeCache        protoimpl.SizeCache
+	// Set when the session published a catalog that names a locale, or cleared it.
+	// Distinguished from "no update" by locale_changed, same as backstage.
+	LocaleChanged bool   `protobuf:"varint,6,opt,name=locale_changed,json=localeChanged,proto3" json:"locale_changed,omitempty"`
+	Locale        string `protobuf:"bytes,7,opt,name=locale,proto3" json:"locale,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *SessionChanged) Reset() {
@@ -924,6 +933,20 @@ func (x *SessionChanged) GetBackstage() bool {
 		return x.Backstage
 	}
 	return false
+}
+
+func (x *SessionChanged) GetLocaleChanged() bool {
+	if x != nil {
+		return x.LocaleChanged
+	}
+	return false
+}
+
+func (x *SessionChanged) GetLocale() string {
+	if x != nil {
+		return x.Locale
+	}
+	return ""
 }
 
 // Everything the relay must know to serve a room without asking again.
@@ -1944,7 +1967,7 @@ const file_moqom_relay_v1_relay_proto_rawDesc = "" +
 	"\x13CAUSE_TOKEN_EXPIRED\x10\x03\x12\x11\n" +
 	"\rCAUSE_EJECTED\x10\x04\x12\x18\n" +
 	"\x14CAUSE_RELAY_SHUTDOWN\x10\x05\x12\x1c\n" +
-	"\x18CAUSE_PROTOCOL_VIOLATION\x10\x06\"\xb0\x01\n" +
+	"\x18CAUSE_PROTOCOL_VIOLATION\x10\x06\"\xef\x01\n" +
 	"\x0eSessionChanged\x12\x1d\n" +
 	"\n" +
 	"session_id\x18\x01 \x01(\tR\tsessionId\x12\x14\n" +
@@ -1953,7 +1976,9 @@ const file_moqom_relay_v1_relay_proto_rawDesc = "" +
 	"publishing\x18\x03 \x01(\bR\n" +
 	"publishing\x12+\n" +
 	"\x11backstage_changed\x18\x04 \x01(\bR\x10backstageChanged\x12\x1c\n" +
-	"\tbackstage\x18\x05 \x01(\bR\tbackstage\"\x9a\x02\n" +
+	"\tbackstage\x18\x05 \x01(\bR\tbackstage\x12%\n" +
+	"\x0elocale_changed\x18\x06 \x01(\bR\rlocaleChanged\x12\x16\n" +
+	"\x06locale\x18\a \x01(\tR\x06locale\"\x9a\x02\n" +
 	"\fRoomSnapshot\x12\x16\n" +
 	"\x06tenant\x18\x01 \x01(\tR\x06tenant\x12\x12\n" +
 	"\x04room\x18\x02 \x01(\tR\x04room\x12\x16\n" +

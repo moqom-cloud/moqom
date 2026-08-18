@@ -60,6 +60,7 @@ CREATE TABLE IF NOT EXISTS participants (
     backstage        boolean     NOT NULL DEFAULT false,
 
     arrived_via      text        NOT NULL DEFAULT '',
+    locale           text        NOT NULL DEFAULT '',
     joined_at        timestamptz NOT NULL,
     last_seen_at     timestamptz NOT NULL,
     relay_id         text        NOT NULL DEFAULT '',
@@ -244,3 +245,7 @@ CREATE TABLE IF NOT EXISTS events (
 
     PRIMARY KEY (tenant, room, sequence)
 );
+
+-- Locale arrived after the table existed. CREATE TABLE IF NOT EXISTS above
+-- will not reshape a table that is already there; this will.
+ALTER TABLE participants ADD COLUMN IF NOT EXISTS locale text NOT NULL DEFAULT '';

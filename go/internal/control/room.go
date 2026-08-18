@@ -182,6 +182,10 @@ type Participant struct {
 	// anybody could find. See Participant.Attribute.
 	ArrivedVia string
 
+	// Locale is the BCP 47 tag this participant last published on their catalog.
+	// Empty until a catalog arrives.
+	Locale string
+
 	JoinedAt     time.Time
 	LastSeenAt   time.Time
 	RelayID      string

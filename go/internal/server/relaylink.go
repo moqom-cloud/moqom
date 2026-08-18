@@ -458,6 +458,16 @@ func (s *relayLinkService) changeSession(
 			return err
 		}
 	}
+	if changed.GetLocaleChanged() {
+		participant, err := s.core.store.GetParticipant(ctx, tenant, room, identity)
+		if err != nil {
+			return err
+		}
+		participant.Locale = changed.GetLocale()
+		if err := s.core.store.SaveParticipant(ctx, tenant, room, participant); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 
