@@ -438,6 +438,21 @@ module "relay" {
     MOQOM_CONTROL_SERVER_NAME = local.link_server_name
 
     MOQOM_RECORDING_BUCKET = module.data.recording_bucket
+
+    # MOQOM_RELAY_DSCP is deliberately unset. Turning it on asks the network for an interactive
+    # class on the relay's egress, which is the half of the phone's radio hop that the client's
+    # own marking does not cover -- marking the uplink was worth 15.6ms at the 95th percentile of
+    # link latency and 8.2ms of glass-to-glass, and each frame crosses that radio twice.
+    #
+    # It was deployed here with AF41 and measured, and the codepoint does not arrive. The relay
+    # marks correctly: the instances ran the marking build with the value set and stayed healthy,
+    # which a failed socket option would not have allowed. But replies read off the wire at the
+    # far end came back with a type-of-service byte of zero on ten consecutive sockets, each
+    # landing on its own backend. Something between here and a home network clears it, and whether
+    # that is Google's fabric on egress or the ISP was not established.
+    #
+    # So the setting stays off, and the code behind it stays: it costs nothing idle and is the
+    # part that would be hard to write again on the day a path honours it.
   }
 
   labels = merge(local.labels, { component = "relay" })
