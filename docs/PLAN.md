@@ -91,14 +91,62 @@ todos:
     status: pending
   - id: sharding
     content: "Scale out with N SO_REUSEPORT sockets, one quinn Endpoint each, and an SO_ATTACH_REUSEPORT_EBPF program steering on the shard index encoded in the connection ID. Verify a migrating client lands on the correct shard, and test against real WiFi-to-cellular handoffs rather than synthetic address changes, since surviving migration is what keeps most mobile disconnects from ever becoming disconnects."
-    status: pending
+    status: in_progress
+    remaining: >
+      The sockets landed and are measured; the steering has not. `MOQOM_RELAY_SHARDS`
+      binds N sockets on the one port, each with its own `quinn::Endpoint` and its own
+      accept loop, and `Server::bind_shards` binds the first to the requested address
+      and the rest to whatever port that got -- so asking for port zero still puts
+      every shard on one port rather than handing out several. One shard takes the
+      ordinary single-socket path unchanged, which is what keeps the default
+      deployment out of the caveats below. `auto` takes the host's core count.
+
+      It is worth a great deal. On a four-vCPU relay with one 30fps track of 4KiB
+      frames, one socket serves 4,000 subscribers cleanly and loses data at 4,500,
+      with 340,498 datagrams discarded for full receive buffers and egress falling
+      back from 3.55 to 2.90 Gbit/s. Four sockets serve 6,000 -- 50% more -- with no
+      dropped datagrams at any size, 5.46 Gbit/s of egress, arrival p50 61ms, and the
+      relay finally using 3.88 of its four cores. On real 1080p video the same change
+      turns a size where every subscriber lost data into one where none did: 2,500
+      viewers of a 1.68 Mbit/s clip, p50 falling from about 60ms to 22ms. See
+      `scale-test` for the full sweep.
+
+      What made the difference is not what this item assumed. The wall was not an idle
+      core: it was `RcvbufErrors` on the single socket's receive queue, which one
+      endpoint driver could not drain fast enough to keep up with thousands of
+      connections' acknowledgements. Several sockets means several receive queues
+      drained in parallel, and the counter goes to zero. The consequence is the same
+      -- one endpoint cannot use a host -- but the mechanism is the receive side
+      rather than the send side, which is worth knowing before optimising the next
+      thing.
+
+      Off by default, and it has to stay that way until the steering is written.
+      `SO_REUSEPORT` load-balances on a hash of the four-tuple, so a client that
+      changes address or port -- a phone moving from wifi to cellular, which is the
+      case `migration(true)` exists for -- can be steered to a shard that has never
+      heard of its connection ID, turning a survivable handover into a dropped call.
+      Safe today for a fixed fleet and for a load lab; not safe in front of phones.
+      The `SO_ATTACH_REUSEPORT_EBPF` half of this item is what makes it safe to
+      default on, and it is the remaining work. Linux only in any case: the BSDs and
+      macOS permit the bind without distributing across it, so shards there bind
+      successfully and measure nothing.
+    evidence:
+      - repo: moqom-engine
+        path: moqom-transport/src/server.rs
+        contains: 'bind_shards'
+      - repo: moqom-engine
+        path: moqom-transport/tests/sharding.rs
+        contains: 'every_shard_listens_on_the_same_port'
+      - repo: moqom-engine
+        path: moqom-relay/src/bin/relay.rs
+        contains: 'MOQOM_RELAY_SHARDS'
   - id: drop-notify
     content: "Implement stale-media drops at the MOQT layer since browsers cannot send RESET_STREAM_AT: reset the subgroup with plain RESET_STREAM and carry an explicit drop notification (track, group, subgroup, final object ID) on the control stream. Same semantics for every client, with room to use the transport frame later as a native-only optimization."
     status: pending
   - id: relay
     content: "Implement moqom-relay: session state machine, subscription matching over tuple namespaces, group cache for late joiners, fan-out with deduplication, and priority scheduling that maps MOQT's 8-bit publisher and subscriber priority onto quinn's set_priority. Audio above video, base layer above enhancement layer, live edge above late-joiner catchup."
     status: in_progress
-    remaining: "Sessions hold: SETUP over both QUIC and WebTransport on one port, PUBLISH_NAMESPACE and its withdrawal, SUBSCRIBE_NAMESPACE with suffix-relative announcements, SUBSCRIBE forwarded upstream, and subgroup fan-out that rewrites the track alias per downstream session. Verified two ways -- integration tests with a Rust client, and three tests in MoqomKit that publish and subscribe through the binary over a socket, which is the first differential check against an independently written codec. The group cache landed with FETCH over it, in both the standalone and joining forms, which is what makes a late joiner warm-start on the group in progress and a client that dropped its connection able to ask for what it missed rather than wait for the next keyframe. Caching is a tee off the forward path rather than a stage in it: forwarding stays a byte pump that never parses an object, the cache parses a copy, and a stream it cannot parse costs a cache miss instead of a dropped forward -- so E2EE and retention stay compatible. Retention is bounded by group count and by byte budgets per track and per process, evicting whole groups because half a group is undecodable, and configurable down to nothing for operators who must not store media. The three things that were missing have since landed, and the point of a relay is now actually in it. Upstream subscriptions are deduplicated, so a thousand viewers of one track are one SUBSCRIBE to the phone -- tested from the publisher's side, since the viewers cannot tell the difference and a test written from theirs would pass on a relay that had never heard of it -- and the shared pull is released when the last viewer leaves rather than left running to a publisher nobody is watching. A subscriber who cannot keep up is shed rather than queued: whole subgroups, per subscriber, with the stream reset so the loss is stated instead of inferred, which keeps the slowest viewer from setting the pace for the room and the backpressure from reaching the publisher's encoder. What decides that has since been corrected, and the bug is worth recording because the mechanism looked right and the reasoning behind it was sound: the queue was four chunks deep and doubled as the latency bound, on the argument that a generous buffer turns a bandwidth problem into a latency problem. True, but a depth that short is also evidence about the relay's scheduler rather than about the subscriber's connection -- a publisher on loopback delivers a subgroup in one burst, so four was exhausted whenever a writer task lost the CPU for a moment, and the relay reset the stream of a viewer whose network was fine. That fails worst exactly when a relay is busiest, and every viewer in the room asks for a lower rung on the strength of the relay's own hesitation. The two bounds are now separate: depth bounds memory, a quarter of a second bounds how late a picture may be, and the deadline is enforced both where chunks are offered and in the writer, since a publisher sends a group and then stops -- so the ordinary stall lands on the last chunks of a group, where no further offer would notice it. Found because it flaked in CI under load, which is the only reason it was found at all; the congestion tests had been passing on the shallow queue without meaning to, since their struggling subscriber read the very stream it was complaining about never receiving. And authorisation landed beside the authentication that preceded it: the token says which room, which namespace, and what may be published under it, and a session that announces outside its grant, watches a prefix wide enough to enumerate the tenant, fetches from another room, or publishes as somebody else is refused. A relay with no keys authorises nothing rather than everything, so a misconfiguration fails shut. A token's lifetime now bounds the session rather than only the joining of it, which it did not before: `exp` was checked at SETUP and then discarded, so a fifteen-minute credential admitted a connection that lasted as long as somebody kept it open -- and since these were bearer tokens then, that short life was the only thing limiting a stolen one. It was being applied to the wrong event. Sessions are closed when their credential lapses, and a client outlasts its token by presenting a fresh one on a stream it already has: draft-19's `REQUEST_UPDATE` carries an authorization token, so renewal costs no reconnection, and a renewal may move the deadline and nothing else -- one naming a different holder or a different scope is refused and the session carries on under what it had. The deadline the control plane is told about is the current one, so a renewed session does not read upstream as a place about to free up. They are no longer bearer tokens, which is the other half of that sentence and landed after it: `possession.rs` verifies an ES256 proof beside the token, recomputes the RFC 7638 thumbprint of the key that signed it and matches it to `cnf.jkt`, and binds the proof to the token's hash and to this relay's certificate so one captured here cannot be spent elsewhere. Each proof is single-use, remembered until the token it covers expires -- a bound the cache can actually hold, since the tokens are short. Demanded at SETUP and at every renewal, so a session cannot prove itself once and then be handed on. `MOQOM_RELAY_POSSESSION` chooses between requiring it, verifying it when offered, and ignoring it, and the middle one is the default because a fleet is upgraded a build at a time; the replay cache is per-process, which is fine for one relay and is the thing to fix before a proof means anything across an edge tier. On top of that sits supervision -- a bidirectional link to the control plane carrying who is connected up and bans, room closures and ejections down, with a grace period after which an unsupervised relay stops admitting anybody. Mutes are now enforced, and doing it needed a smaller change than the old refusal implied: a relay cannot read an object, but it does not have to, because a track's kind is in its name -- media.rs classifies audio, video and screen by prefix, and a name it does not recognise is still caught by a mute that names every kind, so 'stop them' during an incident means everything rather than everything this build has heard of. A force-mute arrives as a directive or on a snapshot, is held in policy so a reconnecting participant comes back muted, tears down the upstream subscription so the phone is asked for nothing, drops the routes of subscribers who may not receive it, and is then published back to the muted session on a .policy track under its own slot -- a server-initiated PUBLISH, which is the only way a relay can reach a participant who has subscribed to nothing and is precisely the person being muted. That last object is the half a relay cannot do alone: it can stop forwarding, and only the device can stop capturing, which is what puts the indicator out. Grant overrides are still refused out loud, with the reason travelling back so a moderator's tool says 'not enforced' rather than 'done'. It also does not report publish state upwards, so the admin API's publish-started events never fire from a real relay. Verification keys pushed over the link are no longer among the missing things and this line used to say they were: `link.rs` hands a pushed set to the same parser that reads `MOQOM_RELAY_JWKS`, rejects a malformed set whole rather than half-applying a rotation, and cannot drop a key an operator configured -- so a relay that starts with no keys begins verifying when the control plane attaches, and a rotation does not need the retiring key left in a file until the last token it signed expires."
+    remaining: "Sessions hold: SETUP over both QUIC and WebTransport on one port, PUBLISH_NAMESPACE and its withdrawal, SUBSCRIBE_NAMESPACE with suffix-relative announcements, SUBSCRIBE forwarded upstream, and subgroup fan-out that rewrites the track alias per downstream session. Verified two ways -- integration tests with a Rust client, and three tests in MoqomKit that publish and subscribe through the binary over a socket, which is the first differential check against an independently written codec. The group cache landed with FETCH over it, in both the standalone and joining forms, which is what makes a late joiner warm-start on the group in progress and a client that dropped its connection able to ask for what it missed rather than wait for the next keyframe. Caching is a tee off the forward path rather than a stage in it: forwarding stays a byte pump that never parses an object, the cache parses a copy, and a stream it cannot parse costs a cache miss instead of a dropped forward -- so E2EE and retention stay compatible. Retention is bounded by group count and by byte budgets per track and per process, evicting whole groups because half a group is undecodable, and configurable down to nothing for operators who must not store media. The three things that were missing have since landed, and the point of a relay is now actually in it. Upstream subscriptions are deduplicated, so a thousand viewers of one track are one SUBSCRIBE to the phone -- tested from the publisher's side, since the viewers cannot tell the difference and a test written from theirs would pass on a relay that had never heard of it -- and the shared pull is released when the last viewer leaves rather than left running to a publisher nobody is watching. A subscriber who cannot keep up is shed rather than queued: whole subgroups, per subscriber, with the stream reset so the loss is stated instead of inferred, which keeps the slowest viewer from setting the pace for the room and the backpressure from reaching the publisher's encoder. What decides that has since been corrected, and the bug is worth recording because the mechanism looked right and the reasoning behind it was sound: the queue was four chunks deep and doubled as the latency bound, on the argument that a generous buffer turns a bandwidth problem into a latency problem. True, but a depth that short is also evidence about the relay's scheduler rather than about the subscriber's connection -- a publisher on loopback delivers a subgroup in one burst, so four was exhausted whenever a writer task lost the CPU for a moment, and the relay reset the stream of a viewer whose network was fine. That fails worst exactly when a relay is busiest, and every viewer in the room asks for a lower rung on the strength of the relay's own hesitation. The two bounds are now separate: depth bounds memory, a quarter of a second bounds how late a picture may be, and the deadline is enforced both where chunks are offered and in the writer, since a publisher sends a group and then stops -- so the ordinary stall lands on the last chunks of a group, where no further offer would notice it. Found because it flaked in CI under load, which is the only reason it was found at all; the congestion tests had been passing on the shallow queue without meaning to, since their struggling subscriber read the very stream it was complaining about never receiving. And authorisation landed beside the authentication that preceded it: the token says which room, which namespace, and what may be published under it, and a session that announces outside its grant, watches a prefix wide enough to enumerate the tenant, fetches from another room, or publishes as somebody else is refused. A relay with no keys authorises nothing rather than everything, so a misconfiguration fails shut. A token's lifetime now bounds the session rather than only the joining of it, which it did not before: `exp` was checked at SETUP and then discarded, so a fifteen-minute credential admitted a connection that lasted as long as somebody kept it open -- and since these were bearer tokens then, that short life was the only thing limiting a stolen one. It was being applied to the wrong event. Sessions are closed when their credential lapses, and a client outlasts its token by presenting a fresh one on a stream it already has: draft-19's `REQUEST_UPDATE` carries an authorization token, so renewal costs no reconnection, and a renewal may move the deadline and nothing else -- one naming a different holder or a different scope is refused and the session carries on under what it had. The deadline the control plane is told about is the current one, so a renewed session does not read upstream as a place about to free up. They are no longer bearer tokens, which is the other half of that sentence and landed after it: `possession.rs` verifies an ES256 proof beside the token, recomputes the RFC 7638 thumbprint of the key that signed it and matches it to `cnf.jkt`, and binds the proof to the token's hash and to this relay's certificate so one captured here cannot be spent elsewhere. Each proof is single-use, remembered until the token it covers expires -- a bound the cache can actually hold, since the tokens are short. Demanded at SETUP and at every renewal, so a session cannot prove itself once and then be handed on. `MOQOM_RELAY_POSSESSION` chooses between requiring it, verifying it when offered, and ignoring it, and the middle one is the default because a fleet is upgraded a build at a time; the replay cache is per-process, which is fine for one relay and is the thing to fix before a proof means anything across an edge tier. On top of that sits supervision -- a bidirectional link to the control plane carrying who is connected up and bans, room closures and ejections down, with a grace period after which an unsupervised relay stops admitting anybody. Mutes are now enforced, and doing it needed a smaller change than the old refusal implied: a relay cannot read an object, but it does not have to, because a track's kind is in its name -- media.rs classifies audio, video and screen by prefix, and a name it does not recognise is still caught by a mute that names every kind, so 'stop them' during an incident means everything rather than everything this build has heard of. A force-mute arrives as a directive or on a snapshot, is held in policy so a reconnecting participant comes back muted, tears down the upstream subscription so the phone is asked for nothing, drops the routes of subscribers who may not receive it, and is then published back to the muted session on a .policy track under its own slot -- a server-initiated PUBLISH, which is the only way a relay can reach a participant who has subscribed to nothing and is precisely the person being muted. That last object is the half a relay cannot do alone: it can stop forwarding, and only the device can stop capturing, which is what puts the indicator out. Grant overrides are still refused out loud, with the reason travelling back so a moderator's tool says 'not enforced' rather than 'done'. It also does not report publish state upwards, so the admin API's publish-started events never fire from a real relay. Verification keys pushed over the link are no longer among the missing things and this line used to say they were: `link.rs` hands a pushed set to the same parser that reads `MOQOM_RELAY_JWKS`, rejects a malformed set whole rather than half-applying a rotation, and cannot drop a key an operator configured -- so a relay that starts with no keys begins verifying when the control plane attaches, and a rotation does not need the retiring key left in a file until the last token it signed expires. Relays now form tiers, which removes the bound that made one host's network card the limit on an audience: given MOQOM_RELAY_UPSTREAM, a subscription for a namespace no local session publishes is asked of a parent, and from then on the edge is an ordinary publisher to its own viewers. The link is the relay's own session dialled instead of accepted, so an object from a parent is forwarded by the code that forwards an object from a phone -- same deduplication, same cache, same latency budget, same counters -- rather than by a second implementation that would be the one without the bug fixes. The accept path was not touched. Three properties are held by test rather than by intent: a parent authenticates a dialled edge exactly as it authenticates a phone, so an edge presenting a credential that does not verify is refused and an anonymous one reads no more than an anonymous client could; many viewers on an edge are one subscription on the origin; and a subscription carries a hop budget, so a misconfigured cycle stops instead of asking around the fleet indefinitely. Verification cannot be turned off, and because a fleet on internal names has no public authority to certify it, MOQOM_RELAY_UPSTREAM_CA trusts a private one the way MOQOM_CONTROL_CA already did for the control-plane link. One deployment bug is worth remembering because its symptom pointed elsewhere entirely: the parent's address was resolved once at startup and the first answer kept, so a parent named `localhost` was dialled at the IPv6 loopback while it listened on IPv4, every attempt timed out, and the failure surfaced at the viewers as a track that did not exist. Names are now resolved per attempt and every address tried, with a three-second budget each, which also means a parent behind a record that moves is followed rather than dialled forever where it used to be."
     evidence:
       - repo: moqom-engine
         path: moqom-relay/Cargo.toml
@@ -673,7 +721,258 @@ todos:
     status: pending
   - id: scale-test
     content: "Establish our own per-relay capacity numbers, since nobody has published MoQ fan-out at production scale and the only rigorous public figures are roughly 1000-2000 subscribers per core from draft-evens-moq-bench. Measure subscribers per core and Gbps per node at realistic bitrates, then validate the multi-hop latency thesis: confirm hop-by-hop recovery beats end-to-end on a lossy long path, and confirm relays pipeline at object granularity rather than buffering whole groups."
-    status: pending
+    status: in_progress
+    remaining: >
+      moqom-loadgen exists and fan-out is measured, so the first half of this has
+      numbers instead of inference. It drives one publisher and N subscribers
+      through moqom_client -- the same type a customer links, so no result can be
+      blamed on a private path -- and checks the relay's own counters alongside
+      what arrived, because a generator that reports only arrivals cannot tell a
+      relay that served everybody from one that served most and gave up on the
+      rest. Three invariants are asserted: the publisher is pulled once however
+      many people watch, no fan-out write fails, and
+      moqom_relay_subgroups_shed_total stays at zero while every subscriber is
+      drained promptly. That last one is the congestion bug fixed in `relay` as a
+      standing check rather than a memory.
+
+      On one M1 Pro (10 cores), generator and relay sharing the machine over
+      loopback, one 30fps track of 4KiB frames: 500 subscribers is reliably clean
+      -- every subscriber receives every object, nothing shed, p99 arrival 39-95ms,
+      about 490 Mbit/s of egress for about 3.1 relay cores, so roughly 160
+      subscribers per core. 400 is comfortable at p99 25ms. 600 is the cliff and
+      is bimodal, clean on some runs and shedding on others. 1000 collapses: p50
+      arrival near two seconds, half the objects lost, hundreds of subgroups shed.
+
+      The important part is why, because 160 per core is an order of magnitude
+      below the 1000-2000 this plan extrapolates from and it would be easy to read
+      that as a refutation. It is not one yet. The relay never exceeded 3.5 of the
+      10 cores even while collapsing, so its CPU is not the limit; what rises with
+      load is datagrams the kernel discards for full socket buffers -- about 1,300
+      during a clean 500-subscriber run against 108,000 at 1000. Past roughly 600
+      subscribers the measurement stops being about the relay and becomes about a
+      loopback shared by both processes, and the shedding is the relay correctly
+      abandoning subscribers that really had stopped reading.
+
+      The obvious explanation was tested and is wrong: enabling quinn's private
+      Apple batched-send path (fast-apple-datapath, off in the vendored default, so
+      max_gso_segments is 1 and GRO is Linux-only) moved the ceiling only from
+      about 570 to about 650 Mbit/s. Missing send batching is a tax, not the wall.
+
+      So the figure to publish is not this one. What remains: run the same harness
+      on Linux, where GSO and GRO both apply and where the relay actually ships;
+      put the generators on separate hosts so nothing shares a socket buffer with
+      the relay; raise kernel socket buffers and re-measure to confirm the drops
+      are the constraint rather than a symptom. Only then is subscribers-per-core
+      a number worth quoting, and only then does a gap against
+      draft-evens-moq-bench mean anything. The second half of this item is
+      untouched: the multi-hop latency thesis and object-granularity pipelining
+      both need the lossy-link harness, which does not exist.
+
+      The generator has since been split into `publish` and `watch`, which is what
+      lets the subscribers live on hosts that are not the relay's. A watching host
+      needs no bookkeeping from the publisher to know what it missed: gaps are
+      detected from the stream numbering itself, so each host reports its own losses
+      and the totals add up without a coordinator. `probe.sh` reports kernel drops
+      and CPU on Linux as well as macOS, so the same run means the same thing on the
+      machine the relay ships on.
+
+      The hosts are now scripted rather than hypothetical. `cloud/` builds a GCP lab
+      -- its own VPC, a relay host, a publisher host that is also the build host, and
+      N generator hosts, none with a public address and all reachable only through
+      IAP -- and `cloud/measure.sh` sweeps a list of audience sizes against it,
+      restarting the relay between sizes so no size inherits the previous one's
+      limiter state. It raises the socket buffers that the local runs actually ran out
+      of, builds once and copies the binary to every host so no result can be blamed
+      on version skew, and reports egress off the virtual NIC beside the relay's own
+      counters, because when a ceiling appears the first question is whether it was
+      the software or the machine and only one of those two numbers can answer it.
+      Each host shuts itself down after four hours, so a forgotten lab stops billing
+      without anybody remembering it.
+
+      It has now been run, and there is a number: about 1,400 subscribers per core.
+      A four-core relay (n2-standard-4, us-east1-b) with two eight-core generator
+      hosts and a publisher of its own, gVNIC, one 30fps track of 4KiB frames, 120
+      seconds a size. From 1,000 subscribers to 3,500 the cost per subscriber does
+      not move -- 1,370, 1,379, 1,389, 1,415, 1,411 per core as the audience grows --
+      and every subscriber receives every object with nothing shed. Arrival p99 rises
+      gently across that range, 12ms at 1,000 to 45ms at 3,500. The relay was asked
+      for the track once however many people watched it, at every size.
+
+      Then it falls over, and it falls over sharply rather than gracefully. 4,000
+      subscribers on the same four cores: 33,571 subgroups shed, every subscriber
+      short of objects, arrival p50 of 5.5 seconds and p99 of 71. At 8,000 it is not
+      a degraded service but a broken one -- a third of the subscribers receive
+      nothing at all, and backpressure reaches the publisher, which manages 15.6fps
+      of the 30 it was asked for. The cliff between 3,500 and 4,000 is worth
+      respecting in capacity planning: there is no useful operating point on the far
+      side of it, so a fleet has to be sized to stay left of it rather than to
+      approach it.
+
+      Three things follow, and the third is the one that matters most.
+
+      The local figure was the harness, as suspected. 1,400 per core against the 160
+      measured on a Mac over loopback is a factor of nine, and it lands inside the
+      1,000-2,000 that draft-evens-moq-bench reports -- so the extrapolation this plan
+      rests on is sound, and the earlier number should be quoted as nothing but a
+      property of a shared loopback.
+
+      The ceiling was CPU, not bandwidth. At 3,500 subscribers the relay was pushing
+      2.54 Gbit/s off a NIC allowed roughly 8, so the machine had bandwidth left when
+      the software ran out. That is the opposite of the local runs, where the kernel's
+      socket buffers gave up first, and it means per-host capacity at this frame size
+      is set by how much work a core can do rather than by what the link can carry.
+      Bandwidth only becomes the binding constraint at realistic video bitrates or on
+      many more cores.
+
+      But the relay never used the machine it was given. It peaked at about 3.4 of
+      four cores while collapsing, which is the same signature as the local runs and
+      is not a coincidence: one quinn endpoint on one socket cannot spread across a
+      host, so the fourth core sat unused while subscribers were being shed for
+      lateness. Per-host capacity is therefore bounded today by a single endpoint's
+      reach and not by the hardware, which makes `sharding` the highest-value
+      performance work outstanding -- it is the difference between 3,500 subscribers a
+      host and a number several times larger on hardware already paid for. Until it
+      lands, "subscribers per core" should be read as "subscribers per core, up to
+      about three cores".
+
+      Two corrections to the paragraphs above, both found while acting on them.
+
+      The first is that every per-core and Gbit/s figure quoted before this point is
+      diluted. The readings bracketed the whole orchestration -- the stagger while
+      subscribers connect, the run, the linger, and the drain -- rather than the run,
+      so they average a busy window with a quiet one. `measure.sh` now takes them
+      around the load itself, and it reports each generator's busy cores and dropped
+      datagrams as well, because loss at a subscriber is evidence about the relay only
+      once the host holding that subscriber has been ruled out. Under the corrected
+      window the generators never passed 3.0 of their 8 cores and never dropped a
+      datagram at any size in any run below, so all of the loss recorded here is the
+      relay's.
+
+      The second is that the diagnosis was right about the cause and wrong about the
+      mechanism. The relay does reach its cores -- 3.44 of four at 4,000 subscribers,
+      3.68 at 5,000 -- so no core was sitting idle. What it runs out of is the single
+      socket's receive queue: `RcvbufErrors` climbs from zero at 4,000 to 340,498 at
+      4,500, and egress *falls* from 3.55 to 2.90 Gbit/s as it does. One endpoint
+      driver cannot drain the acknowledgements of several thousand connections, and
+      past that point the relay does less work rather than more, which is what the
+      cliff is. Both readings point at the same fix; only one of them says why.
+
+      Sharding was then built and measured, and it moves the cliff. Same lab, same
+      four-vCPU relay, `MOQOM_RELAY_SHARDS=4`, one 30fps track of 4KiB frames, 30
+      seconds a size:
+
+        subscribers   one socket                        four sockets
+        3,500         clean, 2.97 cores, 3.12 Gbit/s    --
+        4,000         clean, 3.44 cores, 3.55 Gbit/s    clean, 3.50 cores, 3.57 Gbit/s
+        4,500         lost, 3.61 cores, 2.90 Gbit/s,    clean, 3.76 cores, 4.11 Gbit/s
+                      340,498 dropped
+        5,000         lost, 3.68 cores, 3.61 Gbit/s,    clean, 3.82 cores, 4.59 Gbit/s
+                      297,551 dropped
+        5,500         --                                clean, 3.82 cores, 5.04 Gbit/s
+        6,000         --                                clean, 3.88 cores, 5.46 Gbit/s
+
+      Zero dropped datagrams at every sharded size, and 6,000 subscribers arrive at
+      p50 61ms, p99 179ms with nothing shed and nothing lost. So the cliff this plan
+      said to respect between 3,500 and 4,000 is a property of one socket, not of the
+      software: 50% more subscribers on the same hardware, and the relay is now
+      limited by its four cores at 3.88 of them, which is the right thing to be
+      limited by.
+
+      The numbers are now taken against real video as well, which changes what they
+      mean. `moqom-load --file` publishes an Annex B elementary stream through the same
+      parser the `moqom` binary ships -- `moqom-media`, extracted so both link it --
+      with groups where the encoder put keyframes rather than on a round count, so a
+      keyframe arrives as a burst an order of magnitude larger than the frames after
+      it. A 1080p H.264 clip at 1.68 Mbit/s, 807 frames in 7 GOPs, 24fps:
+
+        subscribers   one socket                        four sockets
+        2,000         clean, 2.09 cores, 2.78 Gbit/s    clean, 2.00 cores, 2.66 Gbit/s
+        2,500         every subscriber lost data,       clean, 2.55 cores, 3.34 Gbit/s,
+                      2,432 shed, 9,422 dropped,        nothing dropped, p50 22ms
+                      p50 ~60ms
+        3,000         lost, 75,043 dropped              lost, 8,897 shed
+
+      Which yields the figure actually worth quoting, because it transfers across
+      bitrates where a subscriber count does not: **a relay does about 1.3 to 1.4
+      Gbit/s of fan-out per core**. It holds across both traffic shapes -- 1,550
+      subscribers per core at 0.98 Mbit/s each, 980 per core at 1.68 Mbit/s each --
+      which is the same wall expressed twice. Capacity planning should divide the
+      audience's bitrate into that, not multiply a subscriber count: 4,000 viewers of
+      this clip is 6.7 Gbit/s and therefore about five cores, so it wants an
+      eight-vCPU relay, and no amount of sharding will fit it onto four.
+
+      There is no obvious next optimisation, which is itself a result. A `perf` profile
+      of the sharded relay at 2,500 and 3,000 real-video subscribers is flat: AES-GCM
+      at 4.9%, `quinn` packet building at 3.5%, `poll_transmit` at 3.0%, kernel
+      networking at about 2%, and nothing above that. The cost is per-datagram work
+      spread across crypto, packetisation and the kernel, with no hotspot left to
+      remove -- so past this point per-host capacity is bought with cores, and audience
+      scale with the tier below. Two candidates were considered and rejected on the
+      evidence: the per-chunk Tokio timer in the subscriber writer loop, which the
+      profile puts at well under 1% and which sits in the congestion-control path that
+      has already had one subtle bug, and coalescing larger reads to make bigger GSO
+      batches, which would multiply the per-subscriber queue's memory bound by the same
+      factor it divides the syscalls by.
+
+      What is still not shown: overshoot is ungraceful. Past the ceiling the relay does
+      *less* work rather than degrading evenly -- at 3,000 real-video subscribers it
+      spends 1.62 cores and 2.06 Gbit/s against 2.55 cores and 3.34 Gbit/s at 2,500 --
+      because shedding resets streams that are then reopened. Serving 2,500 well and
+      refusing the rest would be worth more to an operator than serving 3,000 badly,
+      and that is admission control rather than a performance fix.
+
+      What the sweep does not show, and should not be read as showing: it was N2
+      rather than the newer C3, because a fresh project's C3 quota is 24 vCPUs, so C3
+      would measure somewhat better; every host was in one zone, so nothing here
+      speaks to the latency thesis; each subscriber took about 0.98 Mbit/s, which is a
+      deliberately small synthetic frame chosen to put the cost in packets and objects
+      rather than in the link, so a real 720p viewer at 2.5 Mbit/s is a heavier
+      subscriber than any of these; and the per-core figure divides the relay's whole
+      CPU account by the whole window, connect and linger included, which is the
+      conservative direction.
+
+      Tiering is measured, and the interior is cheaper than the arithmetic assumed.
+      `tier.sh` runs an origin, N edges and viewers on the edges only, all on one
+      M1 Pro over loopback. Three edges with 100 viewers each: every subscriber
+      received every object, p50 6ms, and the origin wrote 4.0 MiB to feed the tier
+      against 386 MiB the edges delivered -- 1.03% interior overhead. Four edges with
+      250 viewers each: 0.41%, so the overhead falls as fan-out grows, which is the
+      shape the prediction of 1.4% expected and comfortably under it. Depth is
+      therefore close to free, and an audience needing a hundred edge machines needs
+      an interior relay that is barely working: at 1000 viewers the edges together
+      spent 0.76 of a core while the origin spent 0.01.
+
+      Two caveats on those numbers, both about the host rather than the relay. The
+      1000-viewer run lost objects for about a tenth of its subscribers, on a laptop
+      simultaneously running five relays and five generator processes, which is the
+      same contention the single-relay figures ran into and the same reason the
+      subscribers-per-core figure is not the one to publish. And a tier on one
+      machine cannot show the thing tiers exist for, which is edges in different
+      places; the latency claim for a real tree is still inference.
+    evidence:
+      - repo: moqom-engine
+        path: moqom-loadgen/src/main.rs
+      - repo: moqom-engine
+        path: moqom-loadgen/src/film.rs
+      - repo: moqom-engine
+        path: moqom-media/src/annexb.rs
+      - repo: moqom-engine
+        path: moqom-loadgen/run.sh
+      - repo: moqom-engine
+        path: moqom-loadgen/tier.sh
+      - repo: moqom-engine
+        path: moqom-loadgen/probe.sh
+      - repo: moqom-engine
+        path: moqom-loadgen/cloud/up.sh
+      - repo: moqom-engine
+        path: moqom-loadgen/cloud/measure.sh
+      - repo: moqom-engine
+        path: moqom-loadgen/cloud/down.sh
+      - repo: moqom-engine
+        path: moqom-relay/src/upstream.rs
+      - repo: moqom-engine
+        path: moqom-relay/tests/tiering.rs
+        contains: 'many_viewers_on_an_edge_are_one_subscription_on_the_origin'
   - id: migration-stack-flag
     content: "Build per-room stack selection in the control plane, resolved at join: the client carries both stacks and is told which to use, so rooms stay homogeneous and no media bridging is needed for the common case. A room with any legacy-build participant stays legacy automatically. The non-negotiable property is that rollback is a server-side config change and never an app release - a rollback gated on App Store review is not a rollback. Cohort the ramp by tenant, region, and room type, and expose the flag to customers so they own their own pace."
     status: pending
@@ -2744,7 +3043,8 @@ Whatever gets built, four constraints are not negotiable, and they are what a na
 - **Congestion control is the hardest thing in the plan and the easiest to get wrong.** `moqom-cc` is our biggest differentiator and our biggest technical risk — a controller can win a benchmark by starving every other flow on the link, or spiral into collapse under loss. Ship on stock Cubic, build the harness first, and treat fairness against competing TCP and QUIC flows as a release gate rather than a nice-to-have. quinn's own BBR is v1 and marked experimental, so it is a comparison baseline, not a fallback.
 - **quinn 0.12 is a pending breaking change.** `main` has carried the version bump for months. Keep the `Transport` trait boundary clean so the upgrade touches one crate.
 - Building draft-19 from scratch means no interop partner on day one. The conformance harness is not optional — it is how we know we're right.
-- **The scaling story is architectural inference, not measurement.** Nobody has published MoQ fan-out at production scale; the largest rigorous numbers are ~2,000 subscribers per core in a lab. Every million-viewer figure in this plan rests on extrapolating that. The *shape* is robust — depth ~3 to 10M viewers, ~1.4% interior overhead — but the absolute node counts are not, and we should not put them in a pitch deck before `scale-test` runs.
+- **The scaling story is now measured rather than inferred, and the per-host ceiling is lower than the per-core figure suggests.** A four-core relay on GCP with the load generated from other hosts sustains about 1,400 subscribers per core, flat from 1,000 subscribers to 3,500, every object delivered to everybody — which sits inside the 1,000-2,000 that `draft-evens-moq-bench` reports and retires the doubt the earlier Mac figure of ~160 created. That one was a shared loopback, not the relay. Two cautions replace it. The cliff is sharp: 3,500 works and 4,000 sheds 33,571 subgroups with a 5.5-second p50, so fleets must be sized to stay left of it rather than to approach it. And the relay peaked at 3.4 of 4 cores while failing, because one quinn endpoint on one socket cannot spread across a host — so per-host capacity is capped by a single endpoint rather than by the machine, and `sharding` is worth more than any other performance item outstanding. Quote per-core with that ceiling attached, and remember every subscriber in the sweep took 0.98 Mbit/s; a 720p viewer is two and a half times heavier.
+- **"Millions of subscribers per host" is not a target that arithmetic permits, for video at any implementation quality.** Unicast fan-out means one copy per subscriber, so a million of them at 2.5 Mbit/s is 2.5 Tbit/s from one machine against a NIC that offers 16 to 100 Gbit/s — two orders of magnitude, before CPU is considered. The per-subscriber costs underneath are just as unforgiving: every copy is encrypted separately, and with a million destinations there is no GSO batching to be had because batching is per-connection, so each subscriber costs roughly a syscall per frame. Millions of *viewers* is a fleet property and is what tiering is for, where the measured interior overhead is under half a percent. The right framing for a customer conversation is edges per million viewers, not subscribers per host.
 - **Secure objects has no chartered milestone.** It is an adopted WG document that could sit at -01 indefinitely, unlike transport (Dec 2026) and Privacy Pass (Mar 2027). Implementable today against its test vectors, but budget for churn and don't build a marketing claim on an RFC number.
 - **The MoQ agent drafts are -00 individual submissions expiring September 2026.** `draft-nandakumar-ai-agent-moq-transport` and `draft-jennings-ai-mcp-over-moq` may never be adopted. Borrow their priority tier mapping and namespace shape, but keep our agent protocol independently specified so their fate isn't ours.
 - **No open-source live moderation model exists with production benchmarks.** Agora punts to a third-party vendor still in Beta. We build the classifier layer on a streaming VLM, which is both the differentiator and a real research risk — budget for it not working well at first. Start on a commercial detector (Hive for live video) behind our own policy engine, so the engine is proven while the model is swappable.
