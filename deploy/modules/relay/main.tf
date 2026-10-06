@@ -62,6 +62,7 @@ locals {
     var.link_ca_secret_id,
     var.link_client_cert_secret_id,
     var.link_client_key_secret_id,
+    var.ticket_keys_secret_id,
   ])
 }
 

@@ -250,10 +250,13 @@ module "control" {
   env = {
     MOQOM_ENV       = local.env
     MOQOM_LOG_LEVEL = "info"
-    PGHOST          = module.data.private_ip
-    PGDATABASE      = "moqom"
-    PGSSLMODE       = "verify-full"
-    PGIAMAUTH       = "true"
+    # Cloud Run terminates TLS in front of the container, so the process itself
+    # serves plaintext. The binary refuses that unless it is said here.
+    MOQOM_CONTROL_ALLOW_PLAINTEXT = "true"
+    PGHOST                        = module.data.private_ip
+    PGDATABASE                    = "moqom"
+    PGSSLMODE                     = "verify-full"
+    PGIAMAUTH                     = "true"
   }
 
   secret_env = {

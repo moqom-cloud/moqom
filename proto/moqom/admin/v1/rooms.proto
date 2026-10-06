@@ -72,6 +72,23 @@ enum RecordingPolicy {
   RECORDING_POLICY_PROHIBITED = 3;
 }
 
+// Whether a room's media must be end-to-end encrypted.
+//
+// Required unless somebody turned it off, and the zero value means required so
+// that a backend built before this field existed, which never sets it, gets the
+// strict answer rather than the permissive one. Turning it off is a policy
+// change like any other and is written to the moderation log with the actor's
+// reason, which is mandatory for this change and no other: a room that stops
+// being end-to-end encrypted is a fact somebody will one day ask about.
+//
+// Clients learn the effective value from the `e2ee` claim in their token, and an
+// SDK that holds no key refuses to publish into a required room.
+enum E2EEPolicy {
+  E2EE_POLICY_UNSPECIFIED = 0;
+  E2EE_POLICY_REQUIRED = 1;
+  E2EE_POLICY_OPTIONAL = 2;
+}
+
 message AgeGate {
   // Minimum age in years. Zero for no gate.
   uint32 minimum_age = 1;
@@ -107,6 +124,10 @@ message RoomPolicy {
   // How many watchdogs may attach. Also 8 by default, and also a real limit:
   // each one is a subscriber the relay fans out to.
   uint32 watchdog_limit = 6;
+
+  // Unset reads as `E2EE_POLICY_REQUIRED`, and a room read back from the server
+  // always states it. Setting `E2EE_POLICY_OPTIONAL` needs `actor.reason`.
+  E2EEPolicy e2ee = 7;
 }
 
 message Room {

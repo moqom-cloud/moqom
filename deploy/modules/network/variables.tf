@@ -132,3 +132,15 @@ variable "control_plane_port" {
   description = "Port the control plane's gRPC surface answers on."
   default     = 8443
 }
+
+variable "overlay_cidrs" {
+  type        = list(string)
+  description = "Addresses of the OpenZiti controller and edge routers the relays dial out to. Empty creates no rule."
+  default     = []
+}
+
+variable "overlay_ports" {
+  type        = list(number)
+  description = "TCP ports on var.overlay_cidrs: the controller's client API and the routers' edge listeners."
+  default     = [1280, 3022]
+}

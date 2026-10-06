@@ -126,6 +126,15 @@ resource "google_sql_user" "iam" {
   type     = "CLOUD_IAM_SERVICE_ACCOUNT"
 }
 
+resource "google_sql_user" "iam_user" {
+  for_each = toset(var.iam_users)
+
+  name     = each.value
+  project  = var.project_id
+  instance = google_sql_database_instance.this.name
+  type     = "CLOUD_IAM_USER"
+}
+
 # instanceUser is what turns an access token into a Postgres login; client is
 # what permits the connection itself. Neither can be scoped below the project —
 # Cloud SQL exposes no resource-level IAM for them — so the containment boundary

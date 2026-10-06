@@ -336,6 +336,27 @@ resource "google_compute_firewall" "relay_egress_control" {
   }
 }
 
+# The relay's tunneler, out to the OpenZiti controller and router. Outbound
+# only: whatever the relay offers over the overlay, it offers by dialling here,
+# so nothing about it needs an inbound rule.
+resource "google_compute_firewall" "relay_egress_overlay" {
+  count = length(var.overlay_cidrs) == 0 ? 0 : 1
+
+  name    = "${var.name_prefix}-allow-relay-egress-overlay"
+  project = var.project_id
+  network = google_compute_network.this.name
+
+  direction          = "EGRESS"
+  priority           = 1000
+  destination_ranges = var.overlay_cidrs
+  target_tags        = [var.relay_target_tag]
+
+  allow {
+    protocol = "tcp"
+    ports    = [for port in var.overlay_ports : tostring(port)]
+  }
+}
+
 # Relay-to-relay QUIC for upstream subscription, restricted to the VPC. A relay
 # that needs to fetch a track it does not hold pulls it from a sibling, not
 # from an arbitrary internet host.

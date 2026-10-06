@@ -38,6 +38,13 @@ func (s *roomsService) CreateRoom(ctx context.Context, request *adminpb.CreateRo
 	if err != nil {
 		return nil, statusFor(err)
 	}
+	// Measured against the default rather than against nothing, so a room born
+	// unencrypted is held to the same rule as one that is made so later. Otherwise
+	// deleting and recreating a room would be the way around the audit trail.
+	defaults := control.Policy{}.WithDefaults()
+	if err := requireReasonToLoosen(defaults, policy, request.GetActor()); err != nil {
+		return nil, err
+	}
 
 	owner := ""
 	if request.GetOwnerUsername() != "" {
@@ -70,6 +77,19 @@ func (s *roomsService) CreateRoom(ctx context.Context, request *adminpb.CreateRo
 	if err != nil {
 		return nil, statusFor(err)
 	}
+	if change := defaults.SecurityChange(created.Policy); change != "" {
+		entry, err := s.core.record(ctx, account, request.GetActor(), control.ModerationEntry{
+			Tenant:       created.Tenant,
+			Room:         created.Room,
+			Verb:         control.VerbUpdateRoomPolicy,
+			PolicyChange: change,
+		}, true)
+		if err != nil {
+			return nil, statusFor(err)
+		}
+		s.core.announce(ctx, entry)
+	}
+	s.core.followRecordingPolicy(ctx, account, request.GetActor(), created)
 	return roomToProto(created, roomCounts{}), nil
 }
 
@@ -152,6 +172,10 @@ func (s *roomsService) UpdateRoomPolicy(ctx context.Context, request *adminpb.Up
 	if err := room.Policy.ValidateChange(next); err != nil {
 		return nil, statusFor(err)
 	}
+	if err := requireReasonToLoosen(room.Policy, next, request.GetActor()); err != nil {
+		return nil, err
+	}
+	change := room.Policy.SecurityChange(next)
 
 	room.Policy = next
 	saved, err := s.core.store.SaveRoom(ctx, room)
@@ -159,23 +183,52 @@ func (s *roomsService) UpdateRoomPolicy(ctx context.Context, request *adminpb.Up
 		return nil, statusFor(err)
 	}
 
-	if _, err := s.core.record(ctx, account, request.GetActor(), control.ModerationEntry{
-		Tenant: room.Tenant,
-		Room:   room.Room,
-		Verb:   control.VerbUpdateRoomPolicy,
-	}, true); err != nil {
+	entry, err := s.core.record(ctx, account, request.GetActor(), control.ModerationEntry{
+		Tenant:       room.Tenant,
+		Room:         room.Room,
+		Verb:         control.VerbUpdateRoomPolicy,
+		PolicyChange: change,
+	}, true)
+	if err != nil {
 		return nil, statusFor(err)
+	}
+	// A security change is announced on the room's event stream as well as
+	// logged, so a backend watching the room learns that encryption went off
+	// without having to poll the audit log for it.
+	if change != "" {
+		s.core.announce(ctx, entry)
 	}
 	// A policy change is not a directive, so relays are resynchronised rather than
 	// told a delta: a tightened participant limit has to reach them, and there is no
 	// verb for "the rules changed".
 	s.core.broadcastSnapshot(ctx, roomRef{room.Tenant, room.Room})
+	s.core.followRecordingPolicy(ctx, account, request.GetActor(), saved)
 
 	counts, err := s.core.counts(ctx, room.Tenant, room.Room)
 	if err != nil {
 		return nil, statusFor(err)
 	}
 	return roomToProto(saved, counts), nil
+}
+
+// requireReasonToLoosen refuses a change that weakens a room's security unless
+// the actor says why.
+//
+// Turning end-to-end encryption off is allowed -- some rooms have to be
+// transcribed or recorded server-side, and that is the tenant's call -- but it is
+// never allowed silently. The reason goes into the audit entry beside the
+// service account and the person it was on behalf of, which is what makes the
+// answer to "when did this room stop being encrypted, and who decided" a lookup
+// rather than an investigation.
+func requireReasonToLoosen(current, next control.Policy, actor *adminpb.ActorContext) error {
+	if !current.LoosensSecurity(next) {
+		return nil
+	}
+	if actor.GetReason() == "" {
+		return status.Error(codes.InvalidArgument,
+			"turning off end-to-end encryption needs actor.reason; it is recorded in the moderation log")
+	}
+	return nil
 }
 
 // applyMask returns next where the mask names a field, and current elsewhere.
@@ -203,6 +256,8 @@ func applyMask(current, next control.Policy, mask []string) control.Policy {
 			result.StageSlots = next.StageSlots
 		case "watchdog_limit":
 			result.WatchdogLimit = next.WatchdogLimit
+		case "e2ee":
+			result.E2EE = next.E2EE
 		}
 	}
 	return result
@@ -266,6 +321,7 @@ func (s *roomsService) CloseRoom(ctx context.Context, request *adminpb.CloseRoom
 			To:   protoByLifecycle[control.LifecycleEnded],
 		}},
 	})
+	s.core.stopRecordings(ctx, room.Tenant, room.Room)
 
 	return roomToProto(saved, counts), nil
 }

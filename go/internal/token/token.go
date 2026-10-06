@@ -137,6 +137,21 @@ type Claims struct {
 	// than this field rejects a token carrying it. Rolling out the verifier ahead
 	// of the minter is the order that has no window.
 	ArrivedVia string `json:"via,omitempty"`
+
+	// E2EE is the end-to-end encryption policy of the room in MOQT.Room, as
+	// "required" or "optional". Absent means required, and is what a token that
+	// names no room carries: there is no room policy to relax.
+	//
+	// For the client, not the relay. The relay never sees plaintext either way and
+	// has nothing to enforce; MoqomKit reads this to decide whether it may publish
+	// without a key, and treats anything but an exact "optional" as required.
+	//
+	// Top-level rather than inside `moqt` for the reason ArrivedVia is: the relay
+	// parses the scope strictly and the top level leniently, so a relay that
+	// predates this claim admits a token carrying it. The verifier below is strict,
+	// so the same rollout order applies -- verifier before minter -- and here they
+	// are one binary.
+	E2EE control.E2EEPolicy `json:"e2ee,omitempty"`
 }
 
 type Confirmation struct {
@@ -160,6 +175,20 @@ type Scope struct {
 	Owner       bool `json:"own,omitempty"`
 	Backstage   bool `json:"bs,omitempty"`
 	AgeVerified bool `json:"age,omitempty"`
+
+	// Relay marks another relay's link to the one this is presented to: a
+	// child in a tier reading from its parent. The parent does not meter it,
+	// because the child meters the people it serves and both would bill them.
+	//
+	// Minted only by the relay-link route, for relay service accounts, and
+	// never by ScopeFrom or anything a backend can reach -- a customer able to
+	// set it could watch unmetered. The relay refuses it beside any publish
+	// right or power, so it cannot carry anything else.
+	//
+	// Omitted when false, so every other token is unchanged. The relay parses
+	// the scope strictly, so relays must learn this field before a control
+	// plane mints it.
+	Relay bool `json:"rly,omitempty"`
 }
 
 // Grants converts the scope into the domain type.
@@ -299,6 +328,18 @@ func Mint(key Key, claims Claims, lifetime time.Duration, now time.Time) (string
 	if claims.ArrivedVia != "" && claims.MOQT.Room == "" {
 		return "", time.Time{}, fmt.Errorf(
 			"%w: token is attributed to %q but names no room", control.ErrInvalid, claims.ArrivedVia)
+	}
+	switch claims.E2EE {
+	case "", control.E2EERequired:
+	case control.E2EEOptional:
+		// Relaxing encryption is a property of a room, so a token that names none
+		// has nothing it could be relaxing.
+		if claims.MOQT.Room == "" {
+			return "", time.Time{}, fmt.Errorf(
+				"%w: token relaxes end-to-end encryption but names no room", control.ErrInvalid)
+		}
+	default:
+		return "", time.Time{}, fmt.Errorf("%w: unknown e2ee policy %q", control.ErrInvalid, claims.E2EE)
 	}
 
 	expires := now.Add(lifetime).Truncate(time.Second)

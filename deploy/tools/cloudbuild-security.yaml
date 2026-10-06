@@ -1,0 +1,220 @@
+# Security gate: dependency vulnerabilities, static analysis, secrets, image
+# CVEs, infrastructure misconfiguration, and an SBOM per image.
+#
+#   gcloud builds submit /path/to/moqom-cloud --project=moqom-503700 \
+#     --config=moqom/deploy/tools/cloudbuild-security.yaml \
+#     --ignore-file=moqom/deploy/tools/security.gcloudignore \
+#     --substitutions=_CONTROL_IMAGE=<digest ref>,_RELAY_IMAGE=<digest ref>
+#
+# Steps are `script` rather than `args` so that shell `$` is the shell's.
+#
+# Every scan writes its report to /workspace/evidence and its exit status to
+# /workspace/evidence/status/<name>, and none of them fails the build on its
+# own. The last two steps upload the whole directory to the evidence bucket and
+# then fail if any gate did. A failing scan is evidence too, and a build that
+# stops at the first one keeps none.
+#
+# Gates (fail the build):
+#   govulncheck        reachable known vulnerabilities, all Go modules
+#   gosec              HIGH severity, MEDIUM+ confidence
+#   staticcheck        any finding
+#   cargo audit        RustSec vulnerabilities (not unmaintained/yanked warnings)
+#   cargo deny         advisories, bans, licences, sources (deny.toml beside this)
+#   gitleaks           any secret in the uploaded tree
+#   trivy image        HIGH/CRITICAL with a fix available, both images
+#   trivy config       HIGH/CRITICAL Terraform misconfiguration (tfsec's successor)
+# Reports only:
+#   checkov            its severities need a Prisma Cloud key, so it cannot gate
+#   syft               CycloneDX SBOM per image
+#
+# The uploaded tree excludes .git, so gitleaks here sees the working tree only;
+# history is scanned by each public repository's security workflow.
+
+substitutions:
+  _EVIDENCE_BUCKET: moqom-dev-evidence-${PROJECT_ID}
+  _CONTROL_IMAGE: us-docker.pkg.dev/${PROJECT_ID}/moqom-dev/moqom-control:dev
+  _RELAY_IMAGE: us-docker.pkg.dev/${PROJECT_ID}/moqom-dev/moqom-relay:latest
+  _GO_IMAGE: golang:1.26-bookworm
+  _RUST_IMAGE: rust:1.97-bookworm
+  _TRIVY: aquasec/trivy:0.67.2
+  _SYFT: anchore/syft:v1.33.0
+  _GITLEAKS: ghcr.io/gitleaks/gitleaks:v8.28.0
+  _CHECKOV: bridgecrew/checkov:3.2.470
+
+steps:
+  - id: prepare
+    name: bash
+    script: |
+      mkdir -p /workspace/evidence/status
+      date -u +%Y-%m-%dT%H:%M:%SZ > /workspace/evidence/started
+
+  # --- Go --------------------------------------------------------------------
+
+  - id: go
+    name: ${_GO_IMAGE}
+    waitFor: [prepare]
+    env: [GOTOOLCHAIN=auto, GOFLAGS=-mod=mod]
+    script: |
+      #!/usr/bin/env bash
+      set -u
+      go install golang.org/x/vuln/cmd/govulncheck@latest
+      go install github.com/securego/gosec/v2/cmd/gosec@latest
+      go install honnef.co/go/tools/cmd/staticcheck@latest
+      export PATH="$PATH:$(go env GOPATH)/bin"
+      ev=/workspace/evidence
+      vuln=0; sec=0; lint=0
+      # moqom/go builds with GOWORK=off against ../moqom-go through its
+      # replace directive, exactly as the Dockerfile does.
+      for mod in moqom/go moqom-go moqom-mcp; do
+        [ -f "/workspace/$mod/go.mod" ] || continue
+        name=$(echo "$mod" | tr / -)
+        cd "/workspace/$mod"
+        GOWORK=off govulncheck -format json ./... > "$ev/govulncheck-$name.json"
+        GOWORK=off govulncheck ./... || vuln=1
+        GOWORK=off gosec -quiet -severity high -confidence medium \
+          -fmt sarif -out "$ev/gosec-$name.sarif" -stdout -verbose=text ./... || sec=1
+        GOWORK=off staticcheck ./... | tee "$ev/staticcheck-$name.txt"
+        [ "${PIPESTATUS[0]}" -eq 0 ] || lint=1
+      done
+      echo $vuln > $ev/status/govulncheck
+      echo $sec  > $ev/status/gosec
+      echo $lint > $ev/status/staticcheck
+
+  # --- Rust ------------------------------------------------------------------
+
+  - id: rust
+    name: ${_RUST_IMAGE}
+    waitFor: [prepare]
+    script: |
+      #!/usr/bin/env bash
+      set -u
+      cargo install --locked cargo-audit cargo-deny
+      ev=/workspace/evidence
+      audit=0; deny=0
+      for ws in moqom-engine moqom-rust; do
+        [ -f "/workspace/$ws/Cargo.lock" ] || continue
+        cd "/workspace/$ws"
+        cargo audit --json > "$ev/cargo-audit-$ws.json"
+        cargo audit || audit=1
+        cargo deny --log-level warn check \
+          --config /workspace/moqom/deploy/tools/deny.toml \
+          advisories bans licenses sources 2>&1 | tee "$ev/cargo-deny-$ws.txt"
+        [ "${PIPESTATUS[0]}" -eq 0 ] || deny=1
+      done
+      echo $audit > $ev/status/cargo-audit
+      echo $deny  > $ev/status/cargo-deny
+
+  # --- Secrets ---------------------------------------------------------------
+
+  - id: gitleaks
+    name: ${_GITLEAKS}
+    waitFor: [prepare]
+    script: |
+      #!/bin/sh
+      gitleaks dir /workspace --redact --no-banner \
+        --report-format sarif --report-path /workspace/evidence/gitleaks.sarif
+      echo $? > /workspace/evidence/status/gitleaks
+
+  # --- Images ----------------------------------------------------------------
+
+  - id: pull
+    name: gcr.io/cloud-builders/docker
+    waitFor: [prepare]
+    script: |
+      #!/usr/bin/env bash
+      set -e
+      docker pull "$_CONTROL_IMAGE"
+      docker pull "$_RELAY_IMAGE"
+      docker save "$_CONTROL_IMAGE" -o /workspace/control.tar
+      docker save "$_RELAY_IMAGE" -o /workspace/relay.tar
+      docker inspect --format '{{index .RepoDigests 0}}' "$_CONTROL_IMAGE" > /workspace/evidence/control.digest
+      docker inspect --format '{{index .RepoDigests 0}}' "$_RELAY_IMAGE" > /workspace/evidence/relay.digest
+
+  - id: trivy-image
+    name: ${_TRIVY}
+    waitFor: [pull]
+    script: |
+      #!/bin/sh
+      status=0
+      for img in control relay; do
+        trivy image --input /workspace/$img.tar --format json \
+          --output /workspace/evidence/trivy-$img.json --quiet
+        trivy image --input /workspace/$img.tar --quiet \
+          --severity HIGH,CRITICAL --ignore-unfixed --exit-code 1 || status=1
+      done
+      echo $status > /workspace/evidence/status/trivy-image
+
+  - id: sbom
+    name: ${_SYFT}
+    waitFor: [pull]
+    entrypoint: /syft
+    args: ["scan", "docker-archive:/workspace/control.tar",
+           "-o", "cyclonedx-json=/workspace/evidence/sbom-control.cdx.json"]
+
+  - id: sbom-relay
+    name: ${_SYFT}
+    waitFor: [pull]
+    entrypoint: /syft
+    args: ["scan", "docker-archive:/workspace/relay.tar",
+           "-o", "cyclonedx-json=/workspace/evidence/sbom-relay.cdx.json"]
+
+  # --- Infrastructure --------------------------------------------------------
+
+  - id: trivy-config
+    name: ${_TRIVY}
+    waitFor: [prepare]
+    script: |
+      #!/bin/sh
+      cd /workspace/moqom/deploy
+      trivy config --format json --output /workspace/evidence/trivy-config.json --quiet .
+      trivy config --severity HIGH,CRITICAL --exit-code 1 --quiet .
+      echo $? > /workspace/evidence/status/trivy-config
+
+  - id: checkov
+    name: ${_CHECKOV}
+    waitFor: [prepare]
+    script: |
+      #!/bin/sh
+      checkov -d /workspace/moqom/deploy --framework terraform --quiet --compact \
+        --soft-fail -o cli -o sarif --output-file-path /workspace/evidence/checkov
+
+  # --- Evidence and verdict --------------------------------------------------
+
+  - id: upload
+    name: gcr.io/google.com/cloudsdktool/cloud-sdk:slim
+    waitFor: [go, rust, gitleaks, trivy-image, sbom, sbom-relay, trivy-config, checkov]
+    script: |
+      #!/usr/bin/env bash
+      set -e
+      cd /workspace/evidence
+      date -u +%Y-%m-%dT%H:%M:%SZ > finished
+      echo "$BUILD_ID" > build-id
+      # Objects are new names under a per-build prefix, so the bucket's
+      # retention policy never has to allow an overwrite.
+      dest="gs://$_EVIDENCE_BUCKET/ci/security/$(date -u +%Y/%m/%d)/$BUILD_ID/"
+      gcloud storage cp --recursive . "$dest"
+      echo "evidence: $dest"
+
+  - id: verdict
+    name: bash
+    waitFor: [upload]
+    script: |
+      failed=""
+      for gate in govulncheck gosec staticcheck cargo-audit cargo-deny gitleaks trivy-image trivy-config; do
+        s=$(cat /workspace/evidence/status/$gate 2>/dev/null || echo missing)
+        echo "$gate: $s"
+        [ "$s" = "0" ] || failed="$failed $gate"
+      done
+      if [ -n "$failed" ]; then
+        echo "FAILED:$failed"
+        exit 1
+      fi
+
+timeout: 3600s
+options:
+  logging: CLOUD_LOGGING_ONLY
+  machineType: E2_HIGHCPU_8
+  dynamicSubstitutions: true
+  # Substitutions as environment variables in `script` steps, so the shell
+  # sees $BUILD_ID and $_CONTROL_IMAGE without Cloud Build parsing every $.
+  automapSubstitutions: true

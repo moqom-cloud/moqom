@@ -1,0 +1,418 @@
+#cloud-config
+
+write_files:
+  # Under /etc: Container-Optimized OS mounts most of its root read-only, and a
+  # write_files entry elsewhere fails and takes the rest of the list with it.
+  - path: /etc/ziti/mount-state.sh
+    permissions: "0700"
+    owner: root
+    content: |
+      #!/bin/bash
+      # Format the state disk the first time and mount it every time.
+      #
+      # The disk outlives the VM: the controller's raft database, its PKI and
+      # the router's identity are all on it, and a replaced boot disk must find
+      # them where it left them. Formatting is gated on the device having no
+      # filesystem at all, never on the mount failing.
+      set -euo pipefail
+      DEV=${state_device}
+      MNT=/mnt/disks/ziti
+      for _ in $(seq 1 30); do [ -b "$DEV" ] && break; sleep 1; done
+      if [ -z "$(blkid -o value -s TYPE "$DEV" || true)" ]; then
+          mkfs.ext4 -m 0 -E lazy_itable_init=0,lazy_journal_init=0,discard "$DEV"
+      fi
+      mkdir -p "$MNT"
+      mountpoint -q "$MNT" || mount -o discard,defaults,nosuid,nodev "$DEV" "$MNT"
+      mkdir -p "$MNT/controller" "$MNT/router"
+      # ziggy, the user the OpenZiti images run as.
+      chown 2171:2171 "$MNT/controller" "$MNT/router"
+      chmod 0700 "$MNT/controller" "$MNT/router"
+
+  - path: /etc/ziti/open-ports.sh
+    permissions: "0700"
+    owner: root
+    content: |
+      #!/bin/bash
+      # COS boots with INPUT DROP; the VPC firewall decides who reaches these,
+      # the host only has to stop discarding them. Run on every start because
+      # iptables state does not survive a reboot.
+      set -eu
+      for port in ${controller_port} ${management_port} ${router_port}; do
+          iptables -C INPUT -p tcp --dport "$port" -j ACCEPT 2>/dev/null ||
+              iptables -A INPUT -p tcp --dport "$port" -j ACCEPT
+      done
+
+  - path: /etc/ziti/secrets.sh
+    permissions: "0700"
+    owner: root
+    content: |
+      #!/bin/bash
+      # Put the admin password into tmpfs for the controller, generating it on
+      # the very first boot, and restore the PKI onto an empty disk.
+      #
+      # The password is generated here and written straight to Secret Manager,
+      # so it never passes through Terraform state or anyone's terminal. It is
+      # only ever generated when the disk holds no database: a database with no
+      # password on record is an inconsistency to stop at, not paper over.
+      set -euo pipefail
+      umask 077
+      STATE=/mnt/disks/ziti/controller
+      mkdir -p /run/ziti
+      chmod 0700 /run/ziti
+
+      TOKEN="$(curl -sf -H "Metadata-Flavor: Google" \
+          "http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/token" \
+          | sed -n 's/.*"access_token":"\([^"]*\)".*/\1/p')"
+      [ -n "$TOKEN" ] || { echo "no access token from the metadata server" >&2; exit 1; }
+      printf 'Authorization: Bearer %s\n' "$TOKEN" > /run/ziti/auth.hdr
+      SM=https://secretmanager.googleapis.com/v1/projects/${project_id}/secrets
+
+      # Prints the payload and succeeds, or fails with nothing printed when the
+      # secret has no version yet.
+      fetch() {
+          local body code
+          body="$(mktemp -p /run/ziti)"
+          code="$(curl -s -o "$body" -w '%%{http_code}' -H @/run/ziti/auth.hdr "$SM/$1/versions/latest:access")"
+          if [ "$code" = 200 ]; then
+              sed -n 's/.*"data": "\([^"]*\)".*/\1/p' "$body" | base64 -d
+              rm -f "$body"
+              return 0
+          fi
+          rm -f "$body"
+          [ "$code" = 404 ] || { echo "secret $1: HTTP $code" >&2; exit 1; }
+          return 1
+      }
+
+      # Reads the payload on stdin.
+      store() {
+          { printf '{"payload":{"data":"'; base64 -w0; printf '"}}'; } |
+              curl -sf -o /dev/null -X POST -H @/run/ziti/auth.hdr -H 'Content-Type: application/json' \
+                  --data-binary @- "$SM/$1:addVersion"
+      }
+
+      if ! PASSWORD="$(fetch ${password_secret})"; then
+          if [ -d "$STATE/raft" ]; then
+              echo "the controller has a database but ${password_secret} has no version; refusing to invent a password" >&2
+              exit 1
+          fi
+          PASSWORD="$(head -c 48 /dev/urandom | base64 -w0 | tr -d '+/=' | cut -c1-40)"
+          printf '%s' "$PASSWORD" | store ${password_secret}
+          echo "generated the controller admin password into ${password_secret}"
+      fi
+      printf 'ZITI_PWD=%s\n' "$PASSWORD" > /run/ziti/controller.env
+      chmod 0600 /run/ziti/controller.env
+
+      if [ ! -d "$STATE/pki" ]; then
+          if fetch ${pki_secret} > /run/ziti/pki.tgz; then
+              tar -xzf /run/ziti/pki.tgz -C "$STATE"
+              chown -R 2171:2171 "$STATE/pki"
+              echo "restored the controller PKI from ${pki_secret}"
+          fi
+          rm -f /run/ziti/pki.tgz
+      fi
+
+  - path: /etc/ziti/split-web.sh
+    permissions: "0700"
+    owner: root
+    content: |
+      #!/bin/bash
+      # Move the management and fabric APIs off the public listener.
+      #
+      # The controller image writes config.yml on its first start with every API
+      # on one listener. This replaces that `web:` section -- always the last in
+      # the generated file -- with two listeners: the client API and OIDC on the
+      # public port, management and fabric on a port the VPC firewall keeps to
+      # the cluster and IAP. Does nothing until the file exists, and nothing once
+      # it has been split.
+      set -euo pipefail
+      CONFIG=/mnt/disks/ziti/controller/config.yml
+      [ -s "$CONFIG" ] || exit 0
+      grep -q '^# moqom: management split' "$CONFIG" && exit 0
+      grep -q '^web:' "$CONFIG" || { echo "no web: section in $CONFIG" >&2; exit 1; }
+      cp -p "$CONFIG" "$CONFIG.unsplit"
+      # The listener's certificate paths, as the image wrote them.
+      pick() { sed -n '/^web:/,$p' "$CONFIG" | sed -n "s/^ *$1: *\"\([^\"]*\)\".*/\1/p" | head -1; }
+      CA="$(pick ca)"; KEY="$(pick key)"; SERVER="$(pick server_cert)"; CLIENT="$(pick cert)"
+      [ -n "$CA" ] && [ -n "$KEY" ] && [ -n "$SERVER" ] && [ -n "$CLIENT" ] ||
+          { echo "could not read the web identity from $CONFIG" >&2; exit 1; }
+      {
+          sed '/^web:/,$d' "$CONFIG"
+          cat <<YAML
+      # moqom: management split
+      web:
+        - name: client
+          bindPoints:
+            - interface: 0.0.0.0:${controller_port}
+              address: ${advertised_address}:${controller_port}
+          identity: &web_identity
+            ca:          "$CA"
+            key:         "$KEY"
+            server_cert: "$SERVER"
+            cert:        "$CLIENT"
+          options: &web_options
+            idleTimeout: 5000ms
+            readTimeout: 5000ms
+            writeTimeout: 100000ms
+            minTLSVersion: TLS1.2
+            maxTLSVersion: TLS1.3
+          apis:
+            - binding: edge-client
+              options: { }
+            - binding: edge-oidc
+              options: { }
+        - name: management
+          bindPoints:
+            - interface: 0.0.0.0:${management_port}
+              address: ${advertised_address}:${management_port}
+          identity: *web_identity
+          options: *web_options
+          apis:
+            - binding: edge-management
+              options: { }
+            - binding: fabric
+              options: { }
+            - binding: health-checks
+              options: { }
+      YAML
+      } > "$CONFIG.new"
+      chown 2171:2171 "$CONFIG.new"
+      mv "$CONFIG.new" "$CONFIG"
+      echo "split the management API onto :${management_port}"
+
+  - path: /etc/ziti/router-token.sh
+    permissions: "0600"
+    owner: root
+    content: |
+      # Runs inside the controller image (curl and jq), fed on stdin, with the
+      # admin password in its environment. Creates the edge router if it is
+      # missing and writes its enrolment token where the router container finds
+      # it. A router that is already enrolled is left alone.
+      set -euo pipefail
+      API=https://127.0.0.1:${management_port}/edge/management/v1
+      CA=/ziti-controller/pki/root/certs/root.cert
+      ROUTER='${router_name}'
+      if [ -s /ziti-router/router.cert ]; then
+          exit 0
+      fi
+      HDR="$(mktemp)"
+      trap 'rm -f "$HDR"' EXIT
+      # From the environment inside jq, so the password is on no argv.
+      jq -n '{username:"admin",password:env.ZITI_PWD}' |
+          curl -sf --cacert "$CA" -H 'Content-Type: application/json' --data-binary @- \
+              "$API/authenticate?method=password" |
+          jq -r '"zt-session: " + .data.token' > "$HDR"
+      call() { curl -sf --cacert "$CA" -H @"$HDR" -H 'Content-Type: application/json' "$@"; }
+      ID="$(call -G "$API/edge-routers" --data-urlencode "filter=name=\"$ROUTER\"" | jq -r '.data[0].id // empty')"
+      if [ -z "$ID" ]; then
+          ID="$(jq -n --arg n "$ROUTER" '{name:$n,isTunnelerEnabled:true,roleAttributes:["public"]}' |
+              call -X POST --data-binary @- "$API/edge-routers" | jq -r .data.id)"
+      fi
+      JWT="$(call "$API/edge-routers/$ID" | jq -r '.data.enrollmentJwt // empty')"
+      EXPIRES="$(call "$API/edge-routers/$ID" | jq -r '.data.enrollmentExpiresAt // empty')"
+      if [ -z "$JWT" ] || [ "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \> "$EXPIRES" ]; then
+          call -X POST --data-binary '{}' "$API/edge-routers/$ID/re-enroll" > /dev/null
+          JWT="$(call "$API/edge-routers/$ID" | jq -r '.data.enrollmentJwt')"
+      fi
+      umask 077
+      printf '%s' "$JWT" > /ziti-router/enroll.jwt
+      echo "wrote the enrolment token for $ROUTER"
+
+  - path: /etc/ziti/after-controller.sh
+    permissions: "0700"
+    owner: root
+    content: |
+      #!/bin/bash
+      # Once the controller answers: split its listeners if they are not yet
+      # split, back its PKI up if Secret Manager has none, and leave an
+      # enrolment token for the router if it has never enrolled.
+      set -euo pipefail
+      STATE=/mnt/disks/ziti/controller
+      up() { curl -sk -o /dev/null --max-time 3 "https://127.0.0.1:$1/edge/client/v1/version"; }
+      wait_up() {
+          for _ in $(seq 1 120); do up "$1" && return 0; sleep 2; done
+          echo "the controller did not answer on :$1" >&2; return 1
+      }
+      wait_up ${controller_port}
+
+      if ! grep -q '^# moqom: management split' "$STATE/config.yml"; then
+          # The controller unit applies the split before it starts the
+          # container; restarting is what gets it applied.
+          systemctl restart ziti-controller.service
+          sleep 5
+          wait_up ${controller_port}
+      fi
+      for _ in $(seq 1 60); do
+          curl -sk -o /dev/null --max-time 3 "https://127.0.0.1:${management_port}/edge/management/v1/version" && break
+          sleep 2
+      done
+
+      # Access rather than get: accessor is the only read role this VM holds.
+      code="$(curl -s -o /dev/null -w '%%{http_code}' -H @/run/ziti/auth.hdr \
+          "https://secretmanager.googleapis.com/v1/projects/${project_id}/secrets/${pki_secret}/versions/latest:access")"
+      if [ "$code" = 404 ]; then
+          # The certificate authorities only. Leaf certificates are reissued
+          # from them at every start, and Secret Manager caps a payload at
+          # 64 KiB.
+          tar -czf - -C "$STATE" --exclude='server.*' --exclude='client.*' pki |
+              { printf '{"payload":{"data":"'; base64 -w0; printf '"}}'; } |
+              curl -sf -o /dev/null -X POST -H @/run/ziti/auth.hdr -H 'Content-Type: application/json' \
+                  --data-binary @- "https://secretmanager.googleapis.com/v1/projects/${project_id}/secrets/${pki_secret}:addVersion"
+          echo "backed the controller PKI up to ${pki_secret}"
+      fi
+
+      # The image only puts an address in the router's certificate as an IP SAN
+      # when ZITI_ROUTER_IP_OVERRIDE names it; without that the router refuses
+      # its own config. A router enrolled that way is wiped and enrolled again.
+      ROUTER_DIR=/mnt/disks/ziti/router
+      if [ -s "$ROUTER_DIR/config.yml" ] && ! grep -q '"${advertised_address}"' "$ROUTER_DIR/config.yml"; then
+          echo "the router's certificate does not name ${advertised_address}; enrolling it again"
+          find "$ROUTER_DIR" -mindepth 1 -delete
+      fi
+
+      docker run --rm -i --network host --user 2171:2171 --entrypoint bash \
+          --env-file /run/ziti/controller.env \
+          --volume $STATE:/ziti-controller:ro \
+          --volume /mnt/disks/ziti/router:/ziti-router \
+          ${controller_image} -s < /etc/ziti/router-token.sh
+
+  - path: /etc/systemd/system/ziti-controller.service
+    permissions: "0644"
+    owner: root
+    content: |
+      [Unit]
+      Description=OpenZiti controller
+      Wants=gcr-online.target docker.service
+      After=gcr-online.target docker.service
+
+      [Service]
+      Type=simple
+      Restart=always
+      RestartSec=5
+      Environment=HOME=/home/chronos
+%{ if registry_host != "" ~}
+      ExecStartPre=/usr/bin/docker-credential-gcr configure-docker --registries=${registry_host}
+%{ endif ~}
+      ExecStartPre=-/usr/bin/docker rm -f ziti-controller
+      ExecStartPre=/bin/bash /etc/ziti/mount-state.sh
+      ExecStartPre=/bin/bash /etc/ziti/open-ports.sh
+      ExecStartPre=/bin/bash /etc/ziti/secrets.sh
+      ExecStartPre=/bin/bash /etc/ziti/split-web.sh
+      ExecStartPre=/usr/bin/docker pull ${controller_image}
+      ExecStart=/usr/bin/docker run --rm --name ziti-controller \
+        --network host \
+        --user 2171:2171 \
+        --log-driver=gcplogs \
+        --volume /mnt/disks/ziti/controller:/ziti-controller \
+        --env-file /run/ziti/controller.env \
+        --env ZITI_CTRL_ADVERTISED_ADDRESS=${advertised_address} \
+        --env ZITI_CTRL_ADVERTISED_PORT=${controller_port} \
+        --env ZITI_BOOTSTRAP_CLUSTER=true \
+        --env ZITI_CLUSTER_NODE_NAME=ctrl1 \
+        --env ZITI_CLUSTER_TRUST_DOMAIN=moqom \
+        --env ZITI_BOOTSTRAP_CONSOLE=false \
+        ${controller_image} run config.yml
+      ExecStop=/usr/bin/docker stop --time=20 ziti-controller
+      TimeoutStopSec=40
+
+      [Install]
+      WantedBy=multi-user.target
+
+  - path: /etc/systemd/system/ziti-setup.service
+    permissions: "0644"
+    owner: root
+    content: |
+      [Unit]
+      Description=OpenZiti controller follow-up: listener split, PKI backup, router token
+      # Wants, not Requires: this unit restarts the controller itself, and a
+      # Requires would restart this unit out from under its own script.
+      Wants=ziti-controller.service
+      After=ziti-controller.service
+
+      [Service]
+      Type=oneshot
+      RemainAfterExit=true
+      Environment=HOME=/home/chronos
+      ExecStart=/bin/bash /etc/ziti/after-controller.sh
+      Restart=on-failure
+      RestartSec=15
+
+      [Install]
+      WantedBy=multi-user.target
+
+  - path: /etc/systemd/system/ziti-router.service
+    permissions: "0644"
+    owner: root
+    content: |
+      [Unit]
+      Description=OpenZiti edge router
+      Wants=ziti-setup.service
+      After=ziti-setup.service
+
+      [Service]
+      Type=simple
+      Restart=always
+      RestartSec=5
+      Environment=HOME=/home/chronos
+      ExecStartPre=-/usr/bin/docker rm -f ziti-router
+      ExecStartPre=/usr/bin/docker pull ${router_image}
+      # The control channel goes to the controller over loopback, which its
+      # certificate names, rather than out to the VM's own public address and
+      # back. Enrolment uses the address in the token, which is the public one.
+      ExecStart=/usr/bin/docker run --rm --name ziti-router \
+        --network host \
+        --user 2171:2171 \
+        --log-driver=gcplogs \
+        --volume /mnt/disks/ziti/router:/ziti-router \
+        --env ZITI_ENROLL_TOKEN=/ziti-router/enroll.jwt \
+        --env ZITI_ROUTER_NAME=router \
+        --env ZITI_ROUTER_ADVERTISED_ADDRESS=${advertised_address} \
+        --env ZITI_ROUTER_IP_OVERRIDE=${advertised_address} \
+        --env ZITI_ROUTER_PORT=${router_port} \
+        --env ZITI_ROUTER_MODE=host \
+        --env ZITI_CTRL_ADVERTISED_ADDRESS=127.0.0.1 \
+        --env ZITI_CTRL_ADVERTISED_PORT=${controller_port} \
+        ${router_image} run config.yml
+      ExecStop=/usr/bin/docker stop --time=20 ziti-router
+      TimeoutStopSec=40
+
+      [Install]
+      WantedBy=multi-user.target
+%{ if sql_instance != "" ~}
+
+  - path: /etc/systemd/system/cloud-sql-proxy.service
+    permissions: "0644"
+    owner: root
+    content: |
+      [Unit]
+      Description=Cloud SQL Auth Proxy, on loopback, for the overlay's Postgres service
+      Wants=gcr-online.target docker.service
+      After=gcr-online.target docker.service
+
+      [Service]
+      Type=simple
+      Restart=always
+      RestartSec=5
+      Environment=HOME=/home/chronos
+      ExecStartPre=-/usr/bin/docker rm -f cloud-sql-proxy
+      ExecStartPre=/usr/bin/docker pull ${sql_proxy_image}
+      # No --auto-iam-authn: the proxy authorises the connection as this VM, and
+      # the operator logs in to Postgres as themselves, with their own access
+      # token as the password. The proxy never holds a database login.
+      ExecStart=/usr/bin/docker run --rm --name cloud-sql-proxy \
+        --network host \
+        --log-driver=gcplogs \
+        ${sql_proxy_image} \
+        --private-ip --address 127.0.0.1 --port ${sql_proxy_port} --structured-logs \
+        ${sql_instance}
+      ExecStop=/usr/bin/docker stop --time=10 cloud-sql-proxy
+
+      [Install]
+      WantedBy=multi-user.target
+%{ endif ~}
+
+runcmd:
+  - systemctl daemon-reload
+  - systemctl enable --now ziti-controller.service ziti-setup.service ziti-router.service
+%{ if sql_instance != "" ~}
+  - systemctl enable --now cloud-sql-proxy.service
+%{ endif ~}

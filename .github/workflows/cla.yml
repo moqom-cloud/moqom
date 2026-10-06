@@ -19,7 +19,7 @@ jobs:
     # Only run on the signature phrase or on PR events, not on every comment.
     if: >
       (github.event.comment.body == 'recheck' ||
-       github.event.comment.body == 'I have read the CLA Document and I hereby sign the CLA') ||
+       github.event.comment.body == 'I have read the Copyright Assignment Agreement and I hereby sign it') ||
       github.event_name == 'pull_request_target'
     steps:
       - uses: contributor-assistant/github-action@v2.6.1
@@ -36,8 +36,9 @@ jobs:
           allowlist: elliott-io,dependabot[bot],renovate[bot]
           custom-notsigned-prcomment: >
             Thanks for the contribution. Before it can be merged, please sign
-            the [Contributor License Agreement](https://github.com/moqom-cloud/moqom/blob/main/.github/CLA.md).
-            Note that MOQOM is dual-licensed and the CLA permits relicensing —
-            Section 4 explains exactly what you are agreeing to.
-          custom-pr-sign-comment: I have read the CLA Document and I hereby sign the CLA
-          custom-allsigned-prcomment: All contributors have signed the CLA.
+            the [Copyright Assignment Agreement](https://github.com/moqom-cloud/moqom/blob/main/.github/CLA.md).
+            It assigns the copyright in your contribution to Elliott Wave LLC and
+            licenses it back to you for any use — Sections 2, 3 and 5 explain
+            exactly what you are agreeing to.
+          custom-pr-sign-comment: I have read the Copyright Assignment Agreement and I hereby sign it
+          custom-allsigned-prcomment: All contributors have signed the Copyright Assignment Agreement.

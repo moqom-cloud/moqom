@@ -40,6 +40,22 @@ const (
 	RecordingProhibited RecordingPolicy = "prohibited"
 )
 
+// E2EEPolicy is whether a room's media must be end-to-end encrypted.
+//
+// The strings are protocol: they are the values of the `e2ee` token claim, and
+// MoqomKit compares against them byte for byte.
+type E2EEPolicy string
+
+const (
+	// E2EERequired is the default, and what an unset policy means. A client with
+	// no key refuses to publish into such a room and drops what it cannot open.
+	E2EERequired E2EEPolicy = "required"
+
+	// E2EEOptional lets media travel in the clear when a client has no key.
+	// Reached only by an explicit, reasoned, logged policy change.
+	E2EEOptional E2EEPolicy = "optional"
+)
+
 // Defaults chosen to be defensible rather than generous. Both limits are real
 // costs -- a stage slot is a decode on every client, a watchdog is a fan-out on
 // the relay -- so the default is what a room can carry, not what it can imagine.
@@ -60,12 +76,24 @@ type Policy struct {
 	MaxParticipants uint32
 	StageSlots      uint32
 	WatchdogLimit   uint32
+
+	// E2EE is whether media must be end-to-end encrypted. Empty means required,
+	// and WithDefaults makes that explicit.
+	E2EE E2EEPolicy
 }
 
 // WithDefaults fills the zero values that have sensible answers.
+//
+// For security settings the sensible answer is the strict one. An unset E2EE
+// policy is required, so a caller that predates the field -- or simply did not
+// think about it -- gets an encrypted room, and an unencrypted one always traces
+// back to somebody who asked for it.
 func (p Policy) WithDefaults() Policy {
 	if p.Recording == "" {
 		p.Recording = RecordingAllowed
+	}
+	if p.E2EE == "" {
+		p.E2EE = E2EERequired
 	}
 	if p.StageSlots == 0 {
 		p.StageSlots = DefaultStageSlots
@@ -86,7 +114,32 @@ func (p Policy) ValidateChange(next Policy) error {
 	if p.ResidencyZone != next.ResidencyZone {
 		return fmt.Errorf("%w: residency_zone, %q to %q", ErrImmutablePolicy, p.ResidencyZone, next.ResidencyZone)
 	}
+	switch next.E2EE {
+	case "", E2EERequired, E2EEOptional:
+	default:
+		return fmt.Errorf("%w: unknown e2ee policy %q", ErrInvalid, next.E2EE)
+	}
 	return nil
+}
+
+// SecurityChange describes what moving from p to next does to the room's
+// security settings, as `field: from -> to`, or "" when nothing moved.
+//
+// Written into the audit entry for the change. A policy update that turned
+// encryption off reads the same as one that changed a stage-slot count unless
+// something says which it was.
+func (p Policy) SecurityChange(next Policy) string {
+	from, to := p.WithDefaults().E2EE, next.WithDefaults().E2EE
+	if from == to {
+		return ""
+	}
+	return fmt.Sprintf("e2ee: %s -> %s", from, to)
+}
+
+// LoosensSecurity reports whether next is weaker than p in a way that needs a
+// recorded reason.
+func (p Policy) LoosensSecurity(next Policy) bool {
+	return p.WithDefaults().E2EE == E2EERequired && next.WithDefaults().E2EE == E2EEOptional
 }
 
 // Presence is where someone is, as published to the room.
@@ -379,6 +432,10 @@ type ModerationEntry struct {
 	Enforced         bool
 	DecidedByModel   string
 	IdempotencyKey   string
+
+	// PolicyChange is what a policy update did to the room's security settings,
+	// as Policy.SecurityChange renders it. Empty for every other verb.
+	PolicyChange string
 }
 
 // Authorise reports whether an actor with these grants may use verb on target.

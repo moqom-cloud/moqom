@@ -1,0 +1,14 @@
+# Cloud Build context for cloudbuild-sites.yaml: the four sites, the shared
+# components they import, and the publish script.
+/*
+!/sites/
+!/moqom/
+/moqom/*
+!/moqom/deploy/
+/moqom/deploy/*
+!/moqom/deploy/tools/
+**/.git/
+**/node_modules/
+**/dist/
+**/.astro/
+**/.DS_Store

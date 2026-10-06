@@ -57,3 +57,13 @@ output "secrets_awaiting_population" {
   value       = keys(module.data.secret_ids)
   description = "Secret containers created empty. Nothing that reads them will start until they have a version."
 }
+
+output "ziti" {
+  value = {
+    controller = module.ziti.controller_url
+    management = module.ziti.management_url
+    router     = module.ziti.router_name
+    instance   = module.ziti.instance_name
+  }
+  description = "The management overlay. The management API is reached from the cluster, or from a laptop through `gcloud compute start-iap-tunnel`; tools/ziti-provision.sh does the latter."
+}

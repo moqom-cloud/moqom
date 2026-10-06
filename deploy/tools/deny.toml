@@ -1,0 +1,50 @@
+# cargo-deny policy for moqom-engine and moqom-rust, passed with --config by
+# cloudbuild-security.yaml so neither repository has to carry a copy.
+
+[graph]
+all-features = true
+
+[advisories]
+# Vulnerabilities always fail. Unmaintained crates fail only when they are a
+# direct dependency, where replacing them is a choice we can make.
+unmaintained = "workspace"
+yanked = "deny"
+ignore = []
+
+[licenses]
+# Permissive licences, MPL-2.0 (file-level copyleft: modified MPL files stay
+# MPL, nothing else is affected), and BUSL-1.1 for our own relay crate. A
+# GPL-family licence in the graph would change what we can ship to customers.
+allow = [
+  "Apache-2.0",
+  "Apache-2.0 WITH LLVM-exception",
+  "MIT",
+  "MIT-0",
+  "BSD-2-Clause",
+  "BSD-3-Clause",
+  "ISC",
+  "Zlib",
+  "Unicode-3.0",
+  "Unicode-DFS-2016",
+  "CC0-1.0",
+  "CDLA-Permissive-2.0",
+  "MPL-2.0",
+  "BUSL-1.1",
+  "OpenSSL",
+]
+confidence-threshold = 0.9
+
+[licenses.private]
+ignore = true
+
+[bans]
+multiple-versions = "warn"
+wildcards = "deny"
+allow-wildcard-paths = true
+
+[sources]
+# crates.io and path dependencies (the vendored quinn) only. A git dependency
+# is code nobody reviewed at a version nobody pinned.
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]

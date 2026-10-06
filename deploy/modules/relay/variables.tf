@@ -205,6 +205,12 @@ variable "link_client_key_secret_id" {
   default     = null
 }
 
+variable "ticket_keys_secret_id" {
+  type        = string
+  description = "Secret Manager secret holding the fleet's direct-ticket keys, a JWK set of Ed25519 keys. Every relay in a fleet must hold the same set, or a participant on one relay can't verify a peer's ticket from another. Null issues no tickets, which keeps everyone on this tier off direct paths."
+  default     = null
+}
+
 variable "container_uid" {
   type        = number
   description = "UID the relay runs as inside its container. The fetched certificate and key are chowned to it, because a root-owned key is one the container cannot read."
@@ -237,4 +243,19 @@ variable "labels" {
   type        = map(string)
   description = "Labels applied to resources that accept them."
   default     = {}
+}
+
+variable "ziti" {
+  type = object({
+    # The tunneler sidecar: the ziti CLI image, pinned by digest.
+    cli_image = string
+    # Where the relay asks the control plane for its overlay identity, and the
+    # audience its instance identity token is minted for.
+    enroll_url      = string
+    enroll_audience = string
+    # Seconds between the tunneler's service polls.
+    service_poll_seconds = optional(number, 60)
+  })
+  description = "Turns on the relay's OpenZiti tunneler: an identity minted per instance by the control plane at boot, a sidecar that intercepts the control plane's overlay service on loopback and hosts this relay's admin port and SSH for operators. Null leaves the relay on its TCP link alone."
+  default     = null
 }

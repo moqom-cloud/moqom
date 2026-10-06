@@ -258,6 +258,16 @@ func policyFromProto(wire *adminpb.RoomPolicy) (control.Policy, error) {
 		}
 		recording = mapped
 	}
+	// Unspecified is required: a backend built before the field existed sends
+	// zero, and zero must not be the permissive answer.
+	e2ee := control.E2EERequired
+	switch wire.GetE2Ee() {
+	case adminpb.E2EEPolicy_E2EE_POLICY_UNSPECIFIED, adminpb.E2EEPolicy_E2EE_POLICY_REQUIRED:
+	case adminpb.E2EEPolicy_E2EE_POLICY_OPTIONAL:
+		e2ee = control.E2EEOptional
+	default:
+		return control.Policy{}, fmt.Errorf("%w: unknown e2ee policy %v", control.ErrInvalid, wire.GetE2Ee())
+	}
 	policy := control.Policy{
 		AgeGate: control.AgeGate{
 			MinimumAge:          wire.GetAgeGate().GetMinimumAge(),
@@ -268,8 +278,16 @@ func policyFromProto(wire *adminpb.RoomPolicy) (control.Policy, error) {
 		MaxParticipants: wire.GetMaxParticipants(),
 		StageSlots:      wire.GetStageSlots(),
 		WatchdogLimit:   wire.GetWatchdogLimit(),
+		E2EE:            e2ee,
 	}
 	return policy.WithDefaults(), nil
+}
+
+func e2eeToProto(policy control.E2EEPolicy) adminpb.E2EEPolicy {
+	if policy == control.E2EEOptional {
+		return adminpb.E2EEPolicy_E2EE_POLICY_OPTIONAL
+	}
+	return adminpb.E2EEPolicy_E2EE_POLICY_REQUIRED
 }
 
 func policyToProto(policy control.Policy) *adminpb.RoomPolicy {
@@ -283,6 +301,7 @@ func policyToProto(policy control.Policy) *adminpb.RoomPolicy {
 		MaxParticipants: policy.MaxParticipants,
 		StageSlots:      policy.StageSlots,
 		WatchdogLimit:   policy.WatchdogLimit,
+		E2Ee:            e2eeToProto(policy.E2EE),
 	}
 }
 
@@ -464,6 +483,7 @@ func entryToProto(entry control.ModerationEntry) *adminpb.ModerationEntry {
 		Media:          mediaToProto(entry.Media),
 		Enforced:       entry.Enforced,
 		DecidedByModel: entry.DecidedByModel,
+		PolicyChange:   entry.PolicyChange,
 	}
 	if entry.Grants != nil {
 		wire.Grants = grantsToProto(*entry.Grants)

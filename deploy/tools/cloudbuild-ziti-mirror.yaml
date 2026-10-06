@@ -1,0 +1,34 @@
+# Copies the pinned OpenZiti and Cloud SQL proxy images into Artifact Registry,
+# digest for digest, so the overlay VM and the relays pull from the project's
+# own registry rather than Docker Hub's anonymous rate limit through a shared
+# NAT address.
+#
+#   gcloud builds submit --no-source --project=moqom-503700 \
+#     --config=moqom/deploy/tools/cloudbuild-ziti-mirror.yaml
+#
+# gcrane copies the manifest list as it is, so the digest in the destination is
+# the digest pinned here and in terraform.tfvars. Bump the three together.
+substitutions:
+  _DEST: us-docker.pkg.dev/${PROJECT_ID}/moqom-dev/openziti
+  _ZITI_VERSION: "2.0.6"
+  _CONTROLLER: sha256:77b18d3ce81ac49b6171bd87a1a784efd02859d2213eb0c18e0eb76447b1ca62
+  _ROUTER: sha256:7da6900e0037177e5ed4f59ffe78303788492868dbbea8292515395d54aebc11
+  _CLI: sha256:959b6fe0c70a5ef7aafd20f78ed7aeb90c8ef92cc40371b406179d6242597d97
+  _SQL_PROXY_VERSION: "2.26.0"
+  _SQL_PROXY: sha256:86e4f3cc266020e7ee07740df78d7511e2c340c274b56f84d80b7251913af9ad
+steps:
+  - name: gcr.io/go-containerregistry/gcrane:debug
+    entrypoint: /busybox/sh
+    args:
+      - -euc
+      - |
+        gcrane cp docker.io/openziti/ziti-controller@${_CONTROLLER} ${_DEST}/ziti-controller:${_ZITI_VERSION}
+        gcrane cp docker.io/openziti/ziti-router@${_ROUTER} ${_DEST}/ziti-router:${_ZITI_VERSION}
+        gcrane cp docker.io/openziti/ziti-cli@${_CLI} ${_DEST}/ziti-cli:${_ZITI_VERSION}
+        gcrane cp gcr.io/cloud-sql-connectors/cloud-sql-proxy@${_SQL_PROXY} ${_DEST}/cloud-sql-proxy:${_SQL_PROXY_VERSION}
+        for image in ziti-controller:${_ZITI_VERSION} ziti-router:${_ZITI_VERSION} ziti-cli:${_ZITI_VERSION} cloud-sql-proxy:${_SQL_PROXY_VERSION}; do
+          echo "$$image $(gcrane digest ${_DEST}/$$image)"
+        done
+options:
+  logging: CLOUD_LOGGING_ONLY
+  dynamicSubstitutions: true

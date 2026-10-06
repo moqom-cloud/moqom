@@ -79,6 +79,43 @@ func TestRoundTrip(t *testing.T) {
 	}
 }
 
+// The relay-link grant round-trips through the strict decoder, and a scope that
+// does not hold it says nothing about it at all: every token minted before the
+// field existed is byte for byte what it was.
+func TestARelayLinkGrantRoundTripsAndIsAbsentOtherwise(t *testing.T) {
+	key, verifier := testKey(t)
+	now := time.Date(2026, 7, 27, 12, 0, 0, 0, time.UTC)
+
+	link := claimsFor(control.Grants{})
+	link.MOQT.Relay = true
+	minted, _, err := Mint(key, link, 5*time.Minute, now)
+	if err != nil {
+		t.Fatalf("minting: %v", err)
+	}
+	claims, err := verifier.Verify(minted, now)
+	if err != nil {
+		t.Fatalf("verifying: %v", err)
+	}
+	if !claims.MOQT.Relay {
+		t.Error("the relay-link grant did not survive verification")
+	}
+
+	ordinary, _, err := Mint(key, claimsFor(control.Grants{Publish: control.PublishCamera}), 5*time.Minute, now)
+	if err != nil {
+		t.Fatalf("minting: %v", err)
+	}
+	payload, err := base64.RawURLEncoding.DecodeString(strings.Split(ordinary, ".")[1])
+	if err != nil {
+		t.Fatalf("decoding: %v", err)
+	}
+	if strings.Contains(string(payload), `"rly"`) {
+		t.Errorf("an ordinary token mentions the relay-link grant: %s", payload)
+	}
+	if ScopeFrom(control.Grants{IsOwner: true}, "room-42", false, false).Relay {
+		t.Error("ScopeFrom, which the backend path mints through, produced a relay link")
+	}
+}
+
 // The classic JWS forgery: change `alg` to something the verifier will accept on
 // weaker terms. A verifier that reads the algorithm out of the token and dispatches
 // on it can be told to use "none", or to verify an HMAC with the public key as the
@@ -448,5 +485,41 @@ func TestATokenWithNoProvenanceIsNormal(t *testing.T) {
 	}
 	if bytes.Contains(body, []byte(`"via"`)) {
 		t.Errorf("an empty provenance claim should be omitted, got %s", body)
+	}
+}
+
+// The encryption claim round-trips, is refused when it names a value nobody
+// defined, and cannot relax a room the token does not name.
+func TestE2EEClaim(t *testing.T) {
+	key, verifier := testKey(t)
+	now := time.Date(2026, 7, 27, 12, 0, 0, 0, time.UTC)
+
+	for _, policy := range []control.E2EEPolicy{"", control.E2EERequired, control.E2EEOptional} {
+		claims := claimsFor(control.Grants{})
+		claims.E2EE = policy
+		minted, _, err := Mint(key, claims, time.Minute, now)
+		if err != nil {
+			t.Fatalf("minting e2ee=%q: %v", policy, err)
+		}
+		verified, err := verifier.Verify(minted, now)
+		if err != nil {
+			t.Fatalf("verifying e2ee=%q: %v", policy, err)
+		}
+		if verified.E2EE != policy {
+			t.Errorf("e2ee came back as %q, want %q", verified.E2EE, policy)
+		}
+	}
+
+	unknown := claimsFor(control.Grants{})
+	unknown.E2EE = "off"
+	if _, _, err := Mint(key, unknown, time.Minute, now); !errors.Is(err, control.ErrInvalid) {
+		t.Errorf("minting an unknown e2ee value gave %v, want ErrInvalid", err)
+	}
+
+	roomless := claimsFor(control.Grants{})
+	roomless.MOQT.Room = ""
+	roomless.E2EE = control.E2EEOptional
+	if _, _, err := Mint(key, roomless, time.Minute, now); !errors.Is(err, control.ErrInvalid) {
+		t.Errorf("relaxing e2ee on a roomless token gave %v, want ErrInvalid", err)
 	}
 }

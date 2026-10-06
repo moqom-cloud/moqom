@@ -105,6 +105,57 @@ spec:
         # for the same reason it is everywhere else here.
         - name: tmp
           emptyDir: {}
+      # The billing ledger's contract first, as an init container, so one Job
+      # proves both stores and a failure in either fails it.
+      initContainers:
+        - name: billing-conformance
+          image: $IMAGE
+          imagePullPolicy: Always
+          command: ["/moqom-billing-conformance", "-test.v", "-test.timeout=10m"]
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+          env:
+            - name: MOQOM_TEST_POSTGRES
+              valueFrom:
+                secretKeyRef:
+                  name: $SECRET
+                  key: url
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 65532
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          resources:
+            requests:
+              cpu: 500m
+              memory: 512Mi
+        - name: byoc-conformance
+          image: $IMAGE
+          imagePullPolicy: Always
+          command: ["/moqom-byoc-conformance", "-test.v", "-test.timeout=10m"]
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+          env:
+            - name: MOQOM_TEST_POSTGRES
+              valueFrom:
+                secretKeyRef:
+                  name: $SECRET
+                  key: url
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 65532
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          resources:
+            requests:
+              cpu: 250m
+              memory: 256Mi
       containers:
         - name: conformance
           image: $IMAGE
@@ -157,11 +208,15 @@ done
 
 case "$outcome" in
     passed)
+        kube logs "job/$JOB" -c billing-conformance 2>&1 | tail -10 | sed 's/^/    /'
+        kube logs "job/$JOB" -c byoc-conformance 2>&1 | tail -10 | sed 's/^/    /'
         kube logs "job/$JOB" 2>&1 | tail -15 | sed 's/^/    /'
         say "the store keeps its contract against $INSTANCE"
         ;;
     failed)
         say "the suite did not pass; its output follows"
+        kube logs "job/$JOB" -c billing-conformance 2>&1 | sed 's/^/    /'
+        kube logs "job/$JOB" -c byoc-conformance 2>&1 | sed 's/^/    /'
         kube logs "job/$JOB" 2>&1 | sed 's/^/    /'
         kube describe "job/$JOB" 2>&1 | tail -15 | sed 's/^/    /'
         exit 1

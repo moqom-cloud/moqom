@@ -187,6 +187,8 @@ func (s *Server) JoinHandler(createsRooms bool) http.Handler {
 		w.Header().Set("Cache-Control", "no-store")
 		_ = json.NewEncoder(w).Encode(response)
 	})
+	mux.HandleFunc(RelayLinkPath, s.relayLink(limiter))
+	mux.HandleFunc(RelayEnrollPath, s.relayEnroll(limiter))
 
 	return mux
 }
@@ -201,6 +203,13 @@ func (s *Server) join(
 	device, err := boundDevice(asked)
 	if err != nil {
 		return JoinResponse{}, http.StatusBadRequest, err
+	}
+	// Asked here as well as at minting so a device hears 402, which says what
+	// to do about it, rather than the 409 the gRPC refusal would map to.
+	if s.core.credits != nil {
+		if err := s.core.credits.Allow(ctx, asked.Tenant); err != nil {
+			return JoinResponse{}, http.StatusPaymentRequired, err
+		}
 	}
 
 	if asked.Room != "" && createsRooms {
@@ -364,7 +373,7 @@ func (s *Server) accountFor(r *http.Request) (ServiceAccount, error) {
 	// A relay's credential is not a device's. Refused here as well as in
 	// `requireTenant`, so the refusal does not depend on a later check
 	// happening to run.
-	if account.IsRelay {
+	if account.IsRelay || account.IsRecorder {
 		return ServiceAccount{}, ErrNoSuchAccount
 	}
 	return account, nil

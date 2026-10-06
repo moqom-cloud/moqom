@@ -352,6 +352,11 @@ resource "kubernetes_service_v1" "public" {
     type     = "LoadBalancer"
     selector = local.selector
 
+    # Local keeps the caller's address instead of the node's, which is what the
+    # per-address limits behind this port (signup, join) key on. Cluster would
+    # put every caller on the internet behind one bucket.
+    external_traffic_policy = "Local"
+
     port {
       name        = "join"
       port        = var.public_port

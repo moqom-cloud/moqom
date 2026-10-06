@@ -60,7 +60,53 @@ message RelayMessage {
     DirectiveResult directive_result = 5;
     Heartbeat heartbeat = 6;
     SnapshotRequest snapshot_request = 7;
+    Census census = 8;
   }
+}
+
+// Where this relay's sessions are, coarsely, per tenant. Feeds the console's
+// live connections map.
+//
+// The relay resolves each session's address to a city with a GeoLite2-City
+// compatible database and sends only the result: no address, no session ID, no
+// identity, and coordinates rounded to whole degrees. Counts here are exact and
+// unsuppressed, because suppressing per relay would hide a city whose sessions
+// happen to be split across relays. The control plane merges every relay's
+// census and applies the threshold before anything reaches a tenant.
+//
+// Sent every few seconds while it changes, and at least every 30 s otherwise.
+// Each one replaces the previous census from the same relay entirely.
+message Census {
+  google.protobuf.Timestamp at = 1;
+  repeated TenantCensus tenants = 2;
+}
+
+message TenantCensus {
+  string tenant = 1;
+
+  // Sessions that currently own at least one announced namespace.
+  uint32 publishers = 2;
+  // Every other session.
+  uint32 viewers = 3;
+
+  repeated CensusPlace places = 4;
+
+  // Sessions whose address resolved to nothing: private ranges, addresses
+  // missing from the database, or a relay with no database configured.
+  uint32 unlocated = 5;
+}
+
+message CensusPlace {
+  // ISO 3166-1 alpha-2.
+  string country = 1;
+  // ISO 3166-2 subdivision code without the country prefix. May be empty.
+  string region = 2;
+  // English city name. Empty when the database knows only the country.
+  string city = 3;
+  // Whole degrees.
+  sint32 latitude = 4;
+  sint32 longitude = 5;
+  uint32 sessions = 6;
 }
 
 // Ask for a room's current state.

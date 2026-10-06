@@ -28,10 +28,22 @@ func (s *tokensService) MintClientToken(
 	if request.GetDeviceThumbprint() == "" {
 		return nil, status.Error(codes.InvalidArgument, "device_thumbprint is required")
 	}
+	if s.core.credits != nil {
+		if err := s.core.credits.Allow(ctx, request.GetTenant()); err != nil {
+			return nil, status.Error(codes.FailedPrecondition, err.Error())
+		}
+	}
 
 	username, err := control.NormaliseUsername(request.GetUsername())
 	if err != nil {
 		return nil, statusFor(err)
+	}
+	if username == RecorderSubject ||
+		(s.core.recording != nil && request.GetDeviceThumbprint() == s.core.recording.thumbprint) {
+		return nil, status.Error(codes.InvalidArgument, "that identity is reserved for the hosted recorder")
+	}
+	if username == RelaySubject {
+		return nil, status.Error(codes.InvalidArgument, "that identity is reserved for relay links")
 	}
 
 	requested, err := grantsFromProto(request.GetGrants(), request.GetPreset())
@@ -61,17 +73,43 @@ func (s *tokensService) MintClientToken(
 	// A room that exists, is open, and whose policy this token satisfies. Checked at
 	// minting because it is the last moment a backend can be told why: a token that
 	// fails at the relay produces a client-side error nobody can explain.
+	//
+	// The room's encryption policy is read here too, so the token can state it.
+	// Stated even when it is the default, so a client reading the claim sees what
+	// the control plane decided rather than inferring it from silence.
+	var e2ee control.E2EEPolicy
 	if request.GetRoom() != "" {
 		room, err := s.core.store.GetRoom(ctx, request.GetTenant(), request.GetRoom())
 		if err != nil {
 			return nil, statusFor(err)
 		}
+		e2ee = room.Policy.WithDefaults().E2EE
 		if !room.IsOpen() {
 			return nil, statusFor(fmt.Errorf("%w: %s has ended", control.ErrRoomClosed, room.Room))
 		}
 		if room.Policy.AgeGate.RequireVerification && !request.GetAgeVerified() {
 			return nil, status.Error(codes.FailedPrecondition,
 				"this room requires age verification, which the request does not assert")
+		}
+
+		// A moderator's word outranks the backend's request. A demoted guest's
+		// app renewing its token as usual gets one for what they now hold, so the
+		// token it presents agrees with what the relay enforces; and a promotion
+		// set through SetGrants is the most a token minted afterwards can carry.
+		// Narrowed rather than refused, because the backend asking is usually
+		// doing nothing wrong: it is renewing a role it has not heard changed.
+		device, err := control.DeviceFromThumbprint(request.GetDeviceThumbprint())
+		if err != nil {
+			return nil, statusFor(err)
+		}
+		ceiling, overridden, err := s.core.grantCeiling(ctx, request.GetTenant(), request.GetRoom(),
+			control.Identity{Username: username, Device: device})
+		if err != nil {
+			return nil, statusFor(err)
+		}
+		if overridden {
+			requested.Publish &= ceiling.Publish
+			requested.Moderation &= ceiling.Moderation
 		}
 	}
 
@@ -98,6 +136,7 @@ func (s *tokensService) MintClientToken(
 			request.GetAgeVerified(),
 		),
 		ArrivedVia: arrivedVia,
+		E2EE:       e2ee,
 	}
 
 	signing := s.core.keys[0]

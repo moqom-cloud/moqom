@@ -120,7 +120,7 @@ func (x SessionClosed_Cause) Number() protoreflect.EnumNumber {
 
 // Deprecated: Use SessionClosed_Cause.Descriptor instead.
 func (SessionClosed_Cause) EnumDescriptor() ([]byte, []int) {
-	return file_moqom_relay_v1_relay_proto_rawDescGZIP(), []int{7, 0}
+	return file_moqom_relay_v1_relay_proto_rawDescGZIP(), []int{10, 0}
 }
 
 type RelayMessage struct {
@@ -134,6 +134,7 @@ type RelayMessage struct {
 	//	*RelayMessage_DirectiveResult
 	//	*RelayMessage_Heartbeat
 	//	*RelayMessage_SnapshotRequest
+	//	*RelayMessage_Census
 	Body          isRelayMessage_Body `protobuf_oneof:"body"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -239,6 +240,15 @@ func (x *RelayMessage) GetSnapshotRequest() *SnapshotRequest {
 	return nil
 }
 
+func (x *RelayMessage) GetCensus() *Census {
+	if x != nil {
+		if x, ok := x.Body.(*RelayMessage_Census); ok {
+			return x.Census
+		}
+	}
+	return nil
+}
+
 type isRelayMessage_Body interface {
 	isRelayMessage_Body()
 }
@@ -271,6 +281,10 @@ type RelayMessage_SnapshotRequest struct {
 	SnapshotRequest *SnapshotRequest `protobuf:"bytes,7,opt,name=snapshot_request,json=snapshotRequest,proto3,oneof"`
 }
 
+type RelayMessage_Census struct {
+	Census *Census `protobuf:"bytes,8,opt,name=census,proto3,oneof"`
+}
+
 func (*RelayMessage_Hello) isRelayMessage_Body() {}
 
 func (*RelayMessage_SessionOpened) isRelayMessage_Body() {}
@@ -284,6 +298,240 @@ func (*RelayMessage_DirectiveResult) isRelayMessage_Body() {}
 func (*RelayMessage_Heartbeat) isRelayMessage_Body() {}
 
 func (*RelayMessage_SnapshotRequest) isRelayMessage_Body() {}
+
+func (*RelayMessage_Census) isRelayMessage_Body() {}
+
+// Where this relay's sessions are, coarsely, per tenant. Feeds the console's
+// live connections map.
+//
+// The relay resolves each session's address to a city with a GeoLite2-City
+// compatible database and sends only the result: no address, no session ID, no
+// identity, and coordinates rounded to whole degrees. Counts here are exact and
+// unsuppressed, because suppressing per relay would hide a city whose sessions
+// happen to be split across relays. The control plane merges every relay's
+// census and applies the threshold before anything reaches a tenant.
+//
+// Sent every few seconds while it changes, and at least every 30 s otherwise.
+// Each one replaces the previous census from the same relay entirely.
+type Census struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	At            *timestamppb.Timestamp `protobuf:"bytes,1,opt,name=at,proto3" json:"at,omitempty"`
+	Tenants       []*TenantCensus        `protobuf:"bytes,2,rep,name=tenants,proto3" json:"tenants,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *Census) Reset() {
+	*x = Census{}
+	mi := &file_moqom_relay_v1_relay_proto_msgTypes[1]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *Census) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*Census) ProtoMessage() {}
+
+func (x *Census) ProtoReflect() protoreflect.Message {
+	mi := &file_moqom_relay_v1_relay_proto_msgTypes[1]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use Census.ProtoReflect.Descriptor instead.
+func (*Census) Descriptor() ([]byte, []int) {
+	return file_moqom_relay_v1_relay_proto_rawDescGZIP(), []int{1}
+}
+
+func (x *Census) GetAt() *timestamppb.Timestamp {
+	if x != nil {
+		return x.At
+	}
+	return nil
+}
+
+func (x *Census) GetTenants() []*TenantCensus {
+	if x != nil {
+		return x.Tenants
+	}
+	return nil
+}
+
+type TenantCensus struct {
+	state  protoimpl.MessageState `protogen:"open.v1"`
+	Tenant string                 `protobuf:"bytes,1,opt,name=tenant,proto3" json:"tenant,omitempty"`
+	// Sessions that currently own at least one announced namespace.
+	Publishers uint32 `protobuf:"varint,2,opt,name=publishers,proto3" json:"publishers,omitempty"`
+	// Every other session.
+	Viewers uint32         `protobuf:"varint,3,opt,name=viewers,proto3" json:"viewers,omitempty"`
+	Places  []*CensusPlace `protobuf:"bytes,4,rep,name=places,proto3" json:"places,omitempty"`
+	// Sessions whose address resolved to nothing: private ranges, addresses
+	// missing from the database, or a relay with no database configured.
+	Unlocated     uint32 `protobuf:"varint,5,opt,name=unlocated,proto3" json:"unlocated,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *TenantCensus) Reset() {
+	*x = TenantCensus{}
+	mi := &file_moqom_relay_v1_relay_proto_msgTypes[2]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *TenantCensus) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*TenantCensus) ProtoMessage() {}
+
+func (x *TenantCensus) ProtoReflect() protoreflect.Message {
+	mi := &file_moqom_relay_v1_relay_proto_msgTypes[2]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use TenantCensus.ProtoReflect.Descriptor instead.
+func (*TenantCensus) Descriptor() ([]byte, []int) {
+	return file_moqom_relay_v1_relay_proto_rawDescGZIP(), []int{2}
+}
+
+func (x *TenantCensus) GetTenant() string {
+	if x != nil {
+		return x.Tenant
+	}
+	return ""
+}
+
+func (x *TenantCensus) GetPublishers() uint32 {
+	if x != nil {
+		return x.Publishers
+	}
+	return 0
+}
+
+func (x *TenantCensus) GetViewers() uint32 {
+	if x != nil {
+		return x.Viewers
+	}
+	return 0
+}
+
+func (x *TenantCensus) GetPlaces() []*CensusPlace {
+	if x != nil {
+		return x.Places
+	}
+	return nil
+}
+
+func (x *TenantCensus) GetUnlocated() uint32 {
+	if x != nil {
+		return x.Unlocated
+	}
+	return 0
+}
+
+type CensusPlace struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// ISO 3166-1 alpha-2.
+	Country string `protobuf:"bytes,1,opt,name=country,proto3" json:"country,omitempty"`
+	// ISO 3166-2 subdivision code without the country prefix. May be empty.
+	Region string `protobuf:"bytes,2,opt,name=region,proto3" json:"region,omitempty"`
+	// English city name. Empty when the database knows only the country.
+	City string `protobuf:"bytes,3,opt,name=city,proto3" json:"city,omitempty"`
+	// Whole degrees.
+	Latitude      int32  `protobuf:"zigzag32,4,opt,name=latitude,proto3" json:"latitude,omitempty"`
+	Longitude     int32  `protobuf:"zigzag32,5,opt,name=longitude,proto3" json:"longitude,omitempty"`
+	Sessions      uint32 `protobuf:"varint,6,opt,name=sessions,proto3" json:"sessions,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *CensusPlace) Reset() {
+	*x = CensusPlace{}
+	mi := &file_moqom_relay_v1_relay_proto_msgTypes[3]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *CensusPlace) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*CensusPlace) ProtoMessage() {}
+
+func (x *CensusPlace) ProtoReflect() protoreflect.Message {
+	mi := &file_moqom_relay_v1_relay_proto_msgTypes[3]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use CensusPlace.ProtoReflect.Descriptor instead.
+func (*CensusPlace) Descriptor() ([]byte, []int) {
+	return file_moqom_relay_v1_relay_proto_rawDescGZIP(), []int{3}
+}
+
+func (x *CensusPlace) GetCountry() string {
+	if x != nil {
+		return x.Country
+	}
+	return ""
+}
+
+func (x *CensusPlace) GetRegion() string {
+	if x != nil {
+		return x.Region
+	}
+	return ""
+}
+
+func (x *CensusPlace) GetCity() string {
+	if x != nil {
+		return x.City
+	}
+	return ""
+}
+
+func (x *CensusPlace) GetLatitude() int32 {
+	if x != nil {
+		return x.Latitude
+	}
+	return 0
+}
+
+func (x *CensusPlace) GetLongitude() int32 {
+	if x != nil {
+		return x.Longitude
+	}
+	return 0
+}
+
+func (x *CensusPlace) GetSessions() uint32 {
+	if x != nil {
+		return x.Sessions
+	}
+	return 0
+}
 
 // Ask for a room's current state.
 //
@@ -303,7 +551,7 @@ type SnapshotRequest struct {
 
 func (x *SnapshotRequest) Reset() {
 	*x = SnapshotRequest{}
-	mi := &file_moqom_relay_v1_relay_proto_msgTypes[1]
+	mi := &file_moqom_relay_v1_relay_proto_msgTypes[4]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -315,7 +563,7 @@ func (x *SnapshotRequest) String() string {
 func (*SnapshotRequest) ProtoMessage() {}
 
 func (x *SnapshotRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_moqom_relay_v1_relay_proto_msgTypes[1]
+	mi := &file_moqom_relay_v1_relay_proto_msgTypes[4]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -328,7 +576,7 @@ func (x *SnapshotRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SnapshotRequest.ProtoReflect.Descriptor instead.
 func (*SnapshotRequest) Descriptor() ([]byte, []int) {
-	return file_moqom_relay_v1_relay_proto_rawDescGZIP(), []int{1}
+	return file_moqom_relay_v1_relay_proto_rawDescGZIP(), []int{4}
 }
 
 func (x *SnapshotRequest) GetTenant() string {
@@ -360,7 +608,7 @@ type ControlMessage struct {
 
 func (x *ControlMessage) Reset() {
 	*x = ControlMessage{}
-	mi := &file_moqom_relay_v1_relay_proto_msgTypes[2]
+	mi := &file_moqom_relay_v1_relay_proto_msgTypes[5]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -372,7 +620,7 @@ func (x *ControlMessage) String() string {
 func (*ControlMessage) ProtoMessage() {}
 
 func (x *ControlMessage) ProtoReflect() protoreflect.Message {
-	mi := &file_moqom_relay_v1_relay_proto_msgTypes[2]
+	mi := &file_moqom_relay_v1_relay_proto_msgTypes[5]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -385,7 +633,7 @@ func (x *ControlMessage) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ControlMessage.ProtoReflect.Descriptor instead.
 func (*ControlMessage) Descriptor() ([]byte, []int) {
-	return file_moqom_relay_v1_relay_proto_rawDescGZIP(), []int{2}
+	return file_moqom_relay_v1_relay_proto_rawDescGZIP(), []int{5}
 }
 
 func (x *ControlMessage) GetBody() isControlMessage_Body {
@@ -476,7 +724,7 @@ type Hello struct {
 
 func (x *Hello) Reset() {
 	*x = Hello{}
-	mi := &file_moqom_relay_v1_relay_proto_msgTypes[3]
+	mi := &file_moqom_relay_v1_relay_proto_msgTypes[6]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -488,7 +736,7 @@ func (x *Hello) String() string {
 func (*Hello) ProtoMessage() {}
 
 func (x *Hello) ProtoReflect() protoreflect.Message {
-	mi := &file_moqom_relay_v1_relay_proto_msgTypes[3]
+	mi := &file_moqom_relay_v1_relay_proto_msgTypes[6]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -501,7 +749,7 @@ func (x *Hello) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Hello.ProtoReflect.Descriptor instead.
 func (*Hello) Descriptor() ([]byte, []int) {
-	return file_moqom_relay_v1_relay_proto_rawDescGZIP(), []int{3}
+	return file_moqom_relay_v1_relay_proto_rawDescGZIP(), []int{6}
 }
 
 func (x *Hello) GetRelayId() string {
@@ -560,7 +808,7 @@ type Welcome struct {
 
 func (x *Welcome) Reset() {
 	*x = Welcome{}
-	mi := &file_moqom_relay_v1_relay_proto_msgTypes[4]
+	mi := &file_moqom_relay_v1_relay_proto_msgTypes[7]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -572,7 +820,7 @@ func (x *Welcome) String() string {
 func (*Welcome) ProtoMessage() {}
 
 func (x *Welcome) ProtoReflect() protoreflect.Message {
-	mi := &file_moqom_relay_v1_relay_proto_msgTypes[4]
+	mi := &file_moqom_relay_v1_relay_proto_msgTypes[7]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -585,7 +833,7 @@ func (x *Welcome) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Welcome.ProtoReflect.Descriptor instead.
 func (*Welcome) Descriptor() ([]byte, []int) {
-	return file_moqom_relay_v1_relay_proto_rawDescGZIP(), []int{4}
+	return file_moqom_relay_v1_relay_proto_rawDescGZIP(), []int{7}
 }
 
 func (x *Welcome) GetAt() *timestamppb.Timestamp {
@@ -650,7 +898,7 @@ type SessionState struct {
 
 func (x *SessionState) Reset() {
 	*x = SessionState{}
-	mi := &file_moqom_relay_v1_relay_proto_msgTypes[5]
+	mi := &file_moqom_relay_v1_relay_proto_msgTypes[8]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -662,7 +910,7 @@ func (x *SessionState) String() string {
 func (*SessionState) ProtoMessage() {}
 
 func (x *SessionState) ProtoReflect() protoreflect.Message {
-	mi := &file_moqom_relay_v1_relay_proto_msgTypes[5]
+	mi := &file_moqom_relay_v1_relay_proto_msgTypes[8]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -675,7 +923,7 @@ func (x *SessionState) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SessionState.ProtoReflect.Descriptor instead.
 func (*SessionState) Descriptor() ([]byte, []int) {
-	return file_moqom_relay_v1_relay_proto_rawDescGZIP(), []int{5}
+	return file_moqom_relay_v1_relay_proto_rawDescGZIP(), []int{8}
 }
 
 func (x *SessionState) GetSessionId() string {
@@ -757,7 +1005,7 @@ type SessionOpened struct {
 
 func (x *SessionOpened) Reset() {
 	*x = SessionOpened{}
-	mi := &file_moqom_relay_v1_relay_proto_msgTypes[6]
+	mi := &file_moqom_relay_v1_relay_proto_msgTypes[9]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -769,7 +1017,7 @@ func (x *SessionOpened) String() string {
 func (*SessionOpened) ProtoMessage() {}
 
 func (x *SessionOpened) ProtoReflect() protoreflect.Message {
-	mi := &file_moqom_relay_v1_relay_proto_msgTypes[6]
+	mi := &file_moqom_relay_v1_relay_proto_msgTypes[9]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -782,7 +1030,7 @@ func (x *SessionOpened) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SessionOpened.ProtoReflect.Descriptor instead.
 func (*SessionOpened) Descriptor() ([]byte, []int) {
-	return file_moqom_relay_v1_relay_proto_rawDescGZIP(), []int{6}
+	return file_moqom_relay_v1_relay_proto_rawDescGZIP(), []int{9}
 }
 
 func (x *SessionOpened) GetSession() *SessionState {
@@ -803,7 +1051,7 @@ type SessionClosed struct {
 
 func (x *SessionClosed) Reset() {
 	*x = SessionClosed{}
-	mi := &file_moqom_relay_v1_relay_proto_msgTypes[7]
+	mi := &file_moqom_relay_v1_relay_proto_msgTypes[10]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -815,7 +1063,7 @@ func (x *SessionClosed) String() string {
 func (*SessionClosed) ProtoMessage() {}
 
 func (x *SessionClosed) ProtoReflect() protoreflect.Message {
-	mi := &file_moqom_relay_v1_relay_proto_msgTypes[7]
+	mi := &file_moqom_relay_v1_relay_proto_msgTypes[10]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -828,7 +1076,7 @@ func (x *SessionClosed) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SessionClosed.ProtoReflect.Descriptor instead.
 func (*SessionClosed) Descriptor() ([]byte, []int) {
-	return file_moqom_relay_v1_relay_proto_rawDescGZIP(), []int{7}
+	return file_moqom_relay_v1_relay_proto_rawDescGZIP(), []int{10}
 }
 
 func (x *SessionClosed) GetSessionId() string {
@@ -872,7 +1120,7 @@ type SessionChanged struct {
 
 func (x *SessionChanged) Reset() {
 	*x = SessionChanged{}
-	mi := &file_moqom_relay_v1_relay_proto_msgTypes[8]
+	mi := &file_moqom_relay_v1_relay_proto_msgTypes[11]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -884,7 +1132,7 @@ func (x *SessionChanged) String() string {
 func (*SessionChanged) ProtoMessage() {}
 
 func (x *SessionChanged) ProtoReflect() protoreflect.Message {
-	mi := &file_moqom_relay_v1_relay_proto_msgTypes[8]
+	mi := &file_moqom_relay_v1_relay_proto_msgTypes[11]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -897,7 +1145,7 @@ func (x *SessionChanged) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SessionChanged.ProtoReflect.Descriptor instead.
 func (*SessionChanged) Descriptor() ([]byte, []int) {
-	return file_moqom_relay_v1_relay_proto_rawDescGZIP(), []int{8}
+	return file_moqom_relay_v1_relay_proto_rawDescGZIP(), []int{11}
 }
 
 func (x *SessionChanged) GetSessionId() string {
@@ -978,7 +1226,7 @@ type RoomSnapshot struct {
 
 func (x *RoomSnapshot) Reset() {
 	*x = RoomSnapshot{}
-	mi := &file_moqom_relay_v1_relay_proto_msgTypes[9]
+	mi := &file_moqom_relay_v1_relay_proto_msgTypes[12]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -990,7 +1238,7 @@ func (x *RoomSnapshot) String() string {
 func (*RoomSnapshot) ProtoMessage() {}
 
 func (x *RoomSnapshot) ProtoReflect() protoreflect.Message {
-	mi := &file_moqom_relay_v1_relay_proto_msgTypes[9]
+	mi := &file_moqom_relay_v1_relay_proto_msgTypes[12]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1003,7 +1251,7 @@ func (x *RoomSnapshot) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RoomSnapshot.ProtoReflect.Descriptor instead.
 func (*RoomSnapshot) Descriptor() ([]byte, []int) {
-	return file_moqom_relay_v1_relay_proto_rawDescGZIP(), []int{9}
+	return file_moqom_relay_v1_relay_proto_rawDescGZIP(), []int{12}
 }
 
 func (x *RoomSnapshot) GetTenant() string {
@@ -1072,7 +1320,7 @@ type Ban struct {
 
 func (x *Ban) Reset() {
 	*x = Ban{}
-	mi := &file_moqom_relay_v1_relay_proto_msgTypes[10]
+	mi := &file_moqom_relay_v1_relay_proto_msgTypes[13]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1084,7 +1332,7 @@ func (x *Ban) String() string {
 func (*Ban) ProtoMessage() {}
 
 func (x *Ban) ProtoReflect() protoreflect.Message {
-	mi := &file_moqom_relay_v1_relay_proto_msgTypes[10]
+	mi := &file_moqom_relay_v1_relay_proto_msgTypes[13]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1097,7 +1345,7 @@ func (x *Ban) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Ban.ProtoReflect.Descriptor instead.
 func (*Ban) Descriptor() ([]byte, []int) {
-	return file_moqom_relay_v1_relay_proto_rawDescGZIP(), []int{10}
+	return file_moqom_relay_v1_relay_proto_rawDescGZIP(), []int{13}
 }
 
 func (x *Ban) GetKey() isBan_Key {
@@ -1184,7 +1432,7 @@ type Mute struct {
 
 func (x *Mute) Reset() {
 	*x = Mute{}
-	mi := &file_moqom_relay_v1_relay_proto_msgTypes[11]
+	mi := &file_moqom_relay_v1_relay_proto_msgTypes[14]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1196,7 +1444,7 @@ func (x *Mute) String() string {
 func (*Mute) ProtoMessage() {}
 
 func (x *Mute) ProtoReflect() protoreflect.Message {
-	mi := &file_moqom_relay_v1_relay_proto_msgTypes[11]
+	mi := &file_moqom_relay_v1_relay_proto_msgTypes[14]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1209,7 +1457,7 @@ func (x *Mute) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Mute.ProtoReflect.Descriptor instead.
 func (*Mute) Descriptor() ([]byte, []int) {
-	return file_moqom_relay_v1_relay_proto_rawDescGZIP(), []int{11}
+	return file_moqom_relay_v1_relay_proto_rawDescGZIP(), []int{14}
 }
 
 func (x *Mute) GetIdentity() *adminpb.Identity {
@@ -1250,7 +1498,7 @@ type GrantOverride struct {
 
 func (x *GrantOverride) Reset() {
 	*x = GrantOverride{}
-	mi := &file_moqom_relay_v1_relay_proto_msgTypes[12]
+	mi := &file_moqom_relay_v1_relay_proto_msgTypes[15]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1262,7 +1510,7 @@ func (x *GrantOverride) String() string {
 func (*GrantOverride) ProtoMessage() {}
 
 func (x *GrantOverride) ProtoReflect() protoreflect.Message {
-	mi := &file_moqom_relay_v1_relay_proto_msgTypes[12]
+	mi := &file_moqom_relay_v1_relay_proto_msgTypes[15]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1275,7 +1523,7 @@ func (x *GrantOverride) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GrantOverride.ProtoReflect.Descriptor instead.
 func (*GrantOverride) Descriptor() ([]byte, []int) {
-	return file_moqom_relay_v1_relay_proto_rawDescGZIP(), []int{12}
+	return file_moqom_relay_v1_relay_proto_rawDescGZIP(), []int{15}
 }
 
 func (x *GrantOverride) GetIdentity() *adminpb.Identity {
@@ -1315,7 +1563,7 @@ type Directive struct {
 
 func (x *Directive) Reset() {
 	*x = Directive{}
-	mi := &file_moqom_relay_v1_relay_proto_msgTypes[13]
+	mi := &file_moqom_relay_v1_relay_proto_msgTypes[16]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1327,7 +1575,7 @@ func (x *Directive) String() string {
 func (*Directive) ProtoMessage() {}
 
 func (x *Directive) ProtoReflect() protoreflect.Message {
-	mi := &file_moqom_relay_v1_relay_proto_msgTypes[13]
+	mi := &file_moqom_relay_v1_relay_proto_msgTypes[16]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1340,7 +1588,7 @@ func (x *Directive) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Directive.ProtoReflect.Descriptor instead.
 func (*Directive) Descriptor() ([]byte, []int) {
-	return file_moqom_relay_v1_relay_proto_rawDescGZIP(), []int{13}
+	return file_moqom_relay_v1_relay_proto_rawDescGZIP(), []int{16}
 }
 
 func (x *Directive) GetDirectiveId() string {
@@ -1464,7 +1712,7 @@ type Eject struct {
 
 func (x *Eject) Reset() {
 	*x = Eject{}
-	mi := &file_moqom_relay_v1_relay_proto_msgTypes[14]
+	mi := &file_moqom_relay_v1_relay_proto_msgTypes[17]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1476,7 +1724,7 @@ func (x *Eject) String() string {
 func (*Eject) ProtoMessage() {}
 
 func (x *Eject) ProtoReflect() protoreflect.Message {
-	mi := &file_moqom_relay_v1_relay_proto_msgTypes[14]
+	mi := &file_moqom_relay_v1_relay_proto_msgTypes[17]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1489,7 +1737,7 @@ func (x *Eject) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Eject.ProtoReflect.Descriptor instead.
 func (*Eject) Descriptor() ([]byte, []int) {
-	return file_moqom_relay_v1_relay_proto_rawDescGZIP(), []int{14}
+	return file_moqom_relay_v1_relay_proto_rawDescGZIP(), []int{17}
 }
 
 func (x *Eject) GetTarget() *adminpb.ParticipantRef {
@@ -1520,7 +1768,7 @@ type ApplyMute struct {
 
 func (x *ApplyMute) Reset() {
 	*x = ApplyMute{}
-	mi := &file_moqom_relay_v1_relay_proto_msgTypes[15]
+	mi := &file_moqom_relay_v1_relay_proto_msgTypes[18]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1532,7 +1780,7 @@ func (x *ApplyMute) String() string {
 func (*ApplyMute) ProtoMessage() {}
 
 func (x *ApplyMute) ProtoReflect() protoreflect.Message {
-	mi := &file_moqom_relay_v1_relay_proto_msgTypes[15]
+	mi := &file_moqom_relay_v1_relay_proto_msgTypes[18]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1545,7 +1793,7 @@ func (x *ApplyMute) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ApplyMute.ProtoReflect.Descriptor instead.
 func (*ApplyMute) Descriptor() ([]byte, []int) {
-	return file_moqom_relay_v1_relay_proto_rawDescGZIP(), []int{15}
+	return file_moqom_relay_v1_relay_proto_rawDescGZIP(), []int{18}
 }
 
 func (x *ApplyMute) GetTarget() *adminpb.ParticipantRef {
@@ -1593,7 +1841,7 @@ type ApplyGrants struct {
 
 func (x *ApplyGrants) Reset() {
 	*x = ApplyGrants{}
-	mi := &file_moqom_relay_v1_relay_proto_msgTypes[16]
+	mi := &file_moqom_relay_v1_relay_proto_msgTypes[19]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1605,7 +1853,7 @@ func (x *ApplyGrants) String() string {
 func (*ApplyGrants) ProtoMessage() {}
 
 func (x *ApplyGrants) ProtoReflect() protoreflect.Message {
-	mi := &file_moqom_relay_v1_relay_proto_msgTypes[16]
+	mi := &file_moqom_relay_v1_relay_proto_msgTypes[19]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1618,7 +1866,7 @@ func (x *ApplyGrants) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ApplyGrants.ProtoReflect.Descriptor instead.
 func (*ApplyGrants) Descriptor() ([]byte, []int) {
-	return file_moqom_relay_v1_relay_proto_rawDescGZIP(), []int{16}
+	return file_moqom_relay_v1_relay_proto_rawDescGZIP(), []int{19}
 }
 
 func (x *ApplyGrants) GetTarget() *adminpb.ParticipantRef {
@@ -1644,7 +1892,7 @@ type CloseRoom struct {
 
 func (x *CloseRoom) Reset() {
 	*x = CloseRoom{}
-	mi := &file_moqom_relay_v1_relay_proto_msgTypes[17]
+	mi := &file_moqom_relay_v1_relay_proto_msgTypes[20]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1656,7 +1904,7 @@ func (x *CloseRoom) String() string {
 func (*CloseRoom) ProtoMessage() {}
 
 func (x *CloseRoom) ProtoReflect() protoreflect.Message {
-	mi := &file_moqom_relay_v1_relay_proto_msgTypes[17]
+	mi := &file_moqom_relay_v1_relay_proto_msgTypes[20]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1669,7 +1917,7 @@ func (x *CloseRoom) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CloseRoom.ProtoReflect.Descriptor instead.
 func (*CloseRoom) Descriptor() ([]byte, []int) {
-	return file_moqom_relay_v1_relay_proto_rawDescGZIP(), []int{17}
+	return file_moqom_relay_v1_relay_proto_rawDescGZIP(), []int{20}
 }
 
 func (x *CloseRoom) GetCode() adminpb.ModerationCode {
@@ -1690,7 +1938,7 @@ type UpdateBan struct {
 
 func (x *UpdateBan) Reset() {
 	*x = UpdateBan{}
-	mi := &file_moqom_relay_v1_relay_proto_msgTypes[18]
+	mi := &file_moqom_relay_v1_relay_proto_msgTypes[21]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1702,7 +1950,7 @@ func (x *UpdateBan) String() string {
 func (*UpdateBan) ProtoMessage() {}
 
 func (x *UpdateBan) ProtoReflect() protoreflect.Message {
-	mi := &file_moqom_relay_v1_relay_proto_msgTypes[18]
+	mi := &file_moqom_relay_v1_relay_proto_msgTypes[21]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1715,7 +1963,7 @@ func (x *UpdateBan) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use UpdateBan.ProtoReflect.Descriptor instead.
 func (*UpdateBan) Descriptor() ([]byte, []int) {
-	return file_moqom_relay_v1_relay_proto_rawDescGZIP(), []int{18}
+	return file_moqom_relay_v1_relay_proto_rawDescGZIP(), []int{21}
 }
 
 func (x *UpdateBan) GetBan() *Ban {
@@ -1747,7 +1995,7 @@ type DirectiveResult struct {
 
 func (x *DirectiveResult) Reset() {
 	*x = DirectiveResult{}
-	mi := &file_moqom_relay_v1_relay_proto_msgTypes[19]
+	mi := &file_moqom_relay_v1_relay_proto_msgTypes[22]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1759,7 +2007,7 @@ func (x *DirectiveResult) String() string {
 func (*DirectiveResult) ProtoMessage() {}
 
 func (x *DirectiveResult) ProtoReflect() protoreflect.Message {
-	mi := &file_moqom_relay_v1_relay_proto_msgTypes[19]
+	mi := &file_moqom_relay_v1_relay_proto_msgTypes[22]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1772,7 +2020,7 @@ func (x *DirectiveResult) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DirectiveResult.ProtoReflect.Descriptor instead.
 func (*DirectiveResult) Descriptor() ([]byte, []int) {
-	return file_moqom_relay_v1_relay_proto_rawDescGZIP(), []int{19}
+	return file_moqom_relay_v1_relay_proto_rawDescGZIP(), []int{22}
 }
 
 func (x *DirectiveResult) GetDirectiveId() string {
@@ -1808,7 +2056,7 @@ type Heartbeat struct {
 
 func (x *Heartbeat) Reset() {
 	*x = Heartbeat{}
-	mi := &file_moqom_relay_v1_relay_proto_msgTypes[20]
+	mi := &file_moqom_relay_v1_relay_proto_msgTypes[23]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1820,7 +2068,7 @@ func (x *Heartbeat) String() string {
 func (*Heartbeat) ProtoMessage() {}
 
 func (x *Heartbeat) ProtoReflect() protoreflect.Message {
-	mi := &file_moqom_relay_v1_relay_proto_msgTypes[20]
+	mi := &file_moqom_relay_v1_relay_proto_msgTypes[23]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1833,7 +2081,7 @@ func (x *Heartbeat) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Heartbeat.ProtoReflect.Descriptor instead.
 func (*Heartbeat) Descriptor() ([]byte, []int) {
-	return file_moqom_relay_v1_relay_proto_rawDescGZIP(), []int{20}
+	return file_moqom_relay_v1_relay_proto_rawDescGZIP(), []int{23}
 }
 
 func (x *Heartbeat) GetAt() *timestamppb.Timestamp {
@@ -1872,7 +2120,7 @@ type VerificationKeys struct {
 
 func (x *VerificationKeys) Reset() {
 	*x = VerificationKeys{}
-	mi := &file_moqom_relay_v1_relay_proto_msgTypes[21]
+	mi := &file_moqom_relay_v1_relay_proto_msgTypes[24]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1884,7 +2132,7 @@ func (x *VerificationKeys) String() string {
 func (*VerificationKeys) ProtoMessage() {}
 
 func (x *VerificationKeys) ProtoReflect() protoreflect.Message {
-	mi := &file_moqom_relay_v1_relay_proto_msgTypes[21]
+	mi := &file_moqom_relay_v1_relay_proto_msgTypes[24]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1897,7 +2145,7 @@ func (x *VerificationKeys) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use VerificationKeys.ProtoReflect.Descriptor instead.
 func (*VerificationKeys) Descriptor() ([]byte, []int) {
-	return file_moqom_relay_v1_relay_proto_rawDescGZIP(), []int{21}
+	return file_moqom_relay_v1_relay_proto_rawDescGZIP(), []int{24}
 }
 
 func (x *VerificationKeys) GetKeys() []*adminpb.VerificationKey {
@@ -1911,7 +2159,7 @@ var File_moqom_relay_v1_relay_proto protoreflect.FileDescriptor
 
 const file_moqom_relay_v1_relay_proto_rawDesc = "" +
 	"\n" +
-	"\x1amoqom/relay/v1/relay.proto\x12\x0emoqom.relay.v1\x1a\x1egoogle/protobuf/duration.proto\x1a\x1fgoogle/protobuf/timestamp.proto\x1a\x1bmoqom/admin/v1/common.proto\x1a\x1bmoqom/admin/v1/tokens.proto\"\xf7\x03\n" +
+	"\x1amoqom/relay/v1/relay.proto\x12\x0emoqom.relay.v1\x1a\x1egoogle/protobuf/duration.proto\x1a\x1fgoogle/protobuf/timestamp.proto\x1a\x1bmoqom/admin/v1/common.proto\x1a\x1bmoqom/admin/v1/tokens.proto\"\xa9\x04\n" +
 	"\fRelayMessage\x12-\n" +
 	"\x05hello\x18\x01 \x01(\v2\x15.moqom.relay.v1.HelloH\x00R\x05hello\x12F\n" +
 	"\x0esession_opened\x18\x02 \x01(\v2\x1d.moqom.relay.v1.SessionOpenedH\x00R\rsessionOpened\x12F\n" +
@@ -1919,8 +2167,27 @@ const file_moqom_relay_v1_relay_proto_rawDesc = "" +
 	"\x0fsession_changed\x18\x04 \x01(\v2\x1e.moqom.relay.v1.SessionChangedH\x00R\x0esessionChanged\x12L\n" +
 	"\x10directive_result\x18\x05 \x01(\v2\x1f.moqom.relay.v1.DirectiveResultH\x00R\x0fdirectiveResult\x129\n" +
 	"\theartbeat\x18\x06 \x01(\v2\x19.moqom.relay.v1.HeartbeatH\x00R\theartbeat\x12L\n" +
-	"\x10snapshot_request\x18\a \x01(\v2\x1f.moqom.relay.v1.SnapshotRequestH\x00R\x0fsnapshotRequestB\x06\n" +
-	"\x04body\"=\n" +
+	"\x10snapshot_request\x18\a \x01(\v2\x1f.moqom.relay.v1.SnapshotRequestH\x00R\x0fsnapshotRequest\x120\n" +
+	"\x06census\x18\b \x01(\v2\x16.moqom.relay.v1.CensusH\x00R\x06censusB\x06\n" +
+	"\x04body\"l\n" +
+	"\x06Census\x12*\n" +
+	"\x02at\x18\x01 \x01(\v2\x1a.google.protobuf.TimestampR\x02at\x126\n" +
+	"\atenants\x18\x02 \x03(\v2\x1c.moqom.relay.v1.TenantCensusR\atenants\"\xb3\x01\n" +
+	"\fTenantCensus\x12\x16\n" +
+	"\x06tenant\x18\x01 \x01(\tR\x06tenant\x12\x1e\n" +
+	"\n" +
+	"publishers\x18\x02 \x01(\rR\n" +
+	"publishers\x12\x18\n" +
+	"\aviewers\x18\x03 \x01(\rR\aviewers\x123\n" +
+	"\x06places\x18\x04 \x03(\v2\x1b.moqom.relay.v1.CensusPlaceR\x06places\x12\x1c\n" +
+	"\tunlocated\x18\x05 \x01(\rR\tunlocated\"\xa9\x01\n" +
+	"\vCensusPlace\x12\x18\n" +
+	"\acountry\x18\x01 \x01(\tR\acountry\x12\x16\n" +
+	"\x06region\x18\x02 \x01(\tR\x06region\x12\x12\n" +
+	"\x04city\x18\x03 \x01(\tR\x04city\x12\x1a\n" +
+	"\blatitude\x18\x04 \x01(\x11R\blatitude\x12\x1c\n" +
+	"\tlongitude\x18\x05 \x01(\x11R\tlongitude\x12\x1a\n" +
+	"\bsessions\x18\x06 \x01(\rR\bsessions\"=\n" +
 	"\x0fSnapshotRequest\x12\x16\n" +
 	"\x06tenant\x18\x01 \x01(\tR\x06tenant\x12\x12\n" +
 	"\x04room\x18\x02 \x01(\tR\x04room\"\x9e\x02\n" +
@@ -2062,97 +2329,104 @@ func file_moqom_relay_v1_relay_proto_rawDescGZIP() []byte {
 }
 
 var file_moqom_relay_v1_relay_proto_enumTypes = make([]protoimpl.EnumInfo, 1)
-var file_moqom_relay_v1_relay_proto_msgTypes = make([]protoimpl.MessageInfo, 22)
+var file_moqom_relay_v1_relay_proto_msgTypes = make([]protoimpl.MessageInfo, 25)
 var file_moqom_relay_v1_relay_proto_goTypes = []any{
 	(SessionClosed_Cause)(0),        // 0: moqom.relay.v1.SessionClosed.Cause
 	(*RelayMessage)(nil),            // 1: moqom.relay.v1.RelayMessage
-	(*SnapshotRequest)(nil),         // 2: moqom.relay.v1.SnapshotRequest
-	(*ControlMessage)(nil),          // 3: moqom.relay.v1.ControlMessage
-	(*Hello)(nil),                   // 4: moqom.relay.v1.Hello
-	(*Welcome)(nil),                 // 5: moqom.relay.v1.Welcome
-	(*SessionState)(nil),            // 6: moqom.relay.v1.SessionState
-	(*SessionOpened)(nil),           // 7: moqom.relay.v1.SessionOpened
-	(*SessionClosed)(nil),           // 8: moqom.relay.v1.SessionClosed
-	(*SessionChanged)(nil),          // 9: moqom.relay.v1.SessionChanged
-	(*RoomSnapshot)(nil),            // 10: moqom.relay.v1.RoomSnapshot
-	(*Ban)(nil),                     // 11: moqom.relay.v1.Ban
-	(*Mute)(nil),                    // 12: moqom.relay.v1.Mute
-	(*GrantOverride)(nil),           // 13: moqom.relay.v1.GrantOverride
-	(*Directive)(nil),               // 14: moqom.relay.v1.Directive
-	(*Eject)(nil),                   // 15: moqom.relay.v1.Eject
-	(*ApplyMute)(nil),               // 16: moqom.relay.v1.ApplyMute
-	(*ApplyGrants)(nil),             // 17: moqom.relay.v1.ApplyGrants
-	(*CloseRoom)(nil),               // 18: moqom.relay.v1.CloseRoom
-	(*UpdateBan)(nil),               // 19: moqom.relay.v1.UpdateBan
-	(*DirectiveResult)(nil),         // 20: moqom.relay.v1.DirectiveResult
-	(*Heartbeat)(nil),               // 21: moqom.relay.v1.Heartbeat
-	(*VerificationKeys)(nil),        // 22: moqom.relay.v1.VerificationKeys
-	(*timestamppb.Timestamp)(nil),   // 23: google.protobuf.Timestamp
-	(*durationpb.Duration)(nil),     // 24: google.protobuf.Duration
-	(*adminpb.Identity)(nil),        // 25: moqom.admin.v1.Identity
-	(*adminpb.Grants)(nil),          // 26: moqom.admin.v1.Grants
-	(adminpb.ModerationCode)(0),     // 27: moqom.admin.v1.ModerationCode
-	(adminpb.MediaKind)(0),          // 28: moqom.admin.v1.MediaKind
-	(*adminpb.ParticipantRef)(nil),  // 29: moqom.admin.v1.ParticipantRef
-	(*adminpb.VerificationKey)(nil), // 30: moqom.admin.v1.VerificationKey
+	(*Census)(nil),                  // 2: moqom.relay.v1.Census
+	(*TenantCensus)(nil),            // 3: moqom.relay.v1.TenantCensus
+	(*CensusPlace)(nil),             // 4: moqom.relay.v1.CensusPlace
+	(*SnapshotRequest)(nil),         // 5: moqom.relay.v1.SnapshotRequest
+	(*ControlMessage)(nil),          // 6: moqom.relay.v1.ControlMessage
+	(*Hello)(nil),                   // 7: moqom.relay.v1.Hello
+	(*Welcome)(nil),                 // 8: moqom.relay.v1.Welcome
+	(*SessionState)(nil),            // 9: moqom.relay.v1.SessionState
+	(*SessionOpened)(nil),           // 10: moqom.relay.v1.SessionOpened
+	(*SessionClosed)(nil),           // 11: moqom.relay.v1.SessionClosed
+	(*SessionChanged)(nil),          // 12: moqom.relay.v1.SessionChanged
+	(*RoomSnapshot)(nil),            // 13: moqom.relay.v1.RoomSnapshot
+	(*Ban)(nil),                     // 14: moqom.relay.v1.Ban
+	(*Mute)(nil),                    // 15: moqom.relay.v1.Mute
+	(*GrantOverride)(nil),           // 16: moqom.relay.v1.GrantOverride
+	(*Directive)(nil),               // 17: moqom.relay.v1.Directive
+	(*Eject)(nil),                   // 18: moqom.relay.v1.Eject
+	(*ApplyMute)(nil),               // 19: moqom.relay.v1.ApplyMute
+	(*ApplyGrants)(nil),             // 20: moqom.relay.v1.ApplyGrants
+	(*CloseRoom)(nil),               // 21: moqom.relay.v1.CloseRoom
+	(*UpdateBan)(nil),               // 22: moqom.relay.v1.UpdateBan
+	(*DirectiveResult)(nil),         // 23: moqom.relay.v1.DirectiveResult
+	(*Heartbeat)(nil),               // 24: moqom.relay.v1.Heartbeat
+	(*VerificationKeys)(nil),        // 25: moqom.relay.v1.VerificationKeys
+	(*timestamppb.Timestamp)(nil),   // 26: google.protobuf.Timestamp
+	(*durationpb.Duration)(nil),     // 27: google.protobuf.Duration
+	(*adminpb.Identity)(nil),        // 28: moqom.admin.v1.Identity
+	(*adminpb.Grants)(nil),          // 29: moqom.admin.v1.Grants
+	(adminpb.ModerationCode)(0),     // 30: moqom.admin.v1.ModerationCode
+	(adminpb.MediaKind)(0),          // 31: moqom.admin.v1.MediaKind
+	(*adminpb.ParticipantRef)(nil),  // 32: moqom.admin.v1.ParticipantRef
+	(*adminpb.VerificationKey)(nil), // 33: moqom.admin.v1.VerificationKey
 }
 var file_moqom_relay_v1_relay_proto_depIdxs = []int32{
-	4,  // 0: moqom.relay.v1.RelayMessage.hello:type_name -> moqom.relay.v1.Hello
-	7,  // 1: moqom.relay.v1.RelayMessage.session_opened:type_name -> moqom.relay.v1.SessionOpened
-	8,  // 2: moqom.relay.v1.RelayMessage.session_closed:type_name -> moqom.relay.v1.SessionClosed
-	9,  // 3: moqom.relay.v1.RelayMessage.session_changed:type_name -> moqom.relay.v1.SessionChanged
-	20, // 4: moqom.relay.v1.RelayMessage.directive_result:type_name -> moqom.relay.v1.DirectiveResult
-	21, // 5: moqom.relay.v1.RelayMessage.heartbeat:type_name -> moqom.relay.v1.Heartbeat
-	2,  // 6: moqom.relay.v1.RelayMessage.snapshot_request:type_name -> moqom.relay.v1.SnapshotRequest
-	5,  // 7: moqom.relay.v1.ControlMessage.welcome:type_name -> moqom.relay.v1.Welcome
-	10, // 8: moqom.relay.v1.ControlMessage.room_snapshot:type_name -> moqom.relay.v1.RoomSnapshot
-	14, // 9: moqom.relay.v1.ControlMessage.directive:type_name -> moqom.relay.v1.Directive
-	22, // 10: moqom.relay.v1.ControlMessage.verification_keys:type_name -> moqom.relay.v1.VerificationKeys
-	6,  // 11: moqom.relay.v1.Hello.existing:type_name -> moqom.relay.v1.SessionState
-	23, // 12: moqom.relay.v1.Welcome.at:type_name -> google.protobuf.Timestamp
-	24, // 13: moqom.relay.v1.Welcome.grace:type_name -> google.protobuf.Duration
-	24, // 14: moqom.relay.v1.Welcome.snapshot_interval:type_name -> google.protobuf.Duration
-	25, // 15: moqom.relay.v1.SessionState.identity:type_name -> moqom.admin.v1.Identity
-	26, // 16: moqom.relay.v1.SessionState.grants:type_name -> moqom.admin.v1.Grants
-	23, // 17: moqom.relay.v1.SessionState.opened_at:type_name -> google.protobuf.Timestamp
-	23, // 18: moqom.relay.v1.SessionState.token_expires_at:type_name -> google.protobuf.Timestamp
-	6,  // 19: moqom.relay.v1.SessionOpened.session:type_name -> moqom.relay.v1.SessionState
-	0,  // 20: moqom.relay.v1.SessionClosed.cause:type_name -> moqom.relay.v1.SessionClosed.Cause
-	23, // 21: moqom.relay.v1.SessionClosed.at:type_name -> google.protobuf.Timestamp
-	11, // 22: moqom.relay.v1.RoomSnapshot.bans:type_name -> moqom.relay.v1.Ban
-	12, // 23: moqom.relay.v1.RoomSnapshot.mutes:type_name -> moqom.relay.v1.Mute
-	13, // 24: moqom.relay.v1.RoomSnapshot.grant_overrides:type_name -> moqom.relay.v1.GrantOverride
-	25, // 25: moqom.relay.v1.Ban.device:type_name -> moqom.admin.v1.Identity
-	23, // 26: moqom.relay.v1.Ban.expires_at:type_name -> google.protobuf.Timestamp
-	27, // 27: moqom.relay.v1.Ban.code:type_name -> moqom.admin.v1.ModerationCode
-	25, // 28: moqom.relay.v1.Mute.identity:type_name -> moqom.admin.v1.Identity
-	28, // 29: moqom.relay.v1.Mute.media:type_name -> moqom.admin.v1.MediaKind
-	23, // 30: moqom.relay.v1.Mute.expires_at:type_name -> google.protobuf.Timestamp
-	25, // 31: moqom.relay.v1.GrantOverride.identity:type_name -> moqom.admin.v1.Identity
-	26, // 32: moqom.relay.v1.GrantOverride.grants:type_name -> moqom.admin.v1.Grants
-	15, // 33: moqom.relay.v1.Directive.eject:type_name -> moqom.relay.v1.Eject
-	16, // 34: moqom.relay.v1.Directive.apply_mute:type_name -> moqom.relay.v1.ApplyMute
-	17, // 35: moqom.relay.v1.Directive.apply_grants:type_name -> moqom.relay.v1.ApplyGrants
-	18, // 36: moqom.relay.v1.Directive.close_room:type_name -> moqom.relay.v1.CloseRoom
-	19, // 37: moqom.relay.v1.Directive.update_ban:type_name -> moqom.relay.v1.UpdateBan
-	29, // 38: moqom.relay.v1.Eject.target:type_name -> moqom.admin.v1.ParticipantRef
-	27, // 39: moqom.relay.v1.Eject.code:type_name -> moqom.admin.v1.ModerationCode
-	29, // 40: moqom.relay.v1.ApplyMute.target:type_name -> moqom.admin.v1.ParticipantRef
-	28, // 41: moqom.relay.v1.ApplyMute.media:type_name -> moqom.admin.v1.MediaKind
-	23, // 42: moqom.relay.v1.ApplyMute.expires_at:type_name -> google.protobuf.Timestamp
-	29, // 43: moqom.relay.v1.ApplyGrants.target:type_name -> moqom.admin.v1.ParticipantRef
-	26, // 44: moqom.relay.v1.ApplyGrants.grants:type_name -> moqom.admin.v1.Grants
-	27, // 45: moqom.relay.v1.CloseRoom.code:type_name -> moqom.admin.v1.ModerationCode
-	11, // 46: moqom.relay.v1.UpdateBan.ban:type_name -> moqom.relay.v1.Ban
-	23, // 47: moqom.relay.v1.Heartbeat.at:type_name -> google.protobuf.Timestamp
-	30, // 48: moqom.relay.v1.VerificationKeys.keys:type_name -> moqom.admin.v1.VerificationKey
-	1,  // 49: moqom.relay.v1.RelayLink.Attach:input_type -> moqom.relay.v1.RelayMessage
-	3,  // 50: moqom.relay.v1.RelayLink.Attach:output_type -> moqom.relay.v1.ControlMessage
-	50, // [50:51] is the sub-list for method output_type
-	49, // [49:50] is the sub-list for method input_type
-	49, // [49:49] is the sub-list for extension type_name
-	49, // [49:49] is the sub-list for extension extendee
-	0,  // [0:49] is the sub-list for field type_name
+	7,  // 0: moqom.relay.v1.RelayMessage.hello:type_name -> moqom.relay.v1.Hello
+	10, // 1: moqom.relay.v1.RelayMessage.session_opened:type_name -> moqom.relay.v1.SessionOpened
+	11, // 2: moqom.relay.v1.RelayMessage.session_closed:type_name -> moqom.relay.v1.SessionClosed
+	12, // 3: moqom.relay.v1.RelayMessage.session_changed:type_name -> moqom.relay.v1.SessionChanged
+	23, // 4: moqom.relay.v1.RelayMessage.directive_result:type_name -> moqom.relay.v1.DirectiveResult
+	24, // 5: moqom.relay.v1.RelayMessage.heartbeat:type_name -> moqom.relay.v1.Heartbeat
+	5,  // 6: moqom.relay.v1.RelayMessage.snapshot_request:type_name -> moqom.relay.v1.SnapshotRequest
+	2,  // 7: moqom.relay.v1.RelayMessage.census:type_name -> moqom.relay.v1.Census
+	26, // 8: moqom.relay.v1.Census.at:type_name -> google.protobuf.Timestamp
+	3,  // 9: moqom.relay.v1.Census.tenants:type_name -> moqom.relay.v1.TenantCensus
+	4,  // 10: moqom.relay.v1.TenantCensus.places:type_name -> moqom.relay.v1.CensusPlace
+	8,  // 11: moqom.relay.v1.ControlMessage.welcome:type_name -> moqom.relay.v1.Welcome
+	13, // 12: moqom.relay.v1.ControlMessage.room_snapshot:type_name -> moqom.relay.v1.RoomSnapshot
+	17, // 13: moqom.relay.v1.ControlMessage.directive:type_name -> moqom.relay.v1.Directive
+	25, // 14: moqom.relay.v1.ControlMessage.verification_keys:type_name -> moqom.relay.v1.VerificationKeys
+	9,  // 15: moqom.relay.v1.Hello.existing:type_name -> moqom.relay.v1.SessionState
+	26, // 16: moqom.relay.v1.Welcome.at:type_name -> google.protobuf.Timestamp
+	27, // 17: moqom.relay.v1.Welcome.grace:type_name -> google.protobuf.Duration
+	27, // 18: moqom.relay.v1.Welcome.snapshot_interval:type_name -> google.protobuf.Duration
+	28, // 19: moqom.relay.v1.SessionState.identity:type_name -> moqom.admin.v1.Identity
+	29, // 20: moqom.relay.v1.SessionState.grants:type_name -> moqom.admin.v1.Grants
+	26, // 21: moqom.relay.v1.SessionState.opened_at:type_name -> google.protobuf.Timestamp
+	26, // 22: moqom.relay.v1.SessionState.token_expires_at:type_name -> google.protobuf.Timestamp
+	9,  // 23: moqom.relay.v1.SessionOpened.session:type_name -> moqom.relay.v1.SessionState
+	0,  // 24: moqom.relay.v1.SessionClosed.cause:type_name -> moqom.relay.v1.SessionClosed.Cause
+	26, // 25: moqom.relay.v1.SessionClosed.at:type_name -> google.protobuf.Timestamp
+	14, // 26: moqom.relay.v1.RoomSnapshot.bans:type_name -> moqom.relay.v1.Ban
+	15, // 27: moqom.relay.v1.RoomSnapshot.mutes:type_name -> moqom.relay.v1.Mute
+	16, // 28: moqom.relay.v1.RoomSnapshot.grant_overrides:type_name -> moqom.relay.v1.GrantOverride
+	28, // 29: moqom.relay.v1.Ban.device:type_name -> moqom.admin.v1.Identity
+	26, // 30: moqom.relay.v1.Ban.expires_at:type_name -> google.protobuf.Timestamp
+	30, // 31: moqom.relay.v1.Ban.code:type_name -> moqom.admin.v1.ModerationCode
+	28, // 32: moqom.relay.v1.Mute.identity:type_name -> moqom.admin.v1.Identity
+	31, // 33: moqom.relay.v1.Mute.media:type_name -> moqom.admin.v1.MediaKind
+	26, // 34: moqom.relay.v1.Mute.expires_at:type_name -> google.protobuf.Timestamp
+	28, // 35: moqom.relay.v1.GrantOverride.identity:type_name -> moqom.admin.v1.Identity
+	29, // 36: moqom.relay.v1.GrantOverride.grants:type_name -> moqom.admin.v1.Grants
+	18, // 37: moqom.relay.v1.Directive.eject:type_name -> moqom.relay.v1.Eject
+	19, // 38: moqom.relay.v1.Directive.apply_mute:type_name -> moqom.relay.v1.ApplyMute
+	20, // 39: moqom.relay.v1.Directive.apply_grants:type_name -> moqom.relay.v1.ApplyGrants
+	21, // 40: moqom.relay.v1.Directive.close_room:type_name -> moqom.relay.v1.CloseRoom
+	22, // 41: moqom.relay.v1.Directive.update_ban:type_name -> moqom.relay.v1.UpdateBan
+	32, // 42: moqom.relay.v1.Eject.target:type_name -> moqom.admin.v1.ParticipantRef
+	30, // 43: moqom.relay.v1.Eject.code:type_name -> moqom.admin.v1.ModerationCode
+	32, // 44: moqom.relay.v1.ApplyMute.target:type_name -> moqom.admin.v1.ParticipantRef
+	31, // 45: moqom.relay.v1.ApplyMute.media:type_name -> moqom.admin.v1.MediaKind
+	26, // 46: moqom.relay.v1.ApplyMute.expires_at:type_name -> google.protobuf.Timestamp
+	32, // 47: moqom.relay.v1.ApplyGrants.target:type_name -> moqom.admin.v1.ParticipantRef
+	29, // 48: moqom.relay.v1.ApplyGrants.grants:type_name -> moqom.admin.v1.Grants
+	30, // 49: moqom.relay.v1.CloseRoom.code:type_name -> moqom.admin.v1.ModerationCode
+	14, // 50: moqom.relay.v1.UpdateBan.ban:type_name -> moqom.relay.v1.Ban
+	26, // 51: moqom.relay.v1.Heartbeat.at:type_name -> google.protobuf.Timestamp
+	33, // 52: moqom.relay.v1.VerificationKeys.keys:type_name -> moqom.admin.v1.VerificationKey
+	1,  // 53: moqom.relay.v1.RelayLink.Attach:input_type -> moqom.relay.v1.RelayMessage
+	6,  // 54: moqom.relay.v1.RelayLink.Attach:output_type -> moqom.relay.v1.ControlMessage
+	54, // [54:55] is the sub-list for method output_type
+	53, // [53:54] is the sub-list for method input_type
+	53, // [53:53] is the sub-list for extension type_name
+	53, // [53:53] is the sub-list for extension extendee
+	0,  // [0:53] is the sub-list for field type_name
 }
 
 func init() { file_moqom_relay_v1_relay_proto_init() }
@@ -2168,19 +2442,20 @@ func file_moqom_relay_v1_relay_proto_init() {
 		(*RelayMessage_DirectiveResult)(nil),
 		(*RelayMessage_Heartbeat)(nil),
 		(*RelayMessage_SnapshotRequest)(nil),
+		(*RelayMessage_Census)(nil),
 	}
-	file_moqom_relay_v1_relay_proto_msgTypes[2].OneofWrappers = []any{
+	file_moqom_relay_v1_relay_proto_msgTypes[5].OneofWrappers = []any{
 		(*ControlMessage_Welcome)(nil),
 		(*ControlMessage_RoomSnapshot)(nil),
 		(*ControlMessage_Directive)(nil),
 		(*ControlMessage_VerificationKeys)(nil),
 	}
-	file_moqom_relay_v1_relay_proto_msgTypes[10].OneofWrappers = []any{
+	file_moqom_relay_v1_relay_proto_msgTypes[13].OneofWrappers = []any{
 		(*Ban_Username)(nil),
 		(*Ban_Device)(nil),
 		(*Ban_IpPrefix)(nil),
 	}
-	file_moqom_relay_v1_relay_proto_msgTypes[13].OneofWrappers = []any{
+	file_moqom_relay_v1_relay_proto_msgTypes[16].OneofWrappers = []any{
 		(*Directive_Eject)(nil),
 		(*Directive_ApplyMute)(nil),
 		(*Directive_ApplyGrants)(nil),
@@ -2193,7 +2468,7 @@ func file_moqom_relay_v1_relay_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_moqom_relay_v1_relay_proto_rawDesc), len(file_moqom_relay_v1_relay_proto_rawDesc)),
 			NumEnums:      1,
-			NumMessages:   22,
+			NumMessages:   25,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

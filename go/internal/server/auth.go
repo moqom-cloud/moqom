@@ -45,6 +45,19 @@ type ServiceAccount struct {
 	// backend. Relays reach a different service and must not be able to reach the
 	// admin API, so the two are not interchangeable.
 	IsRelay bool
+
+	// IsRecorder marks an account used by hosted recorder workers. Like a
+	// relay's, it reaches its own service and nothing on the admin API.
+	IsRecorder bool
+
+	// RelayID, if set, is the only relay ID this account may attach as,
+	// whatever its Hello says. Set for a customer's relay, so one enrolment
+	// cannot take over another relay's entry on the link.
+	RelayID string
+
+	// Enrollment is the customer relay enrolment this account came from, if
+	// any; a stream it holds is cut when the enrolment is revoked.
+	Enrollment string
 }
 
 // Accounts resolves a credential to an account.
@@ -60,6 +73,15 @@ type Accounts interface {
 // One error for "no such key" and "wrong key" together, deliberately: telling
 // them apart tells an attacker which half of a guess was right.
 var ErrNoSuchAccount = errors.New("no such service account")
+
+// ErrNotPermitted and ErrRateLimited are a credential that was proven and then
+// refused: a scoped key outside its scope or its allowed addresses, or one over
+// its rate. The caller holds the credential, so saying why helps only them,
+// and a distinct code stops a client retrying a door that will stay shut.
+var (
+	ErrNotPermitted = errors.New("credential not permitted for this call")
+	ErrRateLimited  = errors.New("credential over its rate limit")
+)
 
 // StaticAccounts is an Accounts backed by a fixed map, keyed by the hash of the
 // credential.
@@ -101,6 +123,26 @@ func (a StaticAccounts) Lookup(_ context.Context, credential string) (ServiceAcc
 		return ServiceAccount{}, ErrNoSuchAccount
 	}
 	return found, nil
+}
+
+// AnyAccounts tries each source in turn: the operator's static accounts and
+// customers' API keys, behind one interceptor.
+type AnyAccounts []Accounts
+
+func (a AnyAccounts) Lookup(ctx context.Context, credential string) (ServiceAccount, error) {
+	for _, source := range a {
+		if source == nil {
+			continue
+		}
+		account, err := source.Lookup(ctx, credential)
+		if err == nil {
+			return account, nil
+		}
+		if errors.Is(err, ErrNotPermitted) || errors.Is(err, ErrRateLimited) {
+			return ServiceAccount{}, err
+		}
+	}
+	return ServiceAccount{}, ErrNoSuchAccount
 }
 
 type principalKey struct{}
@@ -175,6 +217,12 @@ func (a Authenticator) authenticate(ctx context.Context) (context.Context, error
 	}
 
 	account, err := a.Accounts.Lookup(ctx, credential)
+	switch {
+	case errors.Is(err, ErrNotPermitted):
+		return nil, status.Error(codes.PermissionDenied, err.Error())
+	case errors.Is(err, ErrRateLimited):
+		return nil, status.Error(codes.ResourceExhausted, err.Error())
+	}
 	if err != nil {
 		// Deliberately uninformative. Which credential was wrong, and why, is not
 		// something an unauthenticated caller gets to learn.
@@ -196,6 +244,9 @@ func requireTenant(ctx context.Context, tenant string) (ServiceAccount, error) {
 	}
 	if account.IsRelay {
 		return ServiceAccount{}, status.Error(codes.PermissionDenied, "relay credentials cannot use the admin API")
+	}
+	if account.IsRecorder {
+		return ServiceAccount{}, status.Error(codes.PermissionDenied, "recorder credentials cannot use the admin API")
 	}
 	if tenant == "" {
 		return ServiceAccount{}, status.Error(codes.InvalidArgument, "tenant is required")

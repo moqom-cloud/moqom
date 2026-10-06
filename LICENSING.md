@@ -44,8 +44,19 @@ over MIT specifically for its patent provisions, which MIT lacks entirely:
 
 Neither provision stops anyone from *filing* a patent — no copyright license
 can. What blocks that is prior art, which we get from publishing at all.
-Publishing design documents alongside the code extends the same protection to
-ideas we have not yet shipped, and costs nothing.
+
+Publishing is not free once we hold patent applications of our own, which
+Elliott Wave LLC now does. Two consequences, both in
+[`docs/PATENT-ASSESSMENT.md`](docs/PATENT-ASSESSMENT.md):
+
+- **Section 3 licenses our own patents too.** Every claim necessarily infringed
+  by Apache-2.0 code we publish is licensed royalty-free to everyone who uses
+  that code. A patent reading on an SDK is defensive; one reading on the relay
+  or control plane is not.
+- **Publication before filing forfeits most of the world.** The US allows a
+  one-year grace period after our own disclosure; Europe, China and most
+  others do not. Nothing describing an invention goes public — code, design
+  document, or IETF draft — until an application covering it is on file.
 
 ## BUSL-1.1 on the relay
 
@@ -122,10 +133,14 @@ A CLA, not a DCO. Both relicensing and acquisition require the ability to change
 terms, and retrofitting a CLA means tracking down every past contributor — a
 cost that grows with every merged pull request.
 
-[`.github/CLA.md`](.github/CLA.md) is adapted from the Apache ICLA v2.2, with
-one substantive addition: Section 4 states plainly that contributions may be
-relicensed and offered commercially. Foundation CLAs do not need that clause;
-commercial ones do, and burying it would be a bad way to treat contributors.
+Elliott Wave LLC owns all intellectual property in MOQOM, including the
+open-source components; the open-source licences grant use, not ownership. To
+keep ownership in one place, [`.github/CLA.md`](.github/CLA.md) is a copyright
+assignment: contributors assign the copyright in their contributions to
+Elliott Wave LLC and receive a perpetual licence back to use their own work for
+any purpose. Section 5 states plainly that contributions may be relicensed,
+sold and offered commercially — burying that would be a bad way to treat
+contributors. We have contacted legal counsel to review the agreement.
 
 Enforcement runs through `contributor-assistant/github-action` on every pull
 request.
@@ -134,10 +149,15 @@ request.
 
 Blocking public distribution:
 
-- [ ] **Legal entity.** `LICENSES/BUSL-1.1.txt` and `.github/CLA.md` both carry
-      a `[LEGAL ENTITY]` placeholder. A BSL naming a nonexistent licensor is
-      defective, so this blocks any public release.
-- [ ] **Counsel review** of the Additional Use Grant and the CLA. The Additional
+- [x] **Legal entity.** Elliott Wave LLC is the licensor in both
+      `LICENSES/BUSL-1.1.txt` files and the Maintainer in `.github/CLA.md`.
+- [ ] **IP assignment to the LLC.** Copyright and inventions vest in the person
+      who wrote them unless assigned in writing. A signed assignment from
+      Elliott to Elliott Wave LLC, covering work since the first commit, is
+      what makes the copyright lines and the patent applications the LLC's.
+- [ ] **Counsel review** (counsel contacted) of the Additional Use Grant and the
+      copyright assignment CLA, including whether a PR-comment signature
+      satisfies 17 U.S.C. § 204(a) for a transfer of copyright. The Additional
       Use Grant is the single most commercially consequential sentence in the
       repository — it defines what a competitor may do.
 - [ ] **`legal@moqom.com`** must exist; the BSL names it as the contact for

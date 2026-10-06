@@ -1,0 +1,37 @@
+# The compliance image: the nightly evidence check and the data-retention sweep.
+#
+# Its own image rather than two more binaries in the control plane's, because
+# the two run as different identities on different schedules, and an image
+# that changes only when these do is an image whose digest means something in
+# an audit trail. Same build context as the control plane (the parent of moqom
+# and moqom-go) for the same reason: the module's `replace` points beside it.
+#
+#   gcloud builds submit /path/to/moqom-cloud --project=moqom-503700 \
+#     --config=moqom/deploy/tools/cloudbuild-compliance.yaml
+
+FROM golang:1.26-bookworm AS build
+
+WORKDIR /src
+COPY moqom/go/go.mod moqom/go/go.sum ./moqom/go/
+COPY moqom-go/go.mod moqom-go/go.sum ./moqom-go/
+RUN cd moqom/go && GOWORK=off go mod download
+
+COPY moqom-go ./moqom-go
+COPY moqom/go ./moqom/go
+
+ARG VERSION=dev
+RUN cd moqom/go && \
+    GOWORK=off CGO_ENABLED=0 GOOS=linux \
+    go build -trimpath -ldflags="-s -w -X main.version=${VERSION}" \
+    -o /out/ ./cmd/moqom-compliance ./cmd/moqom-retention && \
+    GOWORK=off CGO_ENABLED=0 GOOS=linux \
+    go test -trimpath -c -o /out/moqom-retention-conformance ./internal/retention
+
+FROM gcr.io/distroless/static-debian12:nonroot
+COPY --from=build /out/moqom-compliance /moqom-compliance
+COPY --from=build /out/moqom-retention /moqom-retention
+# The retention sweep's Postgres test, for running beside Cloud SQL the way
+# tools/conformance.sh runs the store's.
+COPY --from=build /out/moqom-retention-conformance /moqom-retention-conformance
+USER nonroot:nonroot
+ENTRYPOINT ["/moqom-compliance"]

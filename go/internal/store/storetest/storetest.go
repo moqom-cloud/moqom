@@ -54,6 +54,7 @@ func Run(t *testing.T, newStore Factory) {
 		{"the watchdog limit is enforced", testWatchdogLimit},
 		{"the moderation log reads newest first and filters", testLogQuery},
 		{"enforcement can be marked after the fact", testMarkEnforced},
+		{"the e2ee policy and its audit trail survive a read", testE2EEPolicy},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) { test.run(t, newStore) })
@@ -706,5 +707,48 @@ func testMarkEnforced(t *testing.T, newStore Factory) {
 
 	if err := subject.MarkEnforced(ctx, "acme", "nope", true); !errors.Is(err, store.ErrNotFound) {
 		t.Errorf("marking an absent entry gave %v, want ErrNotFound", err)
+	}
+}
+
+// A room's encryption policy is stored, defaults to required, and the audit entry
+// that relaxed it still says so when read back.
+func testE2EEPolicy(t *testing.T, newStore Factory) {
+	ctx, subject, _ := setup(t, newStore)
+
+	created, err := subject.CreateRoom(ctx, control.Room{
+		Tenant: "acme", Room: "room-1", Lifecycle: control.LifecycleLive,
+	})
+	if err != nil {
+		t.Fatalf("creating a room: %v", err)
+	}
+	if created.Policy.E2EE != control.E2EERequired {
+		t.Errorf("a room created with no policy has e2ee %q, want required", created.Policy.E2EE)
+	}
+
+	created.Policy.E2EE = control.E2EEOptional
+	if _, err := subject.SaveRoom(ctx, created); err != nil {
+		t.Fatalf("saving a room: %v", err)
+	}
+	read, err := subject.GetRoom(ctx, "acme", "room-1")
+	if err != nil {
+		t.Fatalf("reading a room: %v", err)
+	}
+	if read.Policy.E2EE != control.E2EEOptional {
+		t.Errorf("e2ee read back as %q, want optional", read.Policy.E2EE)
+	}
+
+	if _, err := subject.AppendModerationEntry(ctx, control.ModerationEntry{
+		ID: "entry-1", Tenant: "acme", Room: "room-1",
+		Verb: control.VerbUpdateRoomPolicy, Reason: "captions",
+		PolicyChange: "e2ee: required -> optional",
+	}); err != nil {
+		t.Fatalf("appending an entry: %v", err)
+	}
+	page, err := subject.ListModerationLog(ctx, store.LogQuery{Tenant: "acme"})
+	if err != nil {
+		t.Fatalf("reading the log: %v", err)
+	}
+	if len(page.Entries) != 1 || page.Entries[0].PolicyChange != "e2ee: required -> optional" {
+		t.Errorf("the log read back as %+v", page.Entries)
 	}
 }

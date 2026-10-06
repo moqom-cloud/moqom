@@ -1,0 +1,11 @@
+# Copy to terraform.tfvars. Nothing here is secret; Stripe and SMTP secrets go
+# into Secret Manager with `gcloud secrets versions add`.
+
+image                 = "us-docker.pkg.dev/moqom-503700/viewer-licensing/server:0.1.0"
+stripe_price_yearly   = "price_..."
+stripe_price_lifetime = "price_..."
+
+# smtp = {
+#   host     = "smtp.example.com"
+#   username = "licensing@elliottwave.studio"
+# }
