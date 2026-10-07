@@ -218,7 +218,7 @@ safety detector) is required in the room.
 | Peer verification | Through the `PeerVerifier` trait; the relay's `PeerCheck` implements it | `DirectPeerCheck`, a port of the relay's token and proof checks, with a required proof. A refused peer is closed with `0x03`; the dialler's empty unidirectional stream is the final admission |
 | Merging relay and direct paths, with fallback | `DualSubscription` | `DualSubscription`, same rules |
 | Pausing the relay copy while direct | Not built: its stall detection compares against relay objects | `FORWARD=0` in `REQUEST_UPDATE` once direct, `FORWARD=1` on fallback or after 500 ms of direct silence |
-| Wired into `Room` | No | No |
+| Wired into `Room` | No | Opt-in: `join(room:direct:)` or `setDirect(_:)` with `DirectRoomOptions`; per-participant path state (`directPathChanged`), relay fallback with backoff, tickets per path. Offers sealed under `MLS-Exporter("MOQOM direct offer")`. Loopback-tested on both backends |
 | Direct tickets | Not enforced | `DirectTicketFeed` asks the relay; `DirectTicketGuard` presents them and holds the peer to its own |
 | Metering | Relay session, plus direct seconds from tickets | Same; `DirectUsage` counts direct bytes for the app |
 
@@ -265,7 +265,9 @@ Not done, or not known yet:
 - **Size.** About 4.4 MB stripped on iOS. `ring` is still linked alongside
   aws-lc through rcgen's default features; removing it means changing the
   workspace's rcgen features, which the relay and recorder share.
-- **Not wired into `Room`,** on either backend.
+- **`Room` gaps.** Backstage publishing counts as audience; nothing watches for
+  network-interface changes; a viewer holding the room's MLS keys keeps the room on
+  the relay; the epoch-change re-offer has no dedicated test.
 - **iOS Simulator crash in the Network.framework carrier.** Running the direct
   suite on the iOS 26.2 Simulator, the process traps inside Network.framework
   when a `MoqtSession` left from an earlier Network.framework test is freed and
