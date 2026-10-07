@@ -45,6 +45,26 @@ on SSH, RDP, Postgres, MySQL, the Kubernetes API, kubelet or etcd ports.
 - Media: SFrame end-to-end where the client enables it (Swift SDK). Relays
   forward ciphertext and hold no media keys.
 
+### Post-quantum key exchange
+
+- Every TLS configuration in the Rust engine puts the hybrid group
+  X25519MLKEM768 (ML-KEM-768 combined with X25519) first, with plain X25519
+  second. That covers the relay listener (raw QUIC and WebTransport), the
+  client SDK, relay-to-relay links, direct peer-to-peer paths, and the
+  relay's and recorder's gRPC. For the relay listener and both ends of a
+  direct path, tests complete real handshakes and check that the hybrid
+  group was negotiated.
+- The Go control plane uses Go's default curve list, which includes
+  X25519MLKEM768. No `CurvePreferences` override exists.
+- A peer that offers only classical groups still connects. An X25519-only
+  peer gets X25519 with no extra round trip. A peer with neither group costs
+  one HelloRetryRequest.
+- What this protects is the key exchange: a recording of the traffic can't
+  be decrypted later by breaking X25519 alone. Certificates and signatures
+  are still classical (ECDSA or RSA), so authentication isn't post-quantum.
+- The Apple clients' key exchange is set by the platform TLS stack and isn't
+  covered by these tests.
+
 ## Edge protection
 
 No WAF or DDoS service sits in front of the relays or join endpoint today
