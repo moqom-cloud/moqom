@@ -62,8 +62,16 @@ on SSH, RDP, Postgres, MySQL, the Kubernetes API, kubelet or etcd ports.
 - What this protects is the key exchange: a recording of the traffic can't
   be decrypted later by breaking X25519 alone. Certificates and signatures
   are still classical (ECDSA or RSA), so authentication isn't post-quantum.
-- The Apple clients' key exchange is set by the platform TLS stack and isn't
-  covered by these tests.
+- The Apple clients' key exchange is set by the platform TLS stack. Checked
+  once by hand on macOS 26.4.1 (7 October 2026): a Network.framework QUIC
+  client, configured as MoqomKit's, offered `X25519MLKEM768, X25519,
+  secp256r1, secp384r1, secp521r1` (after a GREASE value) to a rustls server
+  with the engine's settings, so the hybrid group is chosen. Not yet checked
+  on an iPhone, and not covered by automated tests.
+- End-to-end media keys come from MLS, not TLS. MoqomKit's default MLS suite
+  for new rooms uses the X-Wing hybrid KEM (ML-KEM-768 with X25519); see
+  `docs/E2EE-KEY-MANAGEMENT.md` for what that does and doesn't
+  cover.
 
 ## Edge protection
 
