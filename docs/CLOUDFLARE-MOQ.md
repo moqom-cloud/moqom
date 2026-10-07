@@ -14,7 +14,7 @@ for everything else. They run the latest MoQ Transport draft and the full featur
 > | --- | --- |
 > | Billing | Built, on moqom branch `oct-2026-cloudflare-billing` |
 > | Swift SDK (drafts 16, 19, 22) | Done, on moqom-swift `oct-2026-moqt-drafts`. A live subscribe through Cloudflare works. |
-> | Rust client and CLI | In progress, on moqom-engine `oct-2026-moqt-drafts` |
+> | Rust client and `moqom cloudflare sub` | Done, on moqom-engine `oct-2026-moqt-drafts`. A live subscribe through Cloudflare works. |
 > | Publishing to Cloudflare | Unit-tested against a scripted relay only, until there's a Cloudflare account to test with |
 > | SDK usage counters | Not started |
 >
@@ -125,11 +125,16 @@ let session = try await MoqtTransport.network().connect(
 default. `draft` is `.draft16`, the only value until Cloudflare deploys draft-18. When the
 endpoint is printed or logged, its path, which holds the token, is redacted.
 
-Rust CLI, once the Rust work lands. It's handy for testing:
+Rust CLI (binary `moqom`), handy for testing:
 
 ```sh
-moqom-cli cloudflare sub --token "$CF_TOKEN" --namespace my-namespace
+export MOQOM_CF_DEMO_TOKEN='<a subscribe token>'   # read by --token; keeps it out of `ps`
+moqom cloudflare sub --namespace my-namespace --track 0.mp4 --track 1.m4s --count 20
 ```
+
+`--filter` takes `none` (the default: the relay picks), `largest` or `next`. `--host` and
+`--port` select another relay. The track names follow the layout of Cloudflare's `moq-pub`:
+`0.mp4` is the init segment, and `<track id>.m4s` is media.
 
 On a Cloudflare endpoint the SDK:
 
@@ -202,8 +207,8 @@ starting with `ftyp`, followed by a media segment from the live group. Cloudflar
 client connects and receives objects before you create a relay of your own:
 
 ```sh
-MOQOM_CF_DEMO_TOKEN='<token from the demo streams page>' \
-  moqom-cli cloudflare sub --token "$MOQOM_CF_DEMO_TOKEN" --namespace bbb
+export MOQOM_CF_DEMO_TOKEN='<token from the demo streams page>'
+moqom cloudflare sub --namespace bbb --count 10
 ```
 
 Publishing needs a relay of your own, from step 1.
@@ -244,7 +249,9 @@ exist only on MOQOM's relays:
 | Symptom | Likely cause |
 | --- | --- |
 | Handshake fails, "peer doesn't support any known protocol" | Wrong host for the draft. Use `draft-16.cloudflare.mediaoverquic.com`. |
-| SETUP is refused or the session closes at once | Missing, expired or wrong-role Cloudflare token |
+| The session closes right after SETUP with PROTOCOL_VIOLATION (0x3), "scope resolution failed" | Missing, expired or wrong-role Cloudflare token. Cloudflare uses this code rather than UNAUTHORIZED. |
+| REQUEST_ERROR 0x10 "Track not found" | The namespace doesn't exist on this relay |
+| REQUEST_ERROR 0x0 "internal error" on a subscribe | The namespace exists but the track doesn't. This is Cloudflare's behaviour, not DOES_NOT_EXIST. |
 | `401` from `POST /v1/usage` | Not a relay key, or the key is revoked |
 | `400` "hosting is \"cloudflare\", from a tenant's relay key, or absent" | A misspelt `hosting`, or the report wasn't sent with a relay key |
 | Error naming FETCH, pause or priority | That feature isn't available on Cloudflare (see [Limits](#limits)) |
@@ -256,4 +263,5 @@ exist only on MOQOM's relays:
 | Billing | `moqom/go/internal/billing`: `HostingCloudflare`, `Pricing.CloudflareFreeUntil`, `CloudflareFreeMinutesPerMonth`, `CloudflarePrice`. Tables `billing_cloudflare_months` and `billing_cloudflare_claims`. |
 | Swift codec | `moqom-swift/Sources/MoqomWire/Draft.swift`, `Draft16.swift`, `Draft22.swift` |
 | Swift session | `moqom-swift/Sources/MoqomKit/Transport/Draft16Session.swift`, `SessionDialect.swift`, `Transport.swift` (`RelayEndpoint.cloudflare`) |
-| Rust codec | `moqom-engine/moqom-proto/src/draft.rs` |
+| Rust codec | `moqom-engine/moqom-proto/src/draft.rs`, `src/control/d16.rs` |
+| Rust client and CLI | `moqom-engine/moqom-client/src/cloudflare.rs`, `moqom-cli/src/cloudflare.rs` |
