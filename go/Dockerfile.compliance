@@ -9,7 +9,7 @@
 #   gcloud builds submit /path/to/moqom-cloud --project=moqom-503700 \
 #     --config=moqom/deploy/tools/cloudbuild-compliance.yaml
 
-FROM golang:1.26-bookworm AS build
+FROM golang:1.27-bookworm AS build
 
 WORKDIR /src
 COPY moqom/go/go.mod moqom/go/go.sum ./moqom/go/

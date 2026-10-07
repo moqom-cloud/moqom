@@ -34,7 +34,7 @@ substitutions:
   _EVIDENCE_BUCKET: moqom-dev-evidence-${PROJECT_ID}
   _CONTROL_IMAGE: us-docker.pkg.dev/${PROJECT_ID}/moqom-dev/moqom-control:dev
   _RELAY_IMAGE: us-docker.pkg.dev/${PROJECT_ID}/moqom-dev/moqom-relay:latest
-  _GO_IMAGE: golang:1.26-bookworm
+  _GO_IMAGE: golang:1.27-bookworm
   _RUST_IMAGE: rust:1.97-bookworm
   _TRIVY: aquasec/trivy:0.67.2
   _SYFT: anchore/syft:v1.33.0

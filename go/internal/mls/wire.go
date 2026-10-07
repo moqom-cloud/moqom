@@ -3,6 +3,7 @@ package mls
 import (
 	"bytes"
 	"crypto/ed25519"
+	"crypto/mldsa"
 	"crypto/mlkem"
 	"encoding/binary"
 	"fmt"
@@ -19,9 +20,9 @@ const protocolVersion = 0x0001
 // CipherSuite is an MLS cipher suite identifier, RFC 9420 §17.1.
 type CipherSuite uint16
 
-// The suites MoqomKit implements; see MLSCipherSuite.swift. They differ only
-// in the KEM, which for the service means only in the length of the init and
-// encryption keys in a key package.
+// The suites MoqomKit implements; see MLSCipherSuite.swift. For the service
+// they differ in the length of the init and encryption keys in a key package
+// and in the signature that signs it.
 const (
 	// SuiteX25519 is MLS_128_DHKEMX25519_AES128GCM_SHA256_Ed25519, RFC 9420's
 	// mandatory suite, and what a group founded by a client that names no
@@ -33,7 +34,15 @@ const (
 	// range (0xF000-0xFFFF) and must change with MoqomKit's when IANA assigns
 	// one.
 	SuiteXWing CipherSuite = 0xF0A1
+	// SuiteMLDSA is MLS_192_MLKEM768_AES256GCM_SHA384_MLDSA65, the draft's
+	// TBD10: HPKE KEM 0x0041 (pure ML-KEM-768) and ML-DSA-65 signatures. It is
+	// the only suite a new group may be founded in. Private-use, like
+	// SuiteXWing, until IANA assigns the draft's value.
+	SuiteMLDSA CipherSuite = 0xF0AA
 )
+
+// FoundingSuite is the suite every new group is founded in.
+const FoundingSuite = SuiteMLDSA
 
 // kemKeyLength is the init and encryption key length in each suite, or 0 for
 // a suite that is not implemented.
@@ -43,8 +52,31 @@ func (s CipherSuite) kemKeyLength() int {
 		return 32
 	case SuiteXWing:
 		return mlkem.EncapsulationKeySize768 + 32 // ML-KEM-768, then X25519: 1216
+	case SuiteMLDSA:
+		return mlkem.EncapsulationKeySize768 // 1184
 	}
 	return 0
+}
+
+// signatureKeyLength is a key package's signature key length in each suite.
+func (s CipherSuite) signatureKeyLength() int {
+	if s == SuiteMLDSA {
+		return 1952 // ML-DSA-65
+	}
+	return ed25519.PublicKeySize
+}
+
+// verify is the suite's signature check: ML-DSA-65 with an empty context, as
+// draft-ietf-tls-mldsa uses it, or Ed25519.
+func (s CipherSuite) verify(publicKey, message, signature []byte) bool {
+	if s != SuiteMLDSA {
+		return ed25519.Verify(publicKey, message, signature)
+	}
+	key, err := mldsa.NewPublicKey(mldsa.MLDSA65(), publicKey)
+	if err != nil {
+		return false
+	}
+	return mldsa.Verify(key, message, signature, nil) == nil
 }
 
 // Known reports whether the suite is one MoqomKit implements.
@@ -52,9 +84,11 @@ func (s CipherSuite) Known() bool { return s.kemKeyLength() != 0 }
 
 const (
 	// Bounds on what a device may store. A package is about 200 bytes in
-	// SuiteX25519 and about 2.5 KiB in SuiteXWing, whose two keys are 1,216
-	// bytes each; 4 KiB leaves room for a long identity in either.
-	maxKeyPackageBytes = 4 << 10
+	// SuiteX25519, about 2.5 KiB in SuiteXWing, whose two keys are 1,216 bytes
+	// each, and about 7.5 KiB in SuiteMLDSA (two 1,184-byte keys, a 1,952-byte
+	// ML-DSA key and a 3,309-byte signature); 16 KiB leaves room for a long
+	// identity in any.
+	maxKeyPackageBytes = 16 << 10
 	maxOneTimePackages = 16
 )
 
@@ -184,22 +218,23 @@ func ParseKeyPackage(data []byte) (KeyPackage, error) {
 		return KeyPackage{}, fmt.Errorf("%w: version %#x suite %#x", ErrInvalid, version, suite)
 	}
 	keyLength := CipherSuite(suite).kemKeyLength()
-	if len(signatureKey) != ed25519.PublicKeySize || len(initKey) != keyLength || len(encryptionKey) != keyLength {
+	if len(signatureKey) != CipherSuite(suite).signatureKeyLength() || len(initKey) != keyLength || len(encryptionKey) != keyLength {
 		return KeyPackage{}, fmt.Errorf("%w: key lengths", ErrInvalid)
 	}
 	if bytes.Equal(initKey, encryptionKey) {
 		return KeyPackage{}, fmt.Errorf("%w: init key reused as encryption key", ErrInvalid)
 	}
-	if CipherSuite(suite) == SuiteXWing {
-		// The ML-KEM half must pass FIPS 203's encapsulation key check, which
-		// every committer's X-Wing encapsulation would otherwise fail on.
+	if CipherSuite(suite) != SuiteX25519 {
+		// The ML-KEM key, or X-Wing's ML-KEM half, must pass FIPS 203's
+		// encapsulation key check, which every committer's encapsulation
+		// would otherwise fail on.
 		for _, key := range [][]byte{initKey, encryptionKey} {
 			if _, err := mlkem.NewEncapsulationKey768(key[:mlkem.EncapsulationKeySize768]); err != nil {
 				return KeyPackage{}, fmt.Errorf("%w: ML-KEM-768 key: %v", ErrInvalid, err)
 			}
 		}
 	}
-	if !ed25519.Verify(signatureKey, signContent("KeyPackageTBS", data[:signed]), signature) {
+	if !CipherSuite(suite).verify(signatureKey, signContent("KeyPackageTBS", data[:signed]), signature) {
 		return KeyPackage{}, fmt.Errorf("%w: key package signature", ErrInvalid)
 	}
 	return KeyPackage{

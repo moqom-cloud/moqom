@@ -35,11 +35,11 @@ const messagesPerSync = 256
 
 // maxCommitBytes bounds a commit or a Welcome. A commit carries an HPKE
 // ciphertext per member and a Welcome carries every member's leaf, which in
-// SuiteX25519 is about a hundred bytes each and in SuiteXWing about 1,180 and
-// 1,260 (X-Wing's 1,120-byte encapsulation, its 1,216-byte public key). 1 MiB
-// keeps a room of 800 devices within bounds in either suite; at the 512 KiB
-// this was before X-Wing, a hybrid room would stop at about 400.
-const maxCommitBytes = 1 << 20
+// SuiteMLDSA is about 1,160 and 3,150 bytes (ML-KEM-768's 1,088-byte
+// encapsulation; its 1,184-byte public key and ML-DSA-65's 1,952-byte one).
+// 3 MiB keeps a room of 800 devices within bounds; past that a room uses
+// sender keys.
+const maxCommitBytes = 3 << 20
 
 // MessageRetention is how long a store keeps a commit or Welcome, pruned as
 // later ones arrive. Far longer than OnlineWindow: every member still in the
@@ -191,17 +191,14 @@ func (s *Service) online(entry Presence) bool {
 }
 
 // CreateGroup founds the room's group in suite with the caller as its only
-// member. A suite of 0 is a client from before suites were declared, all of
-// whose groups are SuiteX25519.
+// member. Only FoundingSuite is accepted: groups already founded in an older
+// suite keep working, but no new one is classical in its signatures or its KEM.
 func (s *Service) CreateGroup(ctx context.Context, caller Caller, id []byte, suite CipherSuite) error {
 	if len(id) == 0 || len(id) > 64 {
 		return fmt.Errorf("%w: group id of %d bytes", ErrInvalid, len(id))
 	}
-	if suite == 0 {
-		suite = SuiteX25519
-	}
-	if !suite.Known() {
-		return fmt.Errorf("%w: cipher suite %#04x", ErrInvalid, uint16(suite))
+	if suite != FoundingSuite {
+		return fmt.Errorf("%w: groups are founded in cipher suite %#04x, not %#04x", ErrInvalid, uint16(FoundingSuite), uint16(suite))
 	}
 	if err := s.store.Touch(ctx, caller.Room, caller.Device, s.now()); err != nil {
 		return err

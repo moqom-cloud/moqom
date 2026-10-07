@@ -1,6 +1,6 @@
 module github.com/moqom-cloud/moqom/go
 
-go 1.26.0
+go 1.27.0
 
 // The SDK is its own repository, because `go get` resolves a module by fetching
 // its path and a path is a URL. Until it has a published tag there is no

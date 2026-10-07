@@ -10,7 +10,7 @@
 # The context is therefore the parent of both repositories. That is unusual and
 # it is the same reason go.work exists; both go away at the SDK's first release.
 
-FROM golang:1.26-bookworm AS build
+FROM golang:1.27-bookworm AS build
 
 WORKDIR /src
 
