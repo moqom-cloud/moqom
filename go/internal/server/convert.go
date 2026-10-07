@@ -282,7 +282,6 @@ func policyFromProto(wire *adminpb.RoomPolicy) (control.Policy, error) {
 	return policy.WithDefaults(), nil
 }
 
-
 func policyToProto(policy control.Policy) *adminpb.RoomPolicy {
 	return &adminpb.RoomPolicy{
 		AgeGate: &adminpb.AgeGate{

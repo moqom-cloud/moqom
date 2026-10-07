@@ -661,7 +661,7 @@ func (s *relayLinkService) verificationKeys() *relaypb.VerificationKeys {
 		}
 		keys.Keys = append(keys.Keys, &adminpb.VerificationKey{
 			KeyId:     key.ID,
-			Algorithm: "EdDSA",
+			Algorithm: key.Algorithm,
 			Jwk:       jwk,
 		})
 	}

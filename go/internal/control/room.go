@@ -122,7 +122,6 @@ func (p Policy) ValidateE2EE() error {
 	}
 }
 
-
 // Presence is where someone is, as published to the room.
 type Presence string
 

@@ -377,10 +377,10 @@ func TestMintedTokensVerifyAndCarryTheirScope(t *testing.T) {
 	if keys.GetKeys()[0].GetKeyId() != response.GetKeyId() {
 		t.Error("the token names a key that is not published")
 	}
-	// Honest about what it is. When proof-of-possession lands this says DPOP, and
-	// until then a client that wants to refuse bearer tokens can tell.
-	if keys.GetBinding() != adminpb.TokenBinding_TOKEN_BINDING_BEARER {
-		t.Errorf("binding is %v, want BEARER while that is the truth", keys.GetBinding())
+	// Every relay requires proof of possession, so a client can refuse a
+	// deployment that says otherwise.
+	if keys.GetBinding() != adminpb.TokenBinding_TOKEN_BINDING_DPOP {
+		t.Errorf("binding is %v, want DPOP", keys.GetBinding())
 	}
 }
 

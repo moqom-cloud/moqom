@@ -10,7 +10,6 @@ package server
 
 import (
 	"context"
-	"crypto/ed25519"
 	"errors"
 	"fmt"
 	"sync"
@@ -36,7 +35,9 @@ type Config struct {
 	// every token it verifies.
 	Issuer string
 
-	// Keys are the signing keys. The first mints; all of them verify.
+	// Keys are the token keys. The first mints and must be ML-DSA-65; all of
+	// them verify, which is how Ed25519 keys stay readable until the last token
+	// they signed has expired.
 	//
 	// Ordered rather than a map so rotation is a deployment that prepends a key:
 	// the new one starts signing, the old one keeps verifying, and it is removed
@@ -178,13 +179,8 @@ func New(config Config) (*Server, error) {
 		config.SnapshotInterval = defaultSnapshotInterval
 	}
 
-	public := map[string]ed25519.PublicKey{}
-	for _, key := range config.Keys {
-		encoded, ok := key.Private.Public().(ed25519.PublicKey)
-		if !ok {
-			return nil, fmt.Errorf("key %s is not Ed25519", key.ID)
-		}
-		public[key.ID] = encoded
+	if len(config.Keys) == 0 || !config.Keys[0].CanSign() {
+		return nil, fmt.Errorf("the first token key must be an %s key that signs", token.AlgorithmMLDSA65)
 	}
 	if config.Overlay != nil && config.Overlay.Identities == nil {
 		return nil, errors.New("the overlay needs its management API")
@@ -199,7 +195,7 @@ func New(config Config) (*Server, error) {
 		accounts:         config.Accounts,
 		issuer:           config.Issuer,
 		keys:             config.Keys,
-		verifier:         token.NewVerifier(config.Issuer, public),
+		verifier:         token.NewVerifier(config.Issuer, config.Keys),
 		relays:           newRelayRegistry(),
 		bus:              newEventBus(),
 		dispatchTimeout:  config.DispatchTimeout,

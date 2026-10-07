@@ -567,11 +567,15 @@ func transportCredentials() (credentials.TransportCredentials, string, error) {
 	return credentials.NewTLS(config), described, nil
 }
 
-// signingKeys reads the token signing keys.
+// signingKeys reads the token keys.
 //
-// MOQOM_CONTROL_SIGNING_KEYS is a comma-separated list of base64url Ed25519 seeds,
-// newest first: the first signs, all of them verify. That ordering is what makes
-// rotation a deployment rather than an outage.
+// MOQOM_CONTROL_SIGNING_KEYS is a comma-separated list, newest first: the first
+// signs, all of them verify. That ordering is what makes rotation a deployment
+// rather than an outage. Each entry is a base64url 32-byte seed, prefixed
+// `mldsa65:` for an ML-DSA-65 key or `ed25519:` (or nothing, as before the move)
+// for an Ed25519 one. Ed25519 entries only verify, so the first entry must be
+// ML-DSA-65: relays first, then prepend an `mldsa65:` key, then drop the Ed25519
+// entries once the last token they signed has expired.
 //
 // With none set, one is generated and its public half logged. Useful on a laptop and
 // wrong everywhere else, because tokens stop verifying at every restart -- so it says
@@ -583,40 +587,52 @@ func signingKeys() ([]token.Key, error) {
 		if err != nil {
 			return nil, err
 		}
-		jwk, err := generated.PublicJWK()
-		if err != nil {
-			return nil, err
-		}
 		slog.Warn("no signing key configured, generated an ephemeral one",
-			"key", generated.ID, "jwk", jwk,
+			"key", generated.ID, "algorithm", generated.Algorithm,
 			"consequence", "every token stops verifying when this process restarts")
 		return []token.Key{generated}, nil
 	}
 
 	var keys []token.Key
-	for _, encoded := range strings.Split(raw, ",") {
-		encoded = strings.TrimSpace(encoded)
-		if encoded == "" {
+	for _, entry := range strings.Split(raw, ",") {
+		entry = strings.TrimSpace(entry)
+		if entry == "" {
 			continue
+		}
+		kind, encoded, prefixed := strings.Cut(entry, ":")
+		if !prefixed {
+			kind, encoded = "ed25519", entry
 		}
 		seed, err := base64.RawURLEncoding.DecodeString(strings.TrimRight(encoded, "="))
 		if err != nil {
 			return nil, fmt.Errorf("signing key is not base64url: %w", err)
 		}
-		if len(seed) != ed25519.SeedSize {
-			return nil, fmt.Errorf("signing key is %d bytes, want a %d-byte seed", len(seed), ed25519.SeedSize)
-		}
-		private := ed25519.NewKeyFromSeed(seed)
 		// The identifier is derived from the public half rather than configured, so a
 		// key cannot be published twice under different names as if it were two.
-		derived, err := token.KeyFrom(private)
+		var key token.Key
+		switch kind {
+		case "mldsa65":
+			key, err = token.KeyFromSeed(seed)
+		case "ed25519":
+			if len(seed) != ed25519.SeedSize {
+				return nil, fmt.Errorf("signing key is %d bytes, want a %d-byte seed", len(seed), ed25519.SeedSize)
+			}
+			public, _ := ed25519.NewKeyFromSeed(seed).Public().(ed25519.PublicKey)
+			key, err = token.LegacyEd25519(public)
+		default:
+			return nil, fmt.Errorf("signing key kind %q, want mldsa65 or ed25519", kind)
+		}
 		if err != nil {
 			return nil, err
 		}
-		keys = append(keys, derived)
+		keys = append(keys, key)
 	}
 	if len(keys) == 0 {
 		return nil, errors.New("MOQOM_CONTROL_SIGNING_KEYS was set but held no keys")
+	}
+	if !keys[0].CanSign() {
+		return nil, fmt.Errorf("the first MOQOM_CONTROL_SIGNING_KEYS entry is %s, which only verifies: "+
+			"prepend an mldsa65: key to sign with", keys[0].Algorithm)
 	}
 	return keys, nil
 }

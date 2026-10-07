@@ -4,21 +4,21 @@
 //
 // The design target is CAT/CWT: CBOR claims, COSE signatures, and DPoP
 // proof-of-possession so the token is useless without the device key it was bound
-// to. What is implemented here is a subset -- Ed25519 over JSON claims in the
-// compact JWS form -- and the gap is worth stating plainly rather than burying.
+// to. What is implemented here is a subset -- ML-DSA-65 (FIPS 204) over JSON
+// claims in the compact JWS form -- and the gap is worth stating plainly rather
+// than burying. Ed25519 keys are still read, to verify tokens signed before the
+// move to ML-DSA, and never sign.
 //
 // What the subset keeps: asymmetric signing, so a relay verifies without holding
 // anything that could mint; key rotation by identifier; the device thumbprint in
 // a `cnf` claim; short lifetimes.
 //
-// What it lacks is now the encoding and not the binding, and this comment used
-// to say otherwise. `cnf.jkt` is derived here from a key the device sends -- see
-// PublicKey.Thumbprint -- and the relay demands an ES256 signature from that key
-// at every point it checks a token, so a token in flight is no longer a bearer
-// credential and a copy of one is worth nothing without the Secure Enclave it
-// was bound to. Lifetimes stay capped in minutes anyway: a relay may be
-// configured not to require proofs while a fleet is still being upgraded, and a
-// short life is what covers that window.
+// What it lacks is now the encoding and not the binding. `cnf.jkt` is derived
+// here from a key the device sends -- see PublicKey.Thumbprint -- and every
+// relay demands an ES256 signature from that key at every point it checks a
+// token, so a token in flight is not a bearer credential and a copy of one is
+// worth nothing without the Secure Enclave it was bound to. Mint refuses a
+// token that names no such key. Lifetimes stay capped in minutes anyway.
 //
 // `ListVerificationKeys` reports the binding in force, so a client that wants to
 // know whether it is talking to a deployment that enforces this can find out
@@ -33,6 +33,7 @@ package token
 
 import (
 	"crypto/ed25519"
+	"crypto/mldsa"
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/base64"
@@ -63,9 +64,17 @@ var (
 // Checked rather than trusted, because the classic JWS attack is algorithm
 // confusion: a verifier that reads `alg` from the token and picks its code path
 // accordingly can be told to use "none", or to verify an HMAC using the public
-// key as the shared secret. Both are forgeries that validate. Pinning one
-// algorithm removes the choice.
-const algorithm = "EdDSA"
+// key as the shared secret. Both are forgeries that validate. So the algorithm
+// belongs to the key: a token must name the algorithm of the key its `kid`
+// selects, and is verified with that key's algorithm and no other.
+const (
+	// AlgorithmMLDSA65 is the JOSE name for ML-DSA-65, which every token is
+	// signed with.
+	AlgorithmMLDSA65 = "ML-DSA-65"
+	// AlgorithmEdDSA is Ed25519, read only to verify tokens signed before the
+	// move to ML-DSA.
+	AlgorithmEdDSA = "EdDSA"
+)
 
 // Type distinguishes these from any other JWS a deployment handles, so a token
 // minted for something else cannot be replayed at a relay.
@@ -232,24 +241,50 @@ func (c Claims) Identity() (control.Identity, error) {
 	return control.Identity{Username: c.Subject, Device: device}, nil
 }
 
-// Key is a signing key with an identifier.
+// Key is a token key with an identifier: an ML-DSA-65 key that signs, or an
+// Ed25519 public key kept to verify what was signed before ML-DSA.
 type Key struct {
-	ID      string
-	Private ed25519.PrivateKey
+	ID        string
+	Algorithm string
+
+	signer  *mldsa.PrivateKey
+	mldsa   *mldsa.PublicKey
+	ed25519 ed25519.PublicKey
+}
+
+// CanSign reports whether Mint will sign with this key.
+func (k Key) CanSign() bool { return k.signer != nil }
+
+// PublicBytes is the raw public key: 1952 bytes for ML-DSA-65, 32 for Ed25519.
+func (k Key) PublicBytes() []byte {
+	if k.mldsa != nil {
+		return k.mldsa.Bytes()
+	}
+	return append([]byte(nil), k.ed25519...)
 }
 
 // PublicJWK renders the verification half in the form ListVerificationKeys
-// serves.
+// serves: an AKP key for ML-DSA-65, per the JOSE ML-DSA draft, or OKP for a
+// legacy Ed25519 key.
 func (k Key) PublicJWK() (string, error) {
-	public, ok := k.Private.Public().(ed25519.PublicKey)
-	if !ok {
-		return "", errors.New("key is not Ed25519")
-	}
-	jwk := map[string]string{
-		"kty": "OKP",
-		"crv": "Ed25519",
-		"kid": k.ID,
-		"x":   base64.RawURLEncoding.EncodeToString(public),
+	var jwk map[string]string
+	switch k.Algorithm {
+	case AlgorithmMLDSA65:
+		jwk = map[string]string{
+			"kty": "AKP",
+			"alg": AlgorithmMLDSA65,
+			"kid": k.ID,
+			"pub": base64.RawURLEncoding.EncodeToString(k.PublicBytes()),
+		}
+	case AlgorithmEdDSA:
+		jwk = map[string]string{
+			"kty": "OKP",
+			"crv": "Ed25519",
+			"kid": k.ID,
+			"x":   base64.RawURLEncoding.EncodeToString(k.ed25519),
+		}
+	default:
+		return "", fmt.Errorf("key %s has no algorithm", k.ID)
 	}
 	encoded, err := json.Marshal(jwk)
 	if err != nil {
@@ -258,35 +293,72 @@ func (k Key) PublicJWK() (string, error) {
 	return string(encoded), nil
 }
 
-// GenerateKey makes a signing key with an identifier derived from the public
-// half.
+// GenerateKey makes an ML-DSA-65 signing key with an identifier derived from
+// the public half.
 //
 // Derived rather than random so the identifier is a function of the key: two
 // deployments that somehow share a key agree on its name, and a key cannot be
 // republished under a second identifier as if it were a rotation.
 func GenerateKey() (Key, error) {
-	_, private, err := ed25519.GenerateKey(rand.Reader)
+	private, err := mldsa.GenerateKey(mldsa.MLDSA65())
 	if err != nil {
 		return Key{}, err
 	}
-	return KeyFrom(private)
+	return mldsaKey(private), nil
 }
 
-// KeyFrom names a key that already exists, as when one is loaded from a secret.
+// KeyFromSeed loads an ML-DSA-65 signing key from its 32-byte FIPS 204 seed, as
+// when one is read from a secret.
 //
 // Same derivation as GenerateKey, which is the point: a key has one identifier no
 // matter which side of a restart it was created on, so a deployment that reloads its
 // secrets keeps verifying the tokens it signed before.
-func KeyFrom(private ed25519.PrivateKey) (Key, error) {
-	public, ok := private.Public().(ed25519.PublicKey)
-	if !ok {
-		return Key{}, errors.New("key is not Ed25519")
+func KeyFromSeed(seed []byte) (Key, error) {
+	private, err := mldsa.NewPrivateKey(mldsa.MLDSA65(), seed)
+	if err != nil {
+		return Key{}, fmt.Errorf("ML-DSA-65 seed: %w", err)
 	}
-	digest := sha256.Sum256(public)
+	return mldsaKey(private), nil
+}
+
+func mldsaKey(private *mldsa.PrivateKey) Key {
+	public := private.PublicKey()
 	return Key{
-		ID:      base64.RawURLEncoding.EncodeToString(digest[:8]),
-		Private: private,
+		ID:        keyID(public.Bytes()),
+		Algorithm: AlgorithmMLDSA65,
+		signer:    private,
+		mldsa:     public,
+	}
+}
+
+// LegacyEd25519 is an Ed25519 public key that verifies and never signs, for the
+// tokens a deployment issued before it moved to ML-DSA. Its identifier is the
+// one it had when it signed, so those tokens still find it.
+func LegacyEd25519(public ed25519.PublicKey) (Key, error) {
+	if len(public) != ed25519.PublicKeySize {
+		return Key{}, fmt.Errorf("an Ed25519 public key is %d bytes, got %d", ed25519.PublicKeySize, len(public))
+	}
+	return Key{
+		ID:        keyID(public),
+		Algorithm: AlgorithmEdDSA,
+		ed25519:   append(ed25519.PublicKey(nil), public...),
 	}, nil
+}
+
+func keyID(public []byte) string {
+	digest := sha256.Sum256(public)
+	return base64.RawURLEncoding.EncodeToString(digest[:8])
+}
+
+// verify checks a signature with this key's own algorithm.
+func (k Key) verify(message, signature []byte) bool {
+	switch {
+	case k.mldsa != nil:
+		return mldsa.Verify(k.mldsa, message, signature, nil) == nil
+	case k.ed25519 != nil:
+		return ed25519.Verify(k.ed25519, message, signature)
+	}
+	return false
 }
 
 type header struct {
@@ -316,6 +388,10 @@ func ValidThumbprint(thumbprint string) error {
 }
 
 func Mint(key Key, claims Claims, lifetime time.Duration, now time.Time) (string, time.Time, error) {
+	if !key.CanSign() {
+		return "", time.Time{}, fmt.Errorf("key %s is %s and only verifies; tokens are signed with %s",
+			key.ID, key.Algorithm, AlgorithmMLDSA65)
+	}
 	if lifetime == 0 {
 		lifetime = DefaultLifetime
 	}
@@ -358,7 +434,7 @@ func Mint(key Key, claims Claims, lifetime time.Duration, now time.Time) (string
 		claims.ID = identifier
 	}
 
-	encodedHeader, err := encodeJSON(header{Algorithm: algorithm, Type: tokenType, KeyID: key.ID})
+	encodedHeader, err := encodeJSON(header{Algorithm: key.Algorithm, Type: tokenType, KeyID: key.ID})
 	if err != nil {
 		return "", time.Time{}, err
 	}
@@ -368,7 +444,10 @@ func Mint(key Key, claims Claims, lifetime time.Duration, now time.Time) (string
 	}
 
 	signing := encodedHeader + "." + encodedClaims
-	signature := ed25519.Sign(key.Private, []byte(signing))
+	signature, err := key.signer.Sign(rand.Reader, []byte(signing), nil)
+	if err != nil {
+		return "", time.Time{}, err
+	}
 	return signing + "." + base64.RawURLEncoding.EncodeToString(signature), expires, nil
 }
 
@@ -379,19 +458,19 @@ func Mint(key Key, claims Claims, lifetime time.Duration, now time.Time) (string
 // last token it signed has expired. With a single key that sequence has a window
 // where every session fails.
 type Verifier struct {
-	keys map[string]ed25519.PublicKey
+	keys map[string]Key
 	// Issuer, checked against the claim. A token from another deployment that
 	// happens to share a key identifier is refused rather than accepted.
 	issuer string
 }
 
-// NewVerifier builds a verifier from public keys by identifier.
-func NewVerifier(issuer string, keys map[string]ed25519.PublicKey) *Verifier {
-	copied := make(map[string]ed25519.PublicKey, len(keys))
-	for id, key := range keys {
-		copied[id] = key
+// NewVerifier builds a verifier from keys, each found by its identifier.
+func NewVerifier(issuer string, keys []Key) *Verifier {
+	byID := make(map[string]Key, len(keys))
+	for _, key := range keys {
+		byID[key.ID] = key
 	}
-	return &Verifier{keys: copied, issuer: issuer}
+	return &Verifier{keys: byID, issuer: issuer}
 }
 
 // Verify checks a token and returns its claims.
@@ -409,22 +488,22 @@ func (v *Verifier) Verify(token string, now time.Time) (Claims, error) {
 	if err := decodeJSON(parts[0], &parsed); err != nil {
 		return Claims{}, fmt.Errorf("%w: header: %w", ErrMalformed, err)
 	}
-	if parsed.Algorithm != algorithm {
-		return Claims{}, fmt.Errorf("%w: %q", ErrUnsupported, parsed.Algorithm)
-	}
 	if parsed.Type != tokenType {
 		return Claims{}, fmt.Errorf("%w: type %q is not a MOQT token", ErrUnsupported, parsed.Type)
 	}
-	public, ok := v.keys[parsed.KeyID]
+	key, ok := v.keys[parsed.KeyID]
 	if !ok {
 		return Claims{}, fmt.Errorf("%w: %q", ErrUnknownKey, parsed.KeyID)
+	}
+	if parsed.Algorithm != key.Algorithm {
+		return Claims{}, fmt.Errorf("%w: %q for a %s key", ErrUnsupported, parsed.Algorithm, key.Algorithm)
 	}
 
 	signature, err := base64.RawURLEncoding.DecodeString(parts[2])
 	if err != nil {
 		return Claims{}, fmt.Errorf("%w: signature is not base64url", ErrMalformed)
 	}
-	if !ed25519.Verify(public, []byte(parts[0]+"."+parts[1]), signature) {
+	if !key.verify([]byte(parts[0]+"."+parts[1]), signature) {
 		return Claims{}, ErrSignature
 	}
 

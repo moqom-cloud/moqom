@@ -167,10 +167,9 @@ func (s *tokensService) ListVerificationKeys(
 	}
 
 	response := &adminpb.ListVerificationKeysResponse{
-		// Reported rather than assumed, so a client that wants to refuse bearer
-		// tokens can find out without inspecting one. It will say DPOP when
-		// proof-of-possession lands; until then saying BEARER is the honest answer.
-		Binding: adminpb.TokenBinding_TOKEN_BINDING_BEARER,
+		// Every relay requires proof of possession and no token is minted
+		// without a device key to prove.
+		Binding: adminpb.TokenBinding_TOKEN_BINDING_DPOP,
 	}
 	for _, key := range s.core.keys {
 		jwk, err := key.PublicJWK()
@@ -179,7 +178,7 @@ func (s *tokensService) ListVerificationKeys(
 		}
 		response.Keys = append(response.Keys, &adminpb.VerificationKey{
 			KeyId:     key.ID,
-			Algorithm: "EdDSA",
+			Algorithm: key.Algorithm,
 			Jwk:       jwk,
 		})
 	}

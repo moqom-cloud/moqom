@@ -3,6 +3,8 @@ package token
 import (
 	"bytes"
 	"crypto/ed25519"
+	"crypto/mldsa"
+	"crypto/rand"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -19,11 +21,7 @@ func testKey(t *testing.T) (Key, *Verifier) {
 	if err != nil {
 		t.Fatalf("generating a key: %v", err)
 	}
-	public, ok := key.Private.Public().(ed25519.PublicKey)
-	if !ok {
-		t.Fatal("generated key is not Ed25519")
-	}
-	return key, NewVerifier("moqom", map[string]ed25519.PublicKey{key.ID: public})
+	return key, NewVerifier("moqom", []Key{key})
 }
 
 func claimsFor(grants control.Grants) Claims {
@@ -150,7 +148,7 @@ func TestForeignTokenTypeIsRefused(t *testing.T) {
 		t.Fatalf("minting: %v", err)
 	}
 	parts := strings.Split(minted, ".")
-	forged := encodeSegment(t, header{Algorithm: algorithm, Type: "JWT", KeyID: key.ID})
+	forged := encodeSegment(t, header{Algorithm: key.Algorithm, Type: "JWT", KeyID: key.ID})
 
 	if _, err := verifier.Verify(forged+"."+parts[1]+"."+parts[2], now); !errors.Is(err, ErrUnsupported) {
 		t.Errorf("a non-MOQT token gave %v, want ErrUnsupported", err)
@@ -213,10 +211,7 @@ func TestBothKeysVerifyDuringRotation(t *testing.T) {
 	if err != nil {
 		t.Fatalf("generating: %v", err)
 	}
-	verifier := NewVerifier("moqom", map[string]ed25519.PublicKey{
-		retiring.ID: retiring.Private.Public().(ed25519.PublicKey),
-		incoming.ID: incoming.Private.Public().(ed25519.PublicKey),
-	})
+	verifier := NewVerifier("moqom", []Key{retiring, incoming})
 	now := time.Now()
 
 	for _, key := range []Key{retiring, incoming} {
@@ -339,9 +334,7 @@ func TestMalformedTokensAreRejectedNotPanicked(t *testing.T) {
 // be accepted, so the issuer is checked rather than merely recorded.
 func TestForeignIssuerIsRefused(t *testing.T) {
 	key, _ := testKey(t)
-	verifier := NewVerifier("moqom", map[string]ed25519.PublicKey{
-		key.ID: key.Private.Public().(ed25519.PublicKey),
-	})
+	verifier := NewVerifier("moqom", []Key{key})
 	now := time.Now()
 
 	foreign := claimsFor(control.Grants{})
@@ -366,18 +359,94 @@ func TestPublicJWKIsWellFormed(t *testing.T) {
 	if err := json.Unmarshal([]byte(encoded), &jwk); err != nil {
 		t.Fatalf("the JWK is not JSON: %v", err)
 	}
-	if jwk["kty"] != "OKP" || jwk["crv"] != "Ed25519" {
+	if jwk["kty"] != "AKP" || jwk["alg"] != "ML-DSA-65" {
 		t.Errorf("unexpected key type: %v", jwk)
 	}
 	if jwk["kid"] != key.ID {
 		t.Errorf("the JWK names key %q, want %q", jwk["kid"], key.ID)
 	}
-	raw, err := base64.RawURLEncoding.DecodeString(jwk["x"])
+	raw, err := base64.RawURLEncoding.DecodeString(jwk["pub"])
 	if err != nil {
 		t.Fatalf("the public key is not base64url: %v", err)
 	}
-	if len(raw) != ed25519.PublicKeySize {
-		t.Errorf("the public key is %d bytes, want %d", len(raw), ed25519.PublicKeySize)
+	if len(raw) != mldsa.MLDSA65().PublicKeySize() {
+		t.Errorf("the public key is %d bytes, want %d", len(raw), mldsa.MLDSA65().PublicKeySize())
+	}
+}
+
+func legacyKey(t *testing.T) (Key, ed25519.PrivateKey) {
+	t.Helper()
+	public, private, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("generating: %v", err)
+	}
+	key, err := LegacyEd25519(public)
+	if err != nil {
+		t.Fatalf("loading: %v", err)
+	}
+	return key, private
+}
+
+// signLegacy produces what Mint produced before ML-DSA, so the rollover can be
+// tested without Mint being able to make one.
+func signLegacy(t *testing.T, key Key, private ed25519.PrivateKey, claims Claims, now time.Time) string {
+	t.Helper()
+	claims.IssuedAt, claims.Expires, claims.ID = now.Unix(), now.Add(time.Minute).Unix(), "legacy"
+	signing := encodeSegment(t, header{Algorithm: AlgorithmEdDSA, Type: tokenType, KeyID: key.ID}) +
+		"." + encodeSegment(t, claims)
+	return signing + "." + base64.RawURLEncoding.EncodeToString(ed25519.Sign(private, []byte(signing)))
+}
+
+// Tokens signed with Ed25519 before the move still verify until they expire,
+// and an Ed25519 key never signs another.
+func TestEd25519KeysOnlyVerify(t *testing.T) {
+	legacy, private := legacyKey(t)
+	signer, _ := testKey(t)
+	verifier := NewVerifier("moqom", []Key{signer, legacy})
+	now := time.Now()
+
+	if _, err := verifier.Verify(signLegacy(t, legacy, private, claimsFor(control.Grants{}), now), now); err != nil {
+		t.Errorf("a token signed before the move was refused: %v", err)
+	}
+	if _, _, err := Mint(legacy, claimsFor(control.Grants{}), time.Minute, now); err == nil {
+		t.Error("an Ed25519 key minted a token")
+	}
+}
+
+// The algorithm belongs to the key, so a token naming EdDSA for an ML-DSA key
+// is refused before any signature is checked, and the reverse likewise.
+func TestATokenMustNameItsKeysAlgorithm(t *testing.T) {
+	legacy, private := legacyKey(t)
+	signer, _ := testKey(t)
+	verifier := NewVerifier("moqom", []Key{signer, legacy})
+	now := time.Now()
+
+	minted, _, err := Mint(signer, claimsFor(control.Grants{}), time.Minute, now)
+	if err != nil {
+		t.Fatalf("minting: %v", err)
+	}
+	parts := strings.Split(minted, ".")
+	parts[0] = encodeSegment(t, header{Algorithm: AlgorithmEdDSA, Type: tokenType, KeyID: signer.ID})
+	if _, err := verifier.Verify(strings.Join(parts, "."), now); !errors.Is(err, ErrUnsupported) {
+		t.Errorf("EdDSA named for an ML-DSA key gave %v, want ErrUnsupported", err)
+	}
+
+	legacyToken := strings.Split(signLegacy(t, legacy, private, claimsFor(control.Grants{}), now), ".")
+	legacyToken[0] = encodeSegment(t, header{Algorithm: AlgorithmMLDSA65, Type: tokenType, KeyID: legacy.ID})
+	if _, err := verifier.Verify(strings.Join(legacyToken, "."), now); !errors.Is(err, ErrUnsupported) {
+		t.Errorf("ML-DSA-65 named for an Ed25519 key gave %v, want ErrUnsupported", err)
+	}
+}
+
+func TestASeedAlwaysNamesTheSameKey(t *testing.T) {
+	seed := make([]byte, 32)
+	one, err := KeyFromSeed(seed)
+	if err != nil {
+		t.Fatalf("loading: %v", err)
+	}
+	two, _ := KeyFromSeed(seed)
+	if one.ID != two.ID || !one.CanSign() {
+		t.Errorf("a seed gave %s then %s", one.ID, two.ID)
 	}
 }
 

@@ -13,7 +13,6 @@ package token
 // package that would silently break every relay.
 
 import (
-	"crypto/ed25519"
 	"encoding/json"
 	"errors"
 	"io/fs"
@@ -77,7 +76,7 @@ type tcase struct {
 func buildFixture(t *testing.T) fixture {
 	t.Helper()
 
-	key, err := KeyFrom(ed25519.NewKeyFromSeed(interopSeed))
+	key, err := KeyFromSeed(interopSeed)
 	if err != nil {
 		t.Fatalf("deriving the signing key: %v", err)
 	}
@@ -192,23 +191,19 @@ func TestInteropFixture(t *testing.T) {
 		t.Fatalf("parsing the fixture: %v", err)
 	}
 
-	// Byte-for-byte, because the whole value of a fixture is that the far side
-	// is checking the same bytes this side produced. Minting is deterministic
-	// here only because every input is pinned -- including the token ID, which
-	// Mint would otherwise randomise.
+	// The committed tokens are what the far side checks, so they are what this
+	// side has to verify. ML-DSA signing is hedged, so regenerating the fixture
+	// changes the signatures and nothing else: every claim is pinned, including
+	// the token ID, which Mint would otherwise randomise.
 	if len(committed.Cases) != len(built.Cases) {
 		t.Fatalf("fixture has %d cases, minting produced %d", len(committed.Cases), len(built.Cases))
 	}
 
-	public, ok := ed25519.NewKeyFromSeed(interopSeed).Public().(ed25519.PublicKey)
-	if !ok {
-		t.Fatal("seed did not produce an Ed25519 key")
-	}
-	key, err := KeyFrom(ed25519.NewKeyFromSeed(interopSeed))
+	key, err := KeyFromSeed(interopSeed)
 	if err != nil {
 		t.Fatalf("deriving the key: %v", err)
 	}
-	verifier := NewVerifier(committed.Issuer, map[string]ed25519.PublicKey{key.ID: public})
+	verifier := NewVerifier(committed.Issuer, []Key{key})
 
 	for _, c := range committed.Cases {
 		claims, err := verifier.Verify(c.Token, time.Unix(committed.Now, 0))

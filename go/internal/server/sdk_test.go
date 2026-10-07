@@ -197,8 +197,8 @@ func TestTheSDKRunsARoom(t *testing.T) {
 	if len(keys.Keys) != 1 || keys.Keys[0].KeyID != minted.KeyID {
 		t.Fatalf("the signing key is not published: %+v", keys)
 	}
-	if keys.Binding != moqom.BindingBearer {
-		t.Fatalf("expected bearer binding today, got %q", keys.Binding)
+	if keys.Binding != moqom.BindingDPoP {
+		t.Fatalf("expected the dpop binding, got %q", keys.Binding)
 	}
 
 	// Moderation, and the entry that records it.
