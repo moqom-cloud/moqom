@@ -188,11 +188,17 @@ safety detector) is required in the room.
 
 ### Implementation risks
 
-- **Swift has no QUIC NAT traversal.** MoqomKit uses Network.framework, which
-  does not expose hole-punching. The options are building it on
-  Network.framework's UDP primitives, or a Rust core through FFI — and MoqomKit
-  deliberately has no C ABI today. This is the biggest cost in the plan, and it
-  should be prototyped before it is promised.
+- **Network.framework hole-punching is burst-only.** MoqomKit's direct path is
+  built on Network.framework: a UDP probe flow on the QUIC port steals the
+  listener's packets, so Swift sends three probes and stops at the first
+  inbound packet, and has no QUIC datagrams on direct paths. To cover this,
+  MoqomKit can now run the direct path on the engine's Rust socket layer
+  through a narrow C ABI (`moqom-direct-ffi`), chosen at init with
+  `directBackend: .rust`. The Rust backend probes continuously from the same
+  socket quinn uses, and carries datagrams. Only the socket and QUIC sit
+  behind the ABI; MOQT, offers, peer checks and tickets stay in Swift. Neither
+  backend has been measured across real NATs yet; see
+  [Open work: the Rust direct backend](#open-work-the-rust-direct-backend).
 - **iroh is a fork of quinn, and the engine vendors quinn.** Adopting iroh means
   either two QUIC stacks or re-basing on iroh's fork. Use iroh to prototype and
   to measure, and decide after.
@@ -208,6 +214,7 @@ safety detector) is required in the room.
 | Sealed candidate offers | Built | Built; byte-identical, pinned by a shared test vector |
 | Offer exchange on the participant's `.direct` track | Caller publishes on its stage slot | `DirectOffers` |
 | Direct endpoint: pinned mutual TLS, hole-punching, MOQT both ways | Built, loopback-tested | `DirectEndpoint`, loopback-tested on macOS; builds for iOS. The dialler is a legacy `NWConnectionGroup`, because `NetworkConnection<QUIC>` cannot open streams from a fixed local port. No QUIC datagrams on direct paths |
+| Direct socket backend | quinn on one UDP socket, STUN and continuous probing (`direct::socket`) | `DirectBackend`: `.networkFramework` (default) or `.rust`, which runs the Rust socket layer through `moqom-direct-ffi` (opt-in `MoqomDirectRust` module, iOS and macOS). All pairings interoperate on macOS |
 | Peer verification | Through the `PeerVerifier` trait; the relay's `PeerCheck` implements it | `DirectPeerCheck`, a port of the relay's token and proof checks, with a required proof. A refused peer is closed with `0x03`; the dialler's empty unidirectional stream is the final admission |
 | Merging relay and direct paths, with fallback | `DualSubscription` | `DualSubscription`, same rules |
 | Pausing the relay copy while direct | Not built: its stall detection compares against relay objects | `FORWARD=0` in `REQUEST_UPDATE` once direct, `FORWARD=1` on fallback or after 500 ms of direct silence |
@@ -222,6 +229,59 @@ so a subscriber can pause its copy without giving up the subscription. A
 resumed copy starts at the next subgroup, so a fallback loses the rest of the
 current group; `NEW_GROUP_REQUEST` could shorten that for tracks with dynamic
 groups.
+
+### Open work: the Rust direct backend
+
+Built on the `oct-2026-direct-ffi` branches of moqom-engine and moqom-swift,
+not pushed. The C header is `moqom-engine/moqom-direct-ffi/include/moqom_direct.h`
+(ABI version 1); `MoqomDirectRust` checks the version before use.
+
+Verified: 19 FFI tests and the Rust client's direct tests; in Swift, Rust ↔ Rust,
+Network.framework dialling Rust, and Rust dialling Network.framework all set
+up, refuse a viewer, an impostor and the wrong certificate, and carry media on
+macOS.
+
+Not done, or not known yet:
+
+- **Real networks.** Nothing has run across real NATs. The field test should
+  compare Swift on Network.framework, Swift on Rust, and the Rust client, on a
+  LAN, across a city and on cellular.
+- **visionOS and tvOS.** No slices: their Rust targets are tier 3. Those
+  platforms keep the Network.framework backend.
+- **IPv4 only.** The Rust socket binds IPv4 and skips IPv6 candidates, so an
+  IPv6-only network gets no direct path on that backend.
+- **A lost stream reset.** When a Network.framework side that accepted the
+  connection resets a stream, a Rust reader doesn't see the reset while the
+  stream is open. Logged as a known issue in the Swift tests.
+- **Datagrams need both sides.** quinn won't send datagrams from a side that
+  didn't offer them, so a Rust ↔ Network.framework path has none.
+- **A dial can succeed and then close.** In TLS 1.3 the client finishes before
+  the server checks its certificate, so a dialler whose certificate the peer
+  rejects sees a connection that closes at once; SETUP fails on it.
+- **Distribution.** Locally the package finds the framework through
+  `Artifacts/` (`Scripts/direct-ffi.sh`) or `MOQOM_DIRECT_RUST=1`. A release
+  needs a remote `binaryTarget` with a URL and checksum, and a decision on where
+  it is hosted.
+- **Size.** About 4.4 MB stripped on iOS. `ring` is still linked alongside
+  aws-lc through rcgen's default features; removing it means changing the
+  workspace's rcgen features, which the relay and recorder share.
+- **Not wired into `Room`,** on either backend.
+- **iOS Simulator crash in the Network.framework carrier.** Running the direct
+  suite on the iOS 26.2 Simulator, the process traps inside Network.framework
+  when a `MoqtSession` left from an earlier Network.framework test is freed and
+  releases its `NetworkQUICCarrier` stream after the connection has failed. It
+  doesn't happen on macOS, and the Rust-only tests pass on the simulator. The
+  frames are unsymbolicated and the framework logs no message, so the cause
+  isn't known. It could affect any iOS app that tears down a direct or relay
+  session after a failure, so it needs a real iPhone run and, if it
+  reproduces, a minimal case for Apple. Nothing has run on a real iPhone.
+
+Questions for the owner:
+
+1. Should `.rust` become the default on iOS and macOS once the field test is in,
+   or stay opt-in?
+2. Where should the release xcframework be hosted (GitHub release on the SDK
+   repo, or GCS)?
 
 ### Direct tickets and billing
 
