@@ -89,7 +89,7 @@ func buildFixture(t *testing.T) fixture {
 	// A thumbprint longer than DeviceIDLength, so the fixture actually exercises
 	// the truncation. A short one would pass on both sides no matter what either
 	// of them did with the length.
-	const thumbprint = "MpXqvQAmv7Y3Kk9dHnJpLwRtUvXyZaBcDeFgHiJkLmN"
+	const thumbprint = "MpXqvQAmv7Y3Kk9dHnJpLwRtUvXyZaBcDeFgHiJkLmM"
 
 	built := fixture{
 		Issuer: "https://api.moqom.cloud",

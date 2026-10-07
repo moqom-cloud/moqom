@@ -300,6 +300,21 @@ type header struct {
 // The lifetime is validated rather than clamped, and the claims are filled here
 // rather than by the caller, so nothing upstream can issue a token with no expiry
 // by forgetting to set one.
+// ValidThumbprint refuses anything but an RFC 7638 SHA-256 thumbprint: 43
+// base64url characters decoding to 32 bytes. A token whose cnf is any other
+// string is bound to no key at all, since no relay will accept a proof for it,
+// so it is refused here rather than issued and refused at the door.
+func ValidThumbprint(thumbprint string) error {
+	if thumbprint == "" {
+		return fmt.Errorf("%w: token needs a device thumbprint", control.ErrInvalid)
+	}
+	decoded, err := base64.RawURLEncoding.Strict().DecodeString(thumbprint)
+	if err != nil || len(decoded) != sha256.Size {
+		return fmt.Errorf("%w: device thumbprint is not an RFC 7638 SHA-256 thumbprint", control.ErrInvalid)
+	}
+	return nil
+}
+
 func Mint(key Key, claims Claims, lifetime time.Duration, now time.Time) (string, time.Time, error) {
 	if lifetime == 0 {
 		lifetime = DefaultLifetime
@@ -310,8 +325,8 @@ func Mint(key Key, claims Claims, lifetime time.Duration, now time.Time) (string
 	if claims.Subject == "" {
 		return "", time.Time{}, fmt.Errorf("%w: token needs a subject", control.ErrInvalid)
 	}
-	if claims.Confirmation.Thumbprint == "" {
-		return "", time.Time{}, fmt.Errorf("%w: token needs a device thumbprint", control.ErrInvalid)
+	if err := ValidThumbprint(claims.Confirmation.Thumbprint); err != nil {
+		return "", time.Time{}, err
 	}
 	if _, err := claims.MOQT.Grants(); err != nil {
 		return "", time.Time{}, err

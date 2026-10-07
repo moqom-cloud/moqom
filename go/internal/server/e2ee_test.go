@@ -36,7 +36,7 @@ func claimsOf(t *testing.T, minted string) map[string]any {
 func (h *harness) mint(t *testing.T, room string) map[string]any {
 	t.Helper()
 	response, err := h.tokens.MintClientToken(as(ownerKey), &adminpb.MintClientTokenRequest{
-		Tenant: tenant, Username: "bob", DeviceThumbprint: "abcdefghijklmnopqrst", Room: room,
+		Tenant: tenant, Username: "bob", DeviceThumbprint: "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQ", Room: room,
 	})
 	if err != nil {
 		t.Fatalf("minting: %v", err)

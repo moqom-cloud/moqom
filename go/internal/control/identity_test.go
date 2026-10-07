@@ -10,7 +10,7 @@ import (
 // value and a session is identified by it. Two derivations means a ban that
 // silently fails to match the thing it was aimed at.
 func TestDeviceIsTheThumbprintPrefix(t *testing.T) {
-	thumbprint := "MpXqvQAmv7Y3Kk9dHnJpLwRtUvXyZaBcDeFgHiJkLmN"
+	thumbprint := "MpXqvQAmv7Y3Kk9dHnJpLwRtUvXyZaBcDeFgHiJkLmM"
 
 	device, err := DeviceFromThumbprint(thumbprint)
 	if err != nil {

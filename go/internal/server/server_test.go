@@ -310,7 +310,7 @@ func TestMintingIsBoundedByTheAccountCeiling(t *testing.T) {
 	minted, err := h.tokens.MintClientToken(as(joinKey), &adminpb.MintClientTokenRequest{
 		Tenant:           tenant,
 		Username:         "bob",
-		DeviceThumbprint: "MpXqvQAmv7Y3Kk9dHnJpLwRtUvXyZaBcDeFgHiJkLmN",
+		DeviceThumbprint: "MpXqvQAmv7Y3Kk9dHnJpLwRtUvXyZaBcDeFgHiJkLmM",
 		Room:             roomName,
 		Grants: &adminpb.Grants{
 			Publish: []adminpb.PublishScope{adminpb.PublishScope_PUBLISH_SCOPE_AUDIO},
@@ -330,15 +330,15 @@ func TestMintingIsBoundedByTheAccountCeiling(t *testing.T) {
 	// And cannot mint a moderator, however the request is phrased.
 	for _, attempt := range []*adminpb.MintClientTokenRequest{
 		{
-			Tenant: tenant, Username: "bob", DeviceThumbprint: "abcdefghijklmnopqrst", Room: roomName,
+			Tenant: tenant, Username: "bob", DeviceThumbprint: "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQ", Room: roomName,
 			Grants: &adminpb.Grants{Moderation: []adminpb.Capability{adminpb.Capability_CAPABILITY_KICK}},
 		},
 		{
-			Tenant: tenant, Username: "bob", DeviceThumbprint: "abcdefghijklmnopqrst", Room: roomName,
+			Tenant: tenant, Username: "bob", DeviceThumbprint: "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQ", Room: roomName,
 			Preset: adminpb.CapabilityPreset_CAPABILITY_PRESET_SUPER_MODERATOR,
 		},
 		{
-			Tenant: tenant, Username: "bob", DeviceThumbprint: "abcdefghijklmnopqrst", Room: roomName,
+			Tenant: tenant, Username: "bob", DeviceThumbprint: "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQ", Room: roomName,
 			Grants: &adminpb.Grants{IsOwner: true},
 		},
 	} {
@@ -355,7 +355,7 @@ func TestMintedTokensVerifyAndCarryTheirScope(t *testing.T) {
 	response, err := h.tokens.MintClientToken(as(ownerKey), &adminpb.MintClientTokenRequest{
 		Tenant:           tenant,
 		Username:         "alice",
-		DeviceThumbprint: "MpXqvQAmv7Y3Kk9dHnJpLwRtUvXyZaBcDeFgHiJkLmN",
+		DeviceThumbprint: "MpXqvQAmv7Y3Kk9dHnJpLwRtUvXyZaBcDeFgHiJkLmM",
 		Room:             roomName,
 		Preset:           adminpb.CapabilityPreset_CAPABILITY_PRESET_SUPER_MODERATOR,
 		Grants: &adminpb.Grants{
@@ -393,7 +393,7 @@ func TestMintingRefusesAClosedRoom(t *testing.T) {
 	}
 
 	_, err := h.tokens.MintClientToken(as(ownerKey), &adminpb.MintClientTokenRequest{
-		Tenant: tenant, Username: "bob", DeviceThumbprint: "abcdefghijklmnopqrst", Room: roomName,
+		Tenant: tenant, Username: "bob", DeviceThumbprint: "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQ", Room: roomName,
 	})
 	if status.Code(err) != codes.FailedPrecondition {
 		t.Errorf("minting into a closed room gave %v, want FailedPrecondition", status.Code(err))
@@ -411,14 +411,14 @@ func TestAgeGatedRoomsRequireAnAssertion(t *testing.T) {
 	}
 
 	_, err := h.tokens.MintClientToken(as(ownerKey), &adminpb.MintClientTokenRequest{
-		Tenant: tenant, Username: "bob", DeviceThumbprint: "abcdefghijklmnopqrst", Room: roomName,
+		Tenant: tenant, Username: "bob", DeviceThumbprint: "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQ", Room: roomName,
 	})
 	if status.Code(err) != codes.FailedPrecondition {
 		t.Errorf("minting without an age assertion gave %v, want FailedPrecondition", status.Code(err))
 	}
 
 	if _, err := h.tokens.MintClientToken(as(ownerKey), &adminpb.MintClientTokenRequest{
-		Tenant: tenant, Username: "bob", DeviceThumbprint: "abcdefghijklmnopqrst",
+		Tenant: tenant, Username: "bob", DeviceThumbprint: "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQ",
 		Room: roomName, AgeVerified: true,
 	}); err != nil {
 		t.Errorf("minting with an age assertion failed: %v", err)

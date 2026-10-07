@@ -10,7 +10,7 @@ import (
 
 // A real thumbprint, because the device a token is minted for is derived from it
 // and an override can name that device.
-const davesPhone = "MpXqvQAmv7Y3Kk9dHnJpLwRtUvXyZaBcDeFgHiJkLmN"
+const davesPhone = "MpXqvQAmv7Y3Kk9dHnJpLwRtUvXyZaBcDeFgHiJkLmM"
 
 func davesDevice(t *testing.T) string {
 	t.Helper()

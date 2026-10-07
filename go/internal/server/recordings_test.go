@@ -29,7 +29,7 @@ const (
 	recorderKey        = "recorder-key"
 	otherTenantKey     = "globex-key"
 	recordingBucket    = "moqom-recordings-test"
-	recorderThumbprint = "recorderrecorderrecorderrecorder0123456789a"
+	recorderThumbprint = "recorderrecorderrecorderrecorder0123456789A"
 	recorderDevice     = "recorderrecorder"
 	recorderLease      = 45 * time.Second
 )
@@ -499,7 +499,7 @@ func TestRecorderCredentialsReachOnlyTheRecorderLink(t *testing.T) {
 		t.Errorf("a recorder key reached the admin API: %v", status.Code(err))
 	}
 	if _, err := h.tokens.MintClientToken(as(recorderKey), &adminpb.MintClientTokenRequest{
-		Tenant: tenant, Username: "bob", DeviceThumbprint: "abcdefghijklmnopqrst", Room: roomName,
+		Tenant: tenant, Username: "bob", DeviceThumbprint: "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQ", Room: roomName,
 	}); status.Code(err) != codes.PermissionDenied {
 		t.Errorf("a recorder key minted a client token: %v", status.Code(err))
 	}
@@ -517,7 +517,7 @@ func TestTheRecorderIdentityIsReserved(t *testing.T) {
 	h.createRoom(t, "alice")
 
 	for _, request := range []*adminpb.MintClientTokenRequest{
-		{Tenant: tenant, Username: server.RecorderSubject, DeviceThumbprint: "abcdefghijklmnopqrst", Room: roomName},
+		{Tenant: tenant, Username: server.RecorderSubject, DeviceThumbprint: "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQ", Room: roomName},
 		{Tenant: tenant, Username: "mallory", DeviceThumbprint: recorderThumbprint, Room: roomName},
 	} {
 		if _, err := h.tokens.MintClientToken(as(ownerKey), request); status.Code(err) != codes.InvalidArgument {

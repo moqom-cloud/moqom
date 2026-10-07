@@ -27,7 +27,7 @@ import (
 	"github.com/moqom-cloud/moqom/go/internal/token"
 )
 
-const deviceThumbprint = "MpXqvQAmv7Y3Kk9dHnJpLwRtUvXyZaBcDeFgHiJkLmN"
+const deviceThumbprint = "MpXqvQAmv7Y3Kk9dHnJpLwRtUvXyZaBcDeFgHiJkLmM"
 
 // The EC key from RFC 7517 §A.1 and the thumbprint RFC 7638 computes over it.
 //

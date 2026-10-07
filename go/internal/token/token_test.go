@@ -31,7 +31,7 @@ func claimsFor(grants control.Grants) Claims {
 		Issuer:       "moqom",
 		Subject:      "alice",
 		Audience:     "acme",
-		Confirmation: Confirmation{Thumbprint: "MpXqvQAmv7Y3Kk9dHnJpLwRtUvXyZaBcDeFgHiJkLmN"},
+		Confirmation: Confirmation{Thumbprint: "MpXqvQAmv7Y3Kk9dHnJpLwRtUvXyZaBcDeFgHiJkLmM"},
 		MOQT:         ScopeFrom(grants, "room-42", false, false),
 	}
 }
