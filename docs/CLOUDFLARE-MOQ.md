@@ -13,13 +13,12 @@ for everything else. They run the latest MoQ Transport draft and the full featur
 > | Part | State |
 > | --- | --- |
 > | Billing | Built, on moqom branch `oct-2026-cloudflare-billing` |
-> | Draft-16 codec, Swift and Rust | Committed locally on `oct-2026-moqt-drafts` |
-> | Public SDK call for connecting to Cloudflare | Still being written |
-> | Live interop test | Still being written |
+> | Swift SDK (drafts 16, 19, 22) | Done, on moqom-swift `oct-2026-moqt-drafts`. A live subscribe through Cloudflare works. |
+> | Rust client and CLI | In progress, on moqom-engine `oct-2026-moqt-drafts` |
+> | Publishing to Cloudflare | Unit-tested against a scripted relay only, until there's a Cloudflare account to test with |
 > | SDK usage counters | Not started |
 >
-> Nothing is pushed or deployed. Step 3 below gives the intended API shape; check it against
-> the SDK READMEs once merged.
+> Nothing is pushed or deployed.
 
 ## How it works
 
@@ -113,16 +112,20 @@ Cloudflare's for media, and MOQOM's for room keys.
 
 ### 3. Point the SDK at Cloudflare
 
-Intended shape; check the SDK READMEs once merged.
-
 Swift:
 
 ```swift
-let endpoint = RelayEndpoint.cloudflare(token: cloudflareToken)   // draft-16 host by default
-try await session.connect(to: endpoint)
+let session = try await MoqtTransport.network().connect(
+    to: .cloudflare(token: cloudflareToken),   // draft-16.cloudflare.mediaoverquic.com:443
+    credentials: credentials                   // identity only; no MOQOM token is sent
+)
 ```
 
-Rust CLI, which is handy for testing:
+`RelayEndpoint.cloudflare(token:host:draft:)` takes a different host for a relay that isn't the
+default. `draft` is `.draft16`, the only value until Cloudflare deploys draft-18. When the
+endpoint is printed or logged, its path, which holds the token, is redacted.
+
+Rust CLI, once the Rust work lands. It's handy for testing:
 
 ```sh
 moqom-cli cloudflare sub --token "$CF_TOKEN" --namespace my-namespace
@@ -131,8 +134,13 @@ moqom-cli cloudflare sub --token "$CF_TOKEN" --namespace my-namespace
 On a Cloudflare endpoint the SDK:
 
 - speaks draft-16 and sends none of MOQOM's own setup options;
-- fails at once with a descriptive error if you use a feature Cloudflare doesn't support (see
-  [Limits](#limits)), rather than sending a message the relay would reject;
+- never sends a message Cloudflare doesn't support (see [Limits](#limits)):
+  - `fetch` throws `MoqomError.unsupportedByRelay(feature: .fetch, …)`. Rooms skip catch-up and
+    start at the next group.
+  - `updatePriority` and `updateForwarding` do nothing, so pause doesn't pause.
+  - Credential renewal throws `.unsupportedByRelay(.credentialRenewal)`. The session ends when
+    the Cloudflare token expires, so the app reconnects with a fresh one.
+  - A GOAWAY from the relay is treated as an interruption, and the session redials.
 - keeps end-to-end encryption exactly as on MOQOM relays.
 
 ### 4. Report usage to MOQOM
@@ -182,7 +190,14 @@ Keep the relay key on your backend. It's a secret, so apps never report usage th
 
 ### 5. Test
 
-Cloudflare publishes a subscribe-only demo token for namespace `bbb` on its
+Swift:
+
+```sh
+MOQOM_CF_DEMO_TOKEN=fetch swift test --filter CloudflareLiveTests   # reads the demo token from Cloudflare's page
+```
+
+On 6 October 2026 this connected on `moqt-16` and received `bbb/0.mp4`, a 1,312-byte segment
+starting with `ftyp`, followed by a media segment from the live group. Cloudflare publishes a subscribe-only demo token for namespace `bbb` on its
 [demo streams page](https://developers.cloudflare.com/moq/demo-streams/). Use it to check that a
 client connects and receives objects before you create a relay of your own:
 
@@ -239,5 +254,6 @@ exist only on MOQOM's relays:
 | Area | Where |
 | --- | --- |
 | Billing | `moqom/go/internal/billing`: `HostingCloudflare`, `Pricing.CloudflareFreeUntil`, `CloudflareFreeMinutesPerMonth`, `CloudflarePrice`. Tables `billing_cloudflare_months` and `billing_cloudflare_claims`. |
-| Swift codec | `moqom-swift/Sources/MoqomWire/Draft.swift`, `Draft16.swift` |
+| Swift codec | `moqom-swift/Sources/MoqomWire/Draft.swift`, `Draft16.swift`, `Draft22.swift` |
+| Swift session | `moqom-swift/Sources/MoqomKit/Transport/Draft16Session.swift`, `SessionDialect.swift`, `Transport.swift` (`RelayEndpoint.cloudflare`) |
 | Rust codec | `moqom-engine/moqom-proto/src/draft.rs` |
