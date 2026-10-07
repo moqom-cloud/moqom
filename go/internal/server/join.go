@@ -187,7 +187,8 @@ func (s *Server) JoinHandler(createsRooms bool) http.Handler {
 		w.Header().Set("Cache-Control", "no-store")
 		_ = json.NewEncoder(w).Encode(response)
 	})
-	mux.HandleFunc(RelayLinkPath, s.relayLink(limiter))
+	mux.HandleFunc(RelayLinkPath, s.relayLink(
+		&joinLimiter{per: howManyLinksPerMinute, window: time.Minute, now: s.core.now}))
 	mux.HandleFunc(RelayEnrollPath, s.relayEnroll(limiter))
 
 	return mux

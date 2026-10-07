@@ -11,7 +11,9 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
+	adminpb "github.com/moqom-cloud/moqom-go/admin/adminpb"
 	"github.com/moqom-cloud/moqom/go/internal/server"
 )
 
@@ -59,6 +61,7 @@ func moqtOf(t *testing.T, minted string) map[string]any {
 
 func TestARelayAccountMintsAReadOnlyLinkCredential(t *testing.T) {
 	h := newHarness(t)
+	h.createRoom(t, "alice")
 
 	code, response, body := askForLink(t, h, relayKey, server.RelayLinkRequest{
 		Tenant: tenant, Room: roomName, Key: &deviceKey,
@@ -125,5 +128,62 @@ func TestTheBackendPathsNeverMintARelayLink(t *testing.T) {
 	})
 	if code != http.StatusBadRequest {
 		t.Errorf("a device named %s got %d, want 400", server.RelaySubject, code)
+	}
+}
+
+// One room per credential, bound to a key. A link naming no room would read the
+// whole tenant, and one naming only a thumbprint would bind the credential to a
+// key the edge never showed.
+func TestALinkCredentialNamesOneRoomAndAKey(t *testing.T) {
+	h := newHarness(t)
+	h.createRoom(t, "alice")
+
+	for name, asked := range map[string]server.RelayLinkRequest{
+		"no room":           {Tenant: tenant, Key: &deviceKey},
+		"only a thumbprint": {Tenant: tenant, Room: roomName, Device: deviceThumbprint},
+	} {
+		if code, _, body := askForLink(t, h, relayKey, asked); code != http.StatusBadRequest {
+			t.Errorf("%s got %d %s, want 400", name, code, body)
+		}
+	}
+}
+
+// Ending a room reaches the edges at their next renewal, which is refused; a
+// room that never existed is refused from the start.
+func TestALinkIsRefusedForARoomThatIsMissingOrEnded(t *testing.T) {
+	h := newHarness(t)
+	asked := server.RelayLinkRequest{Tenant: tenant, Room: roomName, Key: &deviceKey}
+
+	if code, _, body := askForLink(t, h, relayKey, asked); code != http.StatusNotFound {
+		t.Errorf("a link into no room got %d %s, want 404", code, body)
+	}
+
+	h.createRoom(t, "alice")
+	if code, _, body := askForLink(t, h, relayKey, asked); code != http.StatusOK {
+		t.Fatalf("a link into an open room: %d %s", code, body)
+	}
+
+	if _, err := h.rooms.CloseRoom(as(ownerKey), &adminpb.CloseRoomRequest{Tenant: tenant, Room: roomName}); err != nil {
+		t.Fatalf("closing the room: %v", err)
+	}
+	if code, _, body := askForLink(t, h, relayKey, asked); code != http.StatusGone {
+		t.Errorf("renewing a link into an ended room got %d %s, want 410", code, body)
+	}
+}
+
+// The lifetime is how long a revocation takes to reach a parent, so it is
+// shorter than a device's.
+func TestALinkCredentialIsShortLived(t *testing.T) {
+	h := newHarness(t)
+	h.createRoom(t, "alice")
+
+	code, response, body := askForLink(t, h, relayKey, server.RelayLinkRequest{
+		Tenant: tenant, Room: roomName, Key: &deviceKey,
+	})
+	if code != http.StatusOK {
+		t.Fatalf("minting a link: %d %s", code, body)
+	}
+	if lasts := response.ExpiresAt.Sub(h.now()); lasts != 5*time.Minute {
+		t.Errorf("a link credential lasts %v, want 5m", lasts)
 	}
 }
