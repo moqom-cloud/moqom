@@ -8,6 +8,22 @@ Use Cloudflare when you want free global distribution and can do without the fea
 MOQOM's relays have (listed under [Limits](#limits)). Use MOQOM's relays, cloud or self-hosted,
 for everything else. They run the latest MoQ Transport draft and the full feature set.
 
+**In one minute:**
+
+1. The app connects to Cloudflare's relay with a Cloudflare token instead of a MOQOM token.
+   The SDK sees the Cloudflare endpoint and switches to Cloudflare's draft (16) by itself.
+2. Media is end-to-end encrypted on the device as usual, so Cloudflare forwards ciphertext. Room
+   keys still come from MOQOM, so encrypted rooms also need a MOQOM participant token.
+3. Your backend creates the Cloudflare tokens, and it reports usage to MOQOM with
+   `"hosting": "cloudflare"` because MOQOM can't see Cloudflare's traffic.
+4. Billing is free until 1 November 2026. After that, the first 1,000 participant-minutes each
+   month are free, and the rest costs the self-hosted fee of $0.05/GiB.
+5. Some features need MOQOM's relays, such as catch-up, pause and moderation. The SDK throws
+   `unsupportedByRelay` rather than send them to Cloudflare.
+
+The public version of this guide, without branch names or internal status, is
+`sites/moqom-dev/src/content/docs/guides/cloudflare.md`.
+
 > **Status, 6 October 2026.**
 >
 > | Part | State |
