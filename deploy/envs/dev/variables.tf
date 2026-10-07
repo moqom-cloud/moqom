@@ -25,6 +25,24 @@ variable "control_image" {
   description = "moqom-control container image."
 }
 
+variable "recorder_image" {
+  type        = string
+  description = "moqom-recorder container image (moqom-engine/Dockerfile.recorder), pinned by digest. Null creates the recorder's identities, grants and secret containers and runs no workers."
+  default     = null
+}
+
+variable "recorder_thumbprint" {
+  type        = string
+  description = "JWK thumbprint of the recorder's key, as tools/recorder-secrets.sh prints it. Not a secret. Null leaves hosted recording off in the control plane, which refuses to start with a recording bucket and no thumbprint."
+  default     = null
+}
+
+variable "recorder_replicas" {
+  type        = number
+  description = "Recorder workers: the number of rooms that can be recorded at once."
+  default     = 1
+}
+
 variable "dns_domain" {
   type        = string
   description = "Zone apex with a trailing dot, e.g. dev.moqom.cloud. Null skips DNS entirely and clients dial the relay's address directly."

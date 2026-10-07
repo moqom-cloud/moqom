@@ -67,3 +67,8 @@ output "ziti" {
   }
   description = "The management overlay. The management API is reached from the cluster, or from a laptop through `gcloud compute start-iap-tunnel`; tools/ziti-provision.sh does the latter."
 }
+
+output "recorder_signer_account" {
+  value       = module.recorder.signer_account
+  description = "The account recording download links are signed as; the control plane's MOQOM_RECORDING_SIGNER_ACCOUNT when recorder_thumbprint is set."
+}

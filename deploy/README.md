@@ -22,6 +22,7 @@ modules/
   gke/                     Autopilot cluster and the workload identity bindings on it.
   workload/                One Deployment and its services. What dev runs the control plane as.
   data/                    Cloud SQL Postgres, recording bucket, secret containers.
+  recorder/                Hosted recorder workers and the accounts that write and read recordings.
   federation/              Workload identity for CI and for non-GCP relays.
   observability/           Log routing, log-based metrics, alerts, uptime check.
   dns-steering/            Geolocation routing across relay regions.
@@ -619,6 +620,86 @@ account are deliberately *not* created here: which external principal may act as
 it is a per-customer decision with a per-customer blast radius, and encoding it
 in the shared environment root turns every onboarding into a change to
 production infrastructure.
+
+## Hosted recording in dev
+
+`envs/dev` has a `module "recorder"` block (`modules/recorder`) and three
+variables, all off by default:
+
+- `recorder_image` is the recorder image, pinned by digest. While it is null,
+  the module creates the identities, grants and secret containers, and runs no
+  workers.
+- `recorder_thumbprint` is the JWK thumbprint of the recorder's key. While it is
+  null, the control plane has no recording environment. The control plane
+  refuses to start with `MOQOM_RECORDING_BUCKET` and no thumbprint, so the two
+  go on together.
+- `recorder_replicas` is the number of rooms that can be recorded at once.
+
+Once the thumbprint is set, the control plane gets these:
+
+- `MOQOM_RECORDING_BUCKET`
+- `MOQOM_RECORDER_THUMBPRINT`
+- `MOQOM_RECORDING_SIGNER_ACCOUNT`, from the module's `signer_account`
+- `MOQOM_RECORDING_BUCKET_LOCATION` and `MOQOM_RECORDING_LIFECYCLE`, which come
+  from the same values the bucket's lifecycle rules use. Storage is billed at
+  the price of the storage class each object is actually in.
+
+`tools/recorder-secrets.sh` provisions the `is_recorder` account. It also does
+the following:
+
+- generates the recorder's key;
+- issues a link client certificate;
+- adds `{"name": "recorders", "is_recorder": true, …}` to the accounts file;
+- writes the `moqom-dev-recorder` Kubernetes secret that the workers mount;
+- prints the thumbprint.
+
+It is idempotent, like `sync-secrets.sh`, and none of these values pass through
+Terraform state.
+
+The commands, from the workspace root (`moqom-cloud`), in order. Review each
+plan before applying it.
+
+```sh
+# 1. The Secret Manager containers, the two service accounts and their grants.
+#    No workers yet, and recording still off in the control plane.
+cd moqom/deploy/envs/dev
+terraform init -backend-config=backend.hcl
+terraform plan -out=recorder.tfplan
+terraform apply recorder.tfplan
+cd ../../../..
+
+# 2. The key, the account, the certificate and the workers' secret. Then
+#    sync-secrets.sh again, so the control plane mounts the new accounts file.
+moqom/deploy/tools/recorder-secrets.sh        # prints recorder_thumbprint = "…"
+moqom/deploy/tools/sync-secrets.sh
+
+# 3. The image, built for the nodes' architecture.
+cd moqom-engine
+docker buildx build --platform linux/amd64 -f Dockerfile.recorder \
+  -t us-docker.pkg.dev/moqom-503700/moqom-dev/moqom-recorder:dev --push .
+gcloud artifacts docker images describe \
+  us-docker.pkg.dev/moqom-503700/moqom-dev/moqom-recorder:dev \
+  --project=moqom-503700 --format='value(image_summary.digest)'
+cd ..
+
+# 4. In envs/dev/terraform.tfvars:
+#      recorder_image      = "us-docker.pkg.dev/moqom-503700/moqom-dev/moqom-recorder@sha256:…"
+#      recorder_thumbprint = "…"   # from step 2
+cd moqom/deploy/envs/dev
+terraform plan -out=recorder.tfplan
+terraform apply recorder.tfplan
+
+# 5. Check: one worker running, and the control plane saying recording is on.
+kubectl -n moqom get pods -l app.kubernetes.io/component=recorder
+kubectl -n moqom logs deploy/moqom-dev-control | grep -E 'hosted recording on|recording storage billed'
+```
+
+The workers reach the control plane by its in-cluster service name, which the
+link server certificate carries. They reach the relay in `var.region` on its
+public address, pinned to the certificate the phones pin. If that relay's
+certificate is reissued, run `recorder-secrets.sh` again: it rewrites the secret
+from the current `relay-tls-cert`, and the pods pick the new certificate up when
+they restart.
 
 ## Running the relay tier alone
 

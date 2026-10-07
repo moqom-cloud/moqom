@@ -95,6 +95,11 @@ locals {
     "${local.name_prefix}-link-relay-key"   = []
     "${local.name_prefix}-link-admin-cert"  = []
     "${local.name_prefix}-link-admin-key"   = []
+    # The recorder workers' client certificate, issued by
+    # tools/recorder-secrets.sh. Their key and credential are the recorder
+    # module's own containers.
+    "${local.name_prefix}-link-recorder-cert" = []
+    "${local.name_prefix}-link-recorder-key"  = []
 
     # Stripe, pasted in from the dashboard; see tools/sync-secrets.sh. A
     # restricted key (rk_) with customers, checkout sessions, payment intents
@@ -323,14 +328,7 @@ module "data" {
   recording_bucket_name     = var.recording_bucket_name
   recording_bucket_location = var.region
 
-  # Dev recordings are test artefacts. They go straight to Nearline and are
-  # deleted after a week; nothing here is worth archiving.
-  recording_lifecycle = {
-    nearline_after_days = 1
-    coldline_after_days = 0
-    archive_after_days  = 0
-    delete_after_days   = 7
-  }
+  recording_lifecycle = local.recording_lifecycle
 
   recording_bucket_force_destroy = true
 
@@ -423,7 +421,7 @@ module "control" {
     # with paying tenants in it, this stays off and rooms are made through the
     # admin API by something that knows why.
     MOQOM_CONTROL_JOIN_CREATES_ROOMS = "1"
-  }, local.control_overlay_env)
+  }, local.control_overlay_env, local.control_recording_env)
 
   secret_env = {
     MOQOM_CONTROL_SIGNING_KEYS = {
@@ -547,6 +545,63 @@ locals {
   } : {}
 
   relay_enroll_audience = "${local.name_prefix}-relay-enroll"
+
+  # Dev recordings are test artefacts. They go straight to Nearline and are
+  # deleted after a week; nothing here is worth archiving.
+  recording_lifecycle = {
+    nearline_after_days = 1
+    coldline_after_days = 0
+    archive_after_days  = 0
+    delete_after_days   = 7
+  }
+
+  # Hosted recording, on once the recorder's thumbprint is known. The bucket's
+  # location and lifecycle go with it so storage is billed at the price of the
+  # class each object is actually in.
+  control_recording_env = var.recorder_thumbprint == null ? {} : {
+    MOQOM_RECORDING_BUCKET          = module.data.recording_bucket
+    MOQOM_RECORDER_THUMBPRINT       = var.recorder_thumbprint
+    MOQOM_RECORDING_SIGNER_ACCOUNT  = module.recorder.signer_account
+    MOQOM_RECORDING_BUCKET_LOCATION = var.region
+    MOQOM_RECORDING_LIFECYCLE = join(",", [
+      "nearline=${local.recording_lifecycle.nearline_after_days}",
+      "coldline=${local.recording_lifecycle.coldline_after_days}",
+      "archive=${local.recording_lifecycle.archive_after_days}",
+      "delete=${local.recording_lifecycle.delete_after_days}",
+    ])
+  }
+}
+
+# --- Hosted recording --------------------------------------------------------
+#
+# The recorder pool. docs/RECORDING.md is the design; modules/recorder says
+# what each identity may touch. tools/recorder-secrets.sh fills the secrets
+# and the Kubernetes secret the workers mount, and prints the thumbprint that
+# turns recording on above.
+module "recorder" {
+  source = "../../modules/recorder"
+
+  project_id  = var.project_id
+  name_prefix = local.name_prefix
+  namespace   = local.namespace
+
+  image    = var.recorder_image
+  replicas = var.recorder_replicas
+
+  recording_bucket        = module.data.recording_bucket
+  control_service_account = module.gke.workload_service_accounts["control"]
+
+  # In-cluster, by the service's name, which the link certificate carries.
+  control_endpoint    = "https://${local.name_prefix}-control.${local.namespace}.svc.cluster.local:${local.control_grpc_port}"
+  control_server_name = local.link_server_name
+
+  # The relay in the cluster's region, on its public address, pinned to the
+  # certificate the phones pin.
+  relay = "${module.relay[var.region].external_ip}:443"
+
+  kubernetes_secret = "${local.name_prefix}-recorder"
+
+  labels = merge(local.labels, { component = "recorder" })
 }
 
 module "relay" {
