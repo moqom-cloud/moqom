@@ -3,7 +3,7 @@
 The hosted recorder records a room for a tenant without the tenant running
 anything. It is billed the way the product promises: no recording fee. The
 recorder is a viewer and is billed as one, for the bytes it receives, and
-storage is passed through at cost.
+storage is charged per GiB-month at cost plus the usual markup.
 
 This document is for whoever operates or changes it. The public guide
 (`sites/moqom-dev/.../guides/recording.md`) covers the API from a customer's side.
@@ -64,8 +64,65 @@ A recording outlives its worker:
   recording now.
 
 What is lost at a handover is whatever the relay delivered between the old
-worker's last upload and the new worker's first subscription. The archive's
-`session` records make that gap visible.
+worker's last upload and the new worker's first subscription, less what the
+catch-up below recovers. The archive's `session` records make any gap visible.
+
+### Joining a room in progress
+
+A subscription starts at the next group, so a recorder that joins mid-group
+(at the start of a recording in a live room, after a reconnect, or after a
+handover) would otherwise lose the group in flight. It fetches that group from
+the relay's cache:
+
+- **Media.** The recorder waits for the track's first live object, at group `H`
+  and object `k`, and then fetches what it missed:
+  - If `k` is 0, the group in flight was `H - 1`, which has now finished. The
+    recorder fetches all of `H - 1`, so the track starts cleanly at the first
+    object of `H - 1`.
+  - If `k` is greater than 0, it fetches objects `0` to `k - 1` of `H`.
+
+  The fetch waits for the first live object because a fetch sent when the
+  subscription starts would stop at the live edge, and the rest of that group
+  would be neither fetched nor subscribed.
+- **The catalog.** Fetched as soon as the recorder subscribes, because a catalog
+  that does not change is never sent again. On draft-19 this is a joining FETCH
+  of the current group. On draft-22 it is a filtered FETCH with
+  `LOCATION_FILTER` set to the latest group.
+
+Overlap with live delivery is absorbed by the archive's duplicate check. The
+CMAF muxer's three-group reorder window puts a late-arriving `H - 1` in order.
+
+The relay caches 8 groups or 16 seconds per track by default. When the group
+has aged out, or the fetch is refused, the track starts at the next group. Each
+track's manifest entry has a `joins` list, with one entry per session, that says
+what happened:
+
+| `from` | Meaning |
+| --- | --- |
+| `track_start` | The first live object was group 0, object 0; nothing was missed. |
+| `caught_up` | The fetch returned the group from object 0. `group` is where the track starts. |
+| `next_group` | Nothing could be fetched. The track starts at `group` and object 0. `reason` says why. |
+| `mid_group` | Only part of the group was fetched, or nothing was, and live delivery began part-way into a group. `reason` says why. |
+
+The recorder logs `the group in flight was not caught up` with the reason
+whenever it falls back.
+
+### Full rooms
+
+The recorder never takes a participant's seat. Relays leave the recorder out
+when they count a room's occupancy against its ceiling (`max_participants`).
+The recorder is still admitted when the room is at its ceiling.
+
+A session counts as the recorder only when both of these hold:
+
+- its token's subject is `moqom-recorder`, which `MintClientToken` refuses to
+  mint for anyone else;
+- it has no publish rights, no capabilities, and is not an owner, backstage or a
+  relay.
+
+A token that names the recorder and can publish is counted and refused like
+anyone else. A closed room refuses the recorder too. This takes a relay with
+this build. An older relay counts the recorder as before.
 
 ## What gets written
 
@@ -143,7 +200,8 @@ It contains the recording, tenant, room, attempt, whether the room was
 encrypted, start and end times, the reconnect count, and per track: kind, codec,
 object and duplicate counts, and `cmaf_skipped`. It also lists every artifact
 with its name, kind (`archive` / `cmaf` / `manifest`), track, size, CRC32C and
-first/last times.
+first/last times, and the track's `joins` (see
+[Joining a room in progress](#joining-a-room-in-progress)).
 
 ## End-to-end encryption
 
@@ -200,13 +258,58 @@ do not emit usage records yet**, so today this is billed exactly as much as
 every other viewer is, which is not at all. Nothing here needs to change when
 that lands.
 
-**Storage.** Billing has no storage line yet, so the control plane calls
-`recording.StorageMeter.Stored` once per finished attempt with tenant, room,
-recording, attempt, bytes and file count. The default `LogMeter` logs it as
-`recording_storage_metered`. Billing it at cost needs a meter in
-`internal/billing` that turns those events (and the bucket's lifecycle,
-which moves objects to colder classes) into byte-days. That is a follow-up, and
-it belongs to the billing package, not this one.
+**Storage.** Charged per GiB-month stored, at cost plus the same markup as
+relaying (`MOQOM_BILLING_MARKUP_BP`, 15% by default). There is no fee and no
+ceiling. The charge goes on the tenant's prepaid ledger as a usage entry, so it:
+
+- counts against the balance, spend limits and alerts like any other usage;
+- appears in `GET /v1/usage/summary` as a line with
+  `product: "recording_storage"`;
+- also appears under `storage` in the same response, with `storage_gib_months`;
+- is not included in `by_role` or `by_tier`.
+
+`GET /v1/rates` lists the cost per class as
+`recording_storage_cost_per_gib_month`.
+
+How it is metered (`recording.StorageBilling`, which runs hourly in the control
+plane):
+
+- `Finish` stamps each artifact with `stored_at`.
+- Each attempt's files age together. They move through the storage classes on
+  the bucket's lifecycle days (`MOQOM_RECORDING_LIFECYCLE`) and stop costing
+  anything when the lifecycle deletes them.
+- Each closed UTC day is billed once per attempt and class. The idempotency key
+  is `recording:attempt:day:class`, so a pass that runs twice charges once.
+- `storage_billed_through` on the recording is the watermark.
+- `storage_done` is set once everything has been deleted.
+
+Unregistered and exempt tenants are not charged, as with relayed usage.
+`StorageMeter.Stored`, which logs `recording_storage_metered` at each `Finish`,
+is unchanged.
+
+The prices are Cloud Storage's list prices, in
+`billing.GCSStorageListPrice` (source:
+<https://cloud.google.com/storage/pricing>, retrieved 7 October 2026). The table
+lists North American regions (us-west1, us-central1, us-east1) and the `US`
+multi-region:
+
+| Class | Regional, per GiB-month | US multi-region, per GiB-month |
+| --- | --- | --- |
+| Standard | $0.020 | $0.026 |
+| Nearline | $0.010 | $0.015 |
+| Coldline | $0.004 | $0.00875 |
+| Archive | $0.0012 | $0.003 |
+
+`MOQOM_RECORDING_BUCKET_LOCATION` picks the column. If it is unset, the regional
+column is used. A location that is not in the table stops the control plane at
+startup rather than guessing a price. These are list prices, not a negotiated
+rate, and have not been confirmed by the owner.
+
+Not billed:
+
+- operation charges;
+- Nearline, Coldline and Archive retrieval and early-deletion fees;
+- download egress (see Known gaps).
 
 ## Operating it
 
@@ -217,6 +320,8 @@ Control plane environment:
 | `MOQOM_RECORDING_BUCKET` | Turns hosted recording on. Unset, `Recordings` answers `FAILED_PRECONDITION` and the worker link is not registered. |
 | `MOQOM_RECORDER_THUMBPRINT` | Required with the bucket. Print it with `moqom-recorder thumbprint KEY`. |
 | `MOQOM_RECORDING_SIGNER_ACCOUNT` | Service account to sign download links as (`module.recorder.signer_account`). Unset, `GetRecording` omits links. |
+| `MOQOM_RECORDING_LIFECYCLE` | The bucket's lifecycle, e.g. `nearline=30,coldline=90,archive=365,delete=0` (days, 0 for never). Storage is billed in the class this says an object is in, so it must match the bucket. Unset is Standard, kept for ever. |
+| `MOQOM_RECORDING_BUCKET_LOCATION` | The bucket's location, which picks the storage price. Unset is a North American region. |
 
 Records go in Postgres, in the table `recordings` (its own schema and advisory
 lock, beside the room store), whenever the control plane runs on Postgres.
@@ -228,22 +333,27 @@ A worker is one `is_recorder: true` entry in the service-account file, shared by
 the pool. That account reaches `RecorderLink` and nothing else. The admin API,
 `/join`, the live map and the rooms bridge all refuse it.
 
-Deploying, without applying anything until it has been reviewed:
+Deploying to dev is described in `deploy/README.md` under "Hosted recording in
+dev", which has the exact commands. In outline:
 
-1. `moqom-recorder thumbprint --generate recorder-key.pem`. Put the key in the
-   `…-recorder-key` secret and the thumbprint in the control plane's
-   `MOQOM_RECORDER_THUMBPRINT`.
-2. Add `{"name": "recorders", "credential": "…", "is_recorder": true}` to the
-   accounts file, and put the credential in `…-recorder-credential`.
-3. Issue a RelayLink client certificate for the recorder from the link CA. The
-   control plane's gRPC port requires one.
-4. Build `moqom-engine/Dockerfile.recorder` and add a `module "recorder"` block
-   to the environment. Pass `recording_bucket = module.data.recording_bucket`,
-   the control plane's service account, `control_endpoint`, `relay`, and the
-   Kubernetes secret holding `recorder-key.pem`, `credential`, `link-ca.pem`,
-   `link-cert.pem`, `link-key.pem` and `relay-cert.pem`. `sync-secrets.sh` does
-   not fill that secret yet.
-5. Set `MOQOM_RECORDING_SIGNER_ACCOUNT` from the module's output.
+1. Apply `envs/dev` with `recorder_image` and `recorder_thumbprint` unset. This
+   creates the recorder's accounts, grants and secret containers.
+2. Run `deploy/tools/recorder-secrets.sh`, then `sync-secrets.sh`. The first
+   script:
+   - generates the key (with `moqom-recorder thumbprint --generate`);
+   - adds `{"name": "recorders", "credential": "…", "is_recorder": true}` to the
+     accounts file;
+   - issues the recorder's link client certificate;
+   - writes the Kubernetes secret the workers mount (`recorder-key.pem`,
+     `credential`, `link-ca.pem`, `link-cert.pem`, `link-key.pem`,
+     `relay-cert.pem`);
+   - prints the thumbprint.
+3. Build `moqom-engine/Dockerfile.recorder`. Then set `recorder_image` (by
+   digest) and `recorder_thumbprint`, and apply. The control plane then gets the
+   bucket, the thumbprint, `MOQOM_RECORDING_SIGNER_ACCOUNT` from
+   `module.recorder.signer_account`, and the bucket's location and lifecycle.
+
+Prod has no `module "recorder"` block yet.
 
 Workers have no probes. A stuck worker stops renewing, its lease lapses, and
 the recording moves on, which is the recovery a restart would give. The spool is
@@ -256,18 +366,26 @@ through IAM `signBlob`. No key file exists anywhere.
 
 ## Known gaps
 
-- **Room ceiling.** Relays count every session against `max_participants`,
-  including the recorder's, so a full room refuses the recorder (it retries and
-  eventually fails). Exempting it is a relay change: skip the ceiling for the
-  recorder identity, as the control plane skips the roster. It was left out to
-  keep relay edits to none.
-- **Warm start.** A recorder joining a room in progress starts each track at the
-  next group. There is no joining FETCH for the group in flight, and an
-  existing catalog is seen when its next object arrives.
+- **Older relays.** The room-ceiling exemption and the fetch that catches up
+  the group in flight both need a relay with this build. An older relay counts
+  the recorder against the ceiling and refuses the fetch. A refused fetch
+  starts the track at the next group, and the manifest records why.
+- **Catch-up window.** Only what the relay still caches can be caught up (8
+  groups or 16 seconds per track by default). A group that has aged out is
+  recorded as `next_group`.
 - **Signing key.** The recorder's ES256 key is a file from Secret Manager.
   Holding it in Cloud KMS would mean `DeviceKey` signing through a remote
   signer. The proof is signed on every connect and renewal, so the latency
   matters less than the dependency.
-- **Storage billing**, as above.
+- **Download egress is not billed.** Downloads use signed Cloud Storage links,
+  which bypass the control plane, so nothing here sees the bytes. Billing them
+  would need the bucket's usage logs or a download proxy.
+- **Storage prices are list prices in code** and need the owner's
+  confirmation. A bucket outside the listed locations needs a row added to
+  `GCSStorageListPrice`.
+- **Recordings deleted outside the lifecycle.** There is no API to delete a
+  recording's files, so storage billing assumes only the lifecycle deletes
+  them. Deleting files by hand keeps billing them until the lifecycle's
+  deletion day.
 - **Scheduled rooms** record from creation, as above.
 - **Postgres conformance** runs only with `MOQOM_TEST_POSTGRES` set.
