@@ -199,8 +199,8 @@ Alert on `time() - last_success_timestamp_seconds > 600`, any `unauthorized`, an
 5. For tiers: deploy relays before the control plane that mints `rly`, and set
    `MOQOM_RELAY_LINK_URL` on each edge (beside `MOQOM_RELAY_UPSTREAM`) to the control plane's
    `/relay/link`, so the edge mints its own link credentials (see Relay-to-relay links). An edge
-   still configured with a static `MOQOM_RELAY_UPSTREAM_TOKEN` viewer token is metered as
-   audience at its parent.
+   still configured with a static `MOQOM_RELAY_UPSTREAM_TOKEN` viewer token (which needs
+   `MOQOM_RELAY_UPSTREAM_KEY` beside it) is metered as audience at its parent.
 
 ## Relay-to-relay links
 
@@ -260,9 +260,12 @@ binary as the minter.
 - **Links serve subscriptions only.** A link forwards `SUBSCRIBE`. It does not forward
   `FETCH`, `TRACK_STATUS` or `SUBSCRIBE_TRACKS`, and a backstage (`bs`) namespace can't be read
   over a link.
-- **Single-link mode is unchanged.** Without `MOQOM_RELAY_LINK_URL`, `upstream::attach` still
-  presents `MOQOM_RELAY_UPSTREAM_TOKEN` as a bearer token with no proof. A parent with
-  `MOQOM_RELAY_POSSESSION=required` (the default) refuses it unless that token is unbound.
+- **Single-link mode is metered as audience.** Without `MOQOM_RELAY_LINK_URL`, `upstream::attach`
+  presents `MOQOM_RELAY_UPSTREAM_TOKEN` and proves it with the device key in
+  `MOQOM_RELAY_UPSTREAM_KEY`, against the certificate the parent presented. There is no
+  unproven mode: every relay requires a proof, the relay refuses to start with a token and no
+  key, and the control plane mints no token without a device thumbprint. The token is an
+  ordinary viewer token, so the parent meters the link as audience.
 - **`relay_link_overlay_only` isn't enforced on `/relay/link`** yet, only on the gRPC RelayLink.
 - **Links appear on the parent's roster** as a participant named `moqom-relay`.
 - **`broadcast_audience`** is only reached by view-only grants with no room; see Role.
