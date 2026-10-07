@@ -138,13 +138,12 @@ type Claims struct {
 	// of the minter is the order that has no window.
 	ArrivedVia string `json:"via,omitempty"`
 
-	// E2EE is the end-to-end encryption policy of the room in MOQT.Room, as
-	// "required" or "optional". Absent means required, and is what a token that
-	// names no room carries: there is no room policy to relax.
+	// E2EE is the end-to-end encryption policy of the room in MOQT.Room, which
+	// is always "required"; absent means the same. Minting refuses anything else.
 	//
-	// For the client, not the relay. The relay never sees plaintext either way and
-	// has nothing to enforce; MoqomKit reads this to decide whether it may publish
-	// without a key, and treats anything but an exact "optional" as required.
+	// For the client, not the relay. The relay never sees plaintext and has
+	// nothing to enforce; MoqomKit refuses to publish without a key whatever
+	// this says.
 	//
 	// Top-level rather than inside `moqt` for the reason ArrivedVia is: the relay
 	// parses the scope strictly and the top level leniently, so a relay that
@@ -329,17 +328,8 @@ func Mint(key Key, claims Claims, lifetime time.Duration, now time.Time) (string
 		return "", time.Time{}, fmt.Errorf(
 			"%w: token is attributed to %q but names no room", control.ErrInvalid, claims.ArrivedVia)
 	}
-	switch claims.E2EE {
-	case "", control.E2EERequired:
-	case control.E2EEOptional:
-		// Relaxing encryption is a property of a room, so a token that names none
-		// has nothing it could be relaxing.
-		if claims.MOQT.Room == "" {
-			return "", time.Time{}, fmt.Errorf(
-				"%w: token relaxes end-to-end encryption but names no room", control.ErrInvalid)
-		}
-	default:
-		return "", time.Time{}, fmt.Errorf("%w: unknown e2ee policy %q", control.ErrInvalid, claims.E2EE)
+	if err := (control.Policy{E2EE: claims.E2EE}).ValidateE2EE(); err != nil {
+		return "", time.Time{}, err
 	}
 
 	expires := now.Add(lifetime).Truncate(time.Second)

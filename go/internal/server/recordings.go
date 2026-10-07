@@ -225,7 +225,7 @@ func (c *core) startRecording(
 		Format:      format,
 		MaxDuration: maxDuration,
 		Automatic:   automatic,
-		Encrypted:   policy.E2EE != control.E2EEOptional,
+		Encrypted:   true,
 		Bucket:      c.recording.bucket,
 		Prefix:      prefixFor(room.Tenant, room.Room, id),
 		WatchdogID:  watchdog.ID,
@@ -595,10 +595,9 @@ func (s *recorderLinkService) Claim(ctx context.Context, request *recorderpb.Cla
 		if err != nil {
 			return nil, statusFor(err)
 		}
-		encrypted := room.Policy.WithDefaults().E2EE != control.E2EEOptional
 		claimed, err = s.core.recording.store.Update(ctx, claimed.ID, func(r *recording.Recording) error {
 			r.CredentialExpires = expires
-			r.Encrypted = encrypted
+			r.Encrypted = true
 			return nil
 		})
 		if err != nil {
@@ -610,7 +609,7 @@ func (s *recorderLinkService) Claim(ctx context.Context, request *recorderpb.Cla
 			Room:          claimed.Room,
 			StorageBucket: claimed.Bucket,
 			StoragePrefix: claimed.Prefix,
-			E2EeRequired:  encrypted,
+			E2EeRequired:  true,
 			Remux:         claimed.Format.Remux(),
 			Credential:    credential,
 			Attempt:       claimed.Attempt,

@@ -72,21 +72,20 @@ enum RecordingPolicy {
   RECORDING_POLICY_PROHIBITED = 3;
 }
 
-// Whether a room's media must be end-to-end encrypted.
+// Whether a room's media must be end-to-end encrypted. It must, always: there
+// is no way to turn it off. Unspecified and `E2EE_POLICY_REQUIRED` are
+// accepted and mean the same; `E2EE_POLICY_OPTIONAL` is refused with
+// INVALID_ARGUMENT and kept only so that an old backend's request fails
+// loudly rather than decoding as something else. A recorder or classifier
+// that needs the media joins the room's MLS group as a disclosed member and
+// decrypts on the tenant's side.
 //
-// Required unless somebody turned it off, and the zero value means required so
-// that a backend built before this field existed, which never sets it, gets the
-// strict answer rather than the permissive one. Turning it off is a policy
-// change like any other and is written to the moderation log with the actor's
-// reason, which is mandatory for this change and no other: a room that stops
-// being end-to-end encrypted is a fact somebody will one day ask about.
-//
-// Clients learn the effective value from the `e2ee` claim in their token, and an
-// SDK that holds no key refuses to publish into a required room.
+// Clients learn the value from the `e2ee` claim in their token, and an SDK
+// that holds no key refuses to publish.
 enum E2EEPolicy {
   E2EE_POLICY_UNSPECIFIED = 0;
   E2EE_POLICY_REQUIRED = 1;
-  E2EE_POLICY_OPTIONAL = 2;
+  E2EE_POLICY_OPTIONAL = 2 [deprecated = true];
 }
 
 message AgeGate {
@@ -126,7 +125,7 @@ message RoomPolicy {
   uint32 watchdog_limit = 6;
 
   // Unset reads as `E2EE_POLICY_REQUIRED`, and a room read back from the server
-  // always states it. Setting `E2EE_POLICY_OPTIONAL` needs `actor.reason`.
+  // always states it. `E2EE_POLICY_OPTIONAL` is refused.
   E2EEPolicy e2ee = 7;
 }
 

@@ -488,13 +488,13 @@ func TestATokenWithNoProvenanceIsNormal(t *testing.T) {
 	}
 }
 
-// The encryption claim round-trips, is refused when it names a value nobody
-// defined, and cannot relax a room the token does not name.
+// The encryption claim round-trips as required, and anything else -- including
+// the "optional" earlier versions allowed -- is refused at minting.
 func TestE2EEClaim(t *testing.T) {
 	key, verifier := testKey(t)
 	now := time.Date(2026, 7, 27, 12, 0, 0, 0, time.UTC)
 
-	for _, policy := range []control.E2EEPolicy{"", control.E2EERequired, control.E2EEOptional} {
+	for _, policy := range []control.E2EEPolicy{"", control.E2EERequired} {
 		claims := claimsFor(control.Grants{})
 		claims.E2EE = policy
 		minted, _, err := Mint(key, claims, time.Minute, now)
@@ -510,16 +510,11 @@ func TestE2EEClaim(t *testing.T) {
 		}
 	}
 
-	unknown := claimsFor(control.Grants{})
-	unknown.E2EE = "off"
-	if _, _, err := Mint(key, unknown, time.Minute, now); !errors.Is(err, control.ErrInvalid) {
-		t.Errorf("minting an unknown e2ee value gave %v, want ErrInvalid", err)
-	}
-
-	roomless := claimsFor(control.Grants{})
-	roomless.MOQT.Room = ""
-	roomless.E2EE = control.E2EEOptional
-	if _, _, err := Mint(key, roomless, time.Minute, now); !errors.Is(err, control.ErrInvalid) {
-		t.Errorf("relaxing e2ee on a roomless token gave %v, want ErrInvalid", err)
+	for _, policy := range []control.E2EEPolicy{"off", "optional"} {
+		relaxed := claimsFor(control.Grants{})
+		relaxed.E2EE = policy
+		if _, _, err := Mint(key, relaxed, time.Minute, now); !errors.Is(err, control.ErrInvalid) {
+			t.Errorf("minting e2ee=%q gave %v, want ErrInvalid", policy, err)
+		}
 	}
 }

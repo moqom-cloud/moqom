@@ -710,8 +710,8 @@ func testMarkEnforced(t *testing.T, newStore Factory) {
 	}
 }
 
-// A room's encryption policy is stored, defaults to required, and the audit entry
-// that relaxed it still says so when read back.
+// A room's encryption policy is required, and an audit entry written when it
+// could be relaxed still reads back as it was written.
 func testE2EEPolicy(t *testing.T, newStore Factory) {
 	ctx, subject, _ := setup(t, newStore)
 
@@ -725,7 +725,6 @@ func testE2EEPolicy(t *testing.T, newStore Factory) {
 		t.Errorf("a room created with no policy has e2ee %q, want required", created.Policy.E2EE)
 	}
 
-	created.Policy.E2EE = control.E2EEOptional
 	if _, err := subject.SaveRoom(ctx, created); err != nil {
 		t.Fatalf("saving a room: %v", err)
 	}
@@ -733,8 +732,8 @@ func testE2EEPolicy(t *testing.T, newStore Factory) {
 	if err != nil {
 		t.Fatalf("reading a room: %v", err)
 	}
-	if read.Policy.E2EE != control.E2EEOptional {
-		t.Errorf("e2ee read back as %q, want optional", read.Policy.E2EE)
+	if read.Policy.WithDefaults().E2EE != control.E2EERequired {
+		t.Errorf("e2ee read back as %q, want required", read.Policy.E2EE)
 	}
 
 	if _, err := subject.AppendModerationEntry(ctx, control.ModerationEntry{

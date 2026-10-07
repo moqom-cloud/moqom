@@ -40,21 +40,20 @@ const (
 	RecordingProhibited RecordingPolicy = "prohibited"
 )
 
-// E2EEPolicy is whether a room's media must be end-to-end encrypted.
+// E2EEPolicy is whether a room's media must be end-to-end encrypted. It must:
+// E2EERequired is the only value, and there is no way to turn encryption off.
+// A recorder or classifier that needs the media joins the room's group as a
+// disclosed member and decrypts on the tenant's side.
 //
 // The strings are protocol: they are the values of the `e2ee` token claim, and
-// MoqomKit compares against them byte for byte.
+// MoqomKit compares against them byte for byte. "optional", which earlier
+// versions allowed, is refused wherever it arrives and read as required
+// wherever it was stored.
 type E2EEPolicy string
 
-const (
-	// E2EERequired is the default, and what an unset policy means. A client with
-	// no key refuses to publish into such a room and drops what it cannot open.
-	E2EERequired E2EEPolicy = "required"
-
-	// E2EEOptional lets media travel in the clear when a client has no key.
-	// Reached only by an explicit, reasoned, logged policy change.
-	E2EEOptional E2EEPolicy = "optional"
-)
+// E2EERequired is every room's policy. A client with no key refuses to publish
+// into the room and drops what it cannot open.
+const E2EERequired E2EEPolicy = "required"
 
 // Defaults chosen to be defensible rather than generous. Both limits are real
 // costs -- a stage slot is a decode on every client, a watchdog is a fan-out on
@@ -77,24 +76,20 @@ type Policy struct {
 	StageSlots      uint32
 	WatchdogLimit   uint32
 
-	// E2EE is whether media must be end-to-end encrypted. Empty means required,
-	// and WithDefaults makes that explicit.
+	// E2EE is always E2EERequired once WithDefaults has run.
 	E2EE E2EEPolicy
 }
 
 // WithDefaults fills the zero values that have sensible answers.
 //
-// For security settings the sensible answer is the strict one. An unset E2EE
-// policy is required, so a caller that predates the field -- or simply did not
-// think about it -- gets an encrypted room, and an unencrypted one always traces
-// back to somebody who asked for it.
+// For security settings the only answer is the strict one: E2EE is required
+// whatever was stored, so a row written when "optional" was allowed reads as
+// an encrypted room.
 func (p Policy) WithDefaults() Policy {
 	if p.Recording == "" {
 		p.Recording = RecordingAllowed
 	}
-	if p.E2EE == "" {
-		p.E2EE = E2EERequired
-	}
+	p.E2EE = E2EERequired
 	if p.StageSlots == 0 {
 		p.StageSlots = DefaultStageSlots
 	}
@@ -114,33 +109,19 @@ func (p Policy) ValidateChange(next Policy) error {
 	if p.ResidencyZone != next.ResidencyZone {
 		return fmt.Errorf("%w: residency_zone, %q to %q", ErrImmutablePolicy, p.ResidencyZone, next.ResidencyZone)
 	}
-	switch next.E2EE {
-	case "", E2EERequired, E2EEOptional:
+	return next.ValidateE2EE()
+}
+
+// ValidateE2EE refuses any E2EE policy but required.
+func (p Policy) ValidateE2EE() error {
+	switch p.E2EE {
+	case "", E2EERequired:
+		return nil
 	default:
-		return fmt.Errorf("%w: unknown e2ee policy %q", ErrInvalid, next.E2EE)
+		return fmt.Errorf("%w: e2ee policy %q: end-to-end encryption is always required", ErrInvalid, p.E2EE)
 	}
-	return nil
 }
 
-// SecurityChange describes what moving from p to next does to the room's
-// security settings, as `field: from -> to`, or "" when nothing moved.
-//
-// Written into the audit entry for the change. A policy update that turned
-// encryption off reads the same as one that changed a stage-slot count unless
-// something says which it was.
-func (p Policy) SecurityChange(next Policy) string {
-	from, to := p.WithDefaults().E2EE, next.WithDefaults().E2EE
-	if from == to {
-		return ""
-	}
-	return fmt.Sprintf("e2ee: %s -> %s", from, to)
-}
-
-// LoosensSecurity reports whether next is weaker than p in a way that needs a
-// recorded reason.
-func (p Policy) LoosensSecurity(next Policy) bool {
-	return p.WithDefaults().E2EE == E2EERequired && next.WithDefaults().E2EE == E2EEOptional
-}
 
 // Presence is where someone is, as published to the room.
 type Presence string

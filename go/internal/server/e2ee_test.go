@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
-	"errors"
 	"strings"
 	"testing"
 
@@ -64,178 +63,62 @@ func TestRoomsRequireEndToEndEncryptionByDefault(t *testing.T) {
 	}
 }
 
-// Turning encryption off is possible and never silent: it needs a reason, it is
-// written to the moderation log with what changed, and the next token says so.
-func TestTurningEncryptionOffIsReasonedAndLogged(t *testing.T) {
+// There is no turning encryption off: not on update, with or without a reason,
+// not at creation, and not through the SDK. The room stays required and so do
+// its tokens.
+func TestEncryptionCannotBeTurnedOff(t *testing.T) {
 	h := newHarness(t)
 	h.createRoom(t, "alice")
 
-	loosen := &adminpb.UpdateRoomPolicyRequest{
-		Tenant: tenant, Room: roomName,
-		Policy:     &adminpb.RoomPolicy{E2Ee: adminpb.E2EEPolicy_E2EE_POLICY_OPTIONAL},
-		UpdateMask: []string{"e2ee"},
-	}
-	_, err := h.rooms.UpdateRoomPolicy(as(ownerKey), loosen)
-	if status.Code(err) != codes.InvalidArgument {
-		t.Fatalf("turning e2ee off with no reason gave %v, want InvalidArgument", status.Code(err))
-	}
-	if got := h.mint(t, roomName)["e2ee"]; got != "required" {
-		t.Fatalf("a refused change still reached the token: e2ee=%v", got)
-	}
-
-	loosen.Actor = &adminpb.ActorContext{Reason: "server-side transcription for accessibility"}
-	updated, err := h.rooms.UpdateRoomPolicy(as(ownerKey), loosen)
-	if err != nil {
-		t.Fatalf("turning e2ee off with a reason: %v", err)
-	}
-	if updated.GetPolicy().GetE2Ee() != adminpb.E2EEPolicy_E2EE_POLICY_OPTIONAL {
-		t.Errorf("the room's e2ee is %v after the change", updated.GetPolicy().GetE2Ee())
-	}
-	if got := h.mint(t, roomName)["e2ee"]; got != "optional" {
-		t.Errorf("a token minted after the change carries e2ee=%v, want optional", got)
-	}
-
-	log, err := h.moderation.ListModerationLog(as(ownerKey), &adminpb.ListModerationLogRequest{Tenant: tenant})
-	if err != nil {
-		t.Fatalf("reading the log: %v", err)
-	}
-	var found *adminpb.ModerationEntry
-	for _, entry := range log.GetEntries() {
-		if entry.GetVerb() == adminpb.ModerationVerb_MODERATION_VERB_UPDATE_ROOM_POLICY {
-			found = entry
+	for _, reason := range []string{"", "server-side transcription for accessibility"} {
+		_, err := h.rooms.UpdateRoomPolicy(as(ownerKey), &adminpb.UpdateRoomPolicyRequest{
+			Tenant: tenant, Room: roomName,
+			Policy:     &adminpb.RoomPolicy{E2Ee: adminpb.E2EEPolicy_E2EE_POLICY_OPTIONAL},
+			UpdateMask: []string{"e2ee"},
+			Actor:      &adminpb.ActorContext{Reason: reason},
+		})
+		if status.Code(err) != codes.InvalidArgument {
+			t.Fatalf("turning e2ee off (reason %q) gave %v, want InvalidArgument", reason, status.Code(err))
 		}
 	}
-	if found == nil {
-		t.Fatal("no policy entry in the moderation log")
-	}
-	if found.GetPolicyChange() != "e2ee: required -> optional" {
-		t.Errorf("the entry records %q", found.GetPolicyChange())
-	}
-	if found.GetReason() != loosen.Actor.Reason {
-		t.Errorf("the entry lost why: %q", found.GetReason())
-	}
-	if found.GetServiceAccount() != "owner-backend" {
-		t.Errorf("the entry names service account %q", found.GetServiceAccount())
-	}
-
-	// Tightening needs no reason. Making a room safer is never the thing anybody
-	// has to justify afterwards.
-	if _, err := h.rooms.UpdateRoomPolicy(as(ownerKey), &adminpb.UpdateRoomPolicyRequest{
-		Tenant: tenant, Room: roomName,
-		Policy:     &adminpb.RoomPolicy{E2Ee: adminpb.E2EEPolicy_E2EE_POLICY_REQUIRED},
-		UpdateMask: []string{"e2ee"},
-	}); err != nil {
-		t.Fatalf("turning e2ee back on: %v", err)
-	}
 	if got := h.mint(t, roomName)["e2ee"]; got != "required" {
-		t.Errorf("a token minted after tightening carries e2ee=%v", got)
-	}
-}
-
-// An unrelated masked edit leaves an optional room optional, and an unmasked one
-// that does not mention e2ee puts it back to required -- the absent field means
-// the strict answer, as it does everywhere else.
-func TestUnmaskedPolicyWritesFallBackToRequired(t *testing.T) {
-	h := newHarness(t)
-	if _, err := h.rooms.CreateRoom(as(ownerKey), &adminpb.CreateRoomRequest{
-		Tenant: tenant, Room: roomName,
-		Policy: &adminpb.RoomPolicy{E2Ee: adminpb.E2EEPolicy_E2EE_POLICY_OPTIONAL},
-		Actor:  &adminpb.ActorContext{Reason: "a public broadcast with server-side captions"},
-	}); err != nil {
-		t.Fatalf("creating an optional room: %v", err)
+		t.Fatalf("a refused change reached the token: e2ee=%v", got)
 	}
 
-	masked, err := h.rooms.UpdateRoomPolicy(as(ownerKey), &adminpb.UpdateRoomPolicyRequest{
-		Tenant: tenant, Room: roomName,
-		Policy:     &adminpb.RoomPolicy{MaxParticipants: 10},
-		UpdateMask: []string{"max_participants"},
-	})
-	if err != nil {
-		t.Fatalf("a masked edit: %v", err)
-	}
-	if masked.GetPolicy().GetE2Ee() != adminpb.E2EEPolicy_E2EE_POLICY_OPTIONAL {
-		t.Errorf("a masked edit moved e2ee to %v", masked.GetPolicy().GetE2Ee())
-	}
-
-	whole, err := h.rooms.UpdateRoomPolicy(as(ownerKey), &adminpb.UpdateRoomPolicyRequest{
-		Tenant: tenant, Room: roomName,
-		Policy: &adminpb.RoomPolicy{MaxParticipants: 10},
-	})
-	if err != nil {
-		t.Fatalf("an unmasked edit: %v", err)
-	}
-	if whole.GetPolicy().GetE2Ee() != adminpb.E2EEPolicy_E2EE_POLICY_REQUIRED {
-		t.Errorf("an unmasked edit left e2ee at %v", whole.GetPolicy().GetE2Ee())
-	}
-}
-
-// Creating a room unencrypted is held to the same rule as making one so later,
-// or deleting and recreating would be the way around the audit trail.
-func TestCreatingAnUnencryptedRoomNeedsAReason(t *testing.T) {
-	h := newHarness(t)
 	_, err := h.rooms.CreateRoom(as(ownerKey), &adminpb.CreateRoomRequest{
-		Tenant: tenant, Room: roomName,
-		Policy: &adminpb.RoomPolicy{E2Ee: adminpb.E2EEPolicy_E2EE_POLICY_OPTIONAL},
-	})
-	if status.Code(err) != codes.InvalidArgument {
-		t.Fatalf("creating an optional room with no reason gave %v, want InvalidArgument", status.Code(err))
-	}
-
-	if _, err := h.rooms.CreateRoom(as(ownerKey), &adminpb.CreateRoomRequest{
-		Tenant: tenant, Room: roomName,
+		Tenant: tenant, Room: "other-room",
 		Policy: &adminpb.RoomPolicy{E2Ee: adminpb.E2EEPolicy_E2EE_POLICY_OPTIONAL},
 		Actor:  &adminpb.ActorContext{Reason: "recorded webinar"},
-	}); err != nil {
-		t.Fatalf("creating an optional room with a reason: %v", err)
+	})
+	if status.Code(err) != codes.InvalidArgument {
+		t.Fatalf("creating an unencrypted room gave %v, want InvalidArgument", status.Code(err))
 	}
-	log, err := h.moderation.ListModerationLog(as(ownerKey), &adminpb.ListModerationLogRequest{Tenant: tenant})
-	if err != nil {
-		t.Fatalf("reading the log: %v", err)
-	}
-	if len(log.GetEntries()) != 1 || log.GetEntries()[0].GetPolicyChange() != "e2ee: required -> optional" {
-		t.Errorf("creating an optional room logged %v", log.GetEntries())
+
+	// An edit that does not mention e2ee, masked or not, leaves it required.
+	for _, mask := range [][]string{{"max_participants"}, nil} {
+		updated, err := h.rooms.UpdateRoomPolicy(as(ownerKey), &adminpb.UpdateRoomPolicyRequest{
+			Tenant: tenant, Room: roomName,
+			Policy:     &adminpb.RoomPolicy{MaxParticipants: 10},
+			UpdateMask: mask,
+		})
+		if err != nil {
+			t.Fatalf("an edit with mask %v: %v", mask, err)
+		}
+		if updated.GetPolicy().GetE2Ee() != adminpb.E2EEPolicy_E2EE_POLICY_REQUIRED {
+			t.Errorf("an edit with mask %v left e2ee at %v", mask, updated.GetPolicy().GetE2Ee())
+		}
 	}
 }
 
-// The Go SDK models the field, defaults it to required on read, and carries the
-// audit detail back.
-func TestTheSDKTurnsEncryptionOffOnlyWithAReason(t *testing.T) {
+// The Go SDK reads every room as required.
+func TestTheSDKReadsEveryRoomAsEncrypted(t *testing.T) {
 	h := newHarness(t)
 	client := h.sdk(t, ownerKey)
-	ctx := context.Background()
-
-	room, err := client.CreateRoom(ctx, moqom.NewRoom{Name: "sdk-room"})
+	room, err := client.CreateRoom(context.Background(), moqom.NewRoom{Name: "sdk-room"})
 	if err != nil {
 		t.Fatalf("creating a room: %v", err)
 	}
 	if room.Policy.E2EE != moqom.E2EERequired {
 		t.Fatalf("a default room reads back as e2ee %q", room.Policy.E2EE)
-	}
-
-	handle := client.Room("sdk-room")
-	update := moqom.PolicyUpdate{
-		Policy: moqom.Policy{E2EE: moqom.E2EEOptional},
-		Fields: []string{"e2ee"},
-	}
-	if _, err := handle.UpdatePolicy(ctx, update); !errors.Is(err, moqom.ErrInvalid) {
-		t.Fatalf("turning e2ee off with no reason gave %v, want ErrInvalid", err)
-	}
-
-	update.Actor = moqom.Actor{Reason: "live captions"}
-	updated, err := handle.UpdatePolicy(ctx, update)
-	if err != nil {
-		t.Fatalf("turning e2ee off with a reason: %v", err)
-	}
-	if updated.Policy.E2EE != moqom.E2EEOptional {
-		t.Fatalf("the room reads back as e2ee %q", updated.Policy.E2EE)
-	}
-
-	log, err := handle.Log(ctx, moqom.LogQuery{})
-	if err != nil {
-		t.Fatalf("reading the log: %v", err)
-	}
-	if len(log.Items) != 1 || log.Items[0].PolicyChange != "e2ee: required -> optional" ||
-		log.Items[0].Reason != "live captions" {
-		t.Fatalf("the log reads %+v", log.Items)
 	}
 }
