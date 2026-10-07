@@ -1,6 +1,9 @@
 package billing
 
-import "math/bits"
+import (
+	"math/bits"
+	"time"
+)
 
 // Role is how a participant took part, which is what the ceiling is priced on.
 type Role string
@@ -142,6 +145,11 @@ const (
 	// HostingSelf is a relay the tenant runs, so the tenant paid for the bytes
 	// and owes only the platform fee.
 	HostingSelf Hosting = "self_hosted"
+	// HostingCloudflare is Cloudflare's MoQ relay network. The tenant has its
+	// own account there, so MOQOM paid for nothing and the usage is priced as
+	// a self-hosted relay's would be, after a free allowance. MOQOM can't
+	// measure it: the tenant's own reporter says what was used.
+	HostingCloudflare Hosting = "cloudflare"
 )
 
 // Pricing turns usage into a charge.
@@ -166,6 +174,14 @@ type Pricing struct {
 	// whole price of being on a direct path: no cost, no markup, no cap. The
 	// relay session kept as a fallback is billed as any other session.
 	DirectFeePer1000Minutes Micros
+	// CloudflareFreeUntil is when the free trial on Cloudflare's relays ends.
+	// Usage reported before it is recorded at no charge and doesn't count
+	// against the allowance.
+	CloudflareFreeUntil time.Time
+	// CloudflareFreeMinutesPerMonth is how many participant-minutes on
+	// Cloudflare's relays each tenant has free in a calendar month (UTC).
+	// Past it, usage pays SelfHostedFeePerGiB.
+	CloudflareFreeMinutesPerMonth int64
 	// Ceiling caps every charge. Nil is no cap.
 	Ceiling Ceiling
 }
@@ -183,7 +199,12 @@ func DefaultPricing() Pricing {
 		// The owner's decision: 1,000 free a month, then 50 cents per 1,000.
 		DirectFreeMinutesPerMonth: 1000,
 		DirectFeePer1000Minutes:   50 * Cent,
-		Ceiling:                   AgoraLessOneCent(),
+		// The owner's decision: free for October 2026, while Cloudflare's own
+		// relays are a free beta, then 1,000 free minutes a month and the
+		// self-hosted fee.
+		CloudflareFreeUntil:           time.Date(2026, 11, 1, 0, 0, 0, 0, time.UTC),
+		CloudflareFreeMinutesPerMonth: 1000,
+		Ceiling:                       AgoraLessOneCent(),
 	}
 }
 
@@ -201,6 +222,23 @@ func (p Pricing) DirectFee(before, seconds int64) Micros {
 	billable := func(total int64) int64 { return max(total-free, 0) }
 	return Per1000Minutes(p.DirectFeePer1000Minutes, billable(before+seconds)) -
 		Per1000Minutes(p.DirectFeePer1000Minutes, billable(before))
+}
+
+// CloudflarePrice is the share of price a Cloudflare record pays, for seconds
+// of participant time from a tenant that had already used before seconds
+// this month: price scaled by how much of the record is past the allowance.
+//
+// The difference of two cumulative counts, as DirectFee is, so a month costs
+// the same however it is cut into records.
+func (p Pricing) CloudflarePrice(price Micros, before, seconds int64) Micros {
+	if seconds <= 0 {
+		// Bytes with no time can't be placed against a time allowance, and
+		// only a reporter that left the time out sends them.
+		return price
+	}
+	free := max(p.CloudflareFreeMinutesPerMonth, 0) * 60
+	billable := func(total int64) int64 { return max(total-free, 0) }
+	return scale(price, billable(before+seconds)-billable(before), seconds)
 }
 
 // Usage is one participant's consumption over one interval.
@@ -226,7 +264,7 @@ const gibibyte = 1 << 30
 func (p Pricing) Rate(u Usage) Charge {
 	var cost Micros
 	fee := p.PlatformFeePerGiB
-	if u.Hosting == HostingSelf {
+	if u.Hosting == HostingSelf || u.Hosting == HostingCloudflare {
 		fee = p.SelfHostedFeePerGiB
 	} else {
 		cost = perGiB(u.EgressBytes, p.Costs.EgressPerGiB) +

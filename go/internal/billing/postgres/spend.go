@@ -141,10 +141,21 @@ func (s *Store) FiredSpendAlerts(ctx context.Context, tenant string, month time.
 // replicas claiming at once are serialised, and a claim whose key another
 // replica recorded first is rolled back with its increment.
 func (s *Store) ClaimDirectSeconds(ctx context.Context, tenant string, month time.Time, key string, seconds int64) (int64, error) {
+	return s.claimSeconds(ctx, "billing_direct_months", "billing_direct_claims", tenant, month, key, seconds)
+}
+
+// ClaimCloudflareSeconds is ClaimDirectSeconds against its own allowance.
+func (s *Store) ClaimCloudflareSeconds(ctx context.Context, tenant string, month time.Time, key string, seconds int64) (int64, error) {
+	return s.claimSeconds(ctx, "billing_cloudflare_months", "billing_cloudflare_claims", tenant, month, key, seconds)
+}
+
+// claimSeconds takes table names from the two callers above only, never from
+// input, which is what makes formatting them into the SQL safe.
+func (s *Store) claimSeconds(ctx context.Context, months, claims, tenant string, month time.Time, key string, seconds int64) (int64, error) {
 	claimed := func() (int64, error) {
 		var prior int64
 		err := s.pool.QueryRow(ctx,
-			`SELECT prior FROM billing_direct_claims WHERE idempotency_key = $1`, key).Scan(&prior)
+			`SELECT prior FROM `+claims+` WHERE idempotency_key = $1`, key).Scan(&prior)
 		return prior, err
 	}
 	if prior, err := claimed(); err == nil {
@@ -159,15 +170,15 @@ func (s *Store) ClaimDirectSeconds(ctx context.Context, tenant string, month tim
 	}
 	defer func() { _ = tx.Rollback(context.WithoutCancel(ctx)) }()
 	var total int64
-	err = tx.QueryRow(ctx, `INSERT INTO billing_direct_months (tenant, month, seconds)
+	err = tx.QueryRow(ctx, `INSERT INTO `+months+` (tenant, month, seconds)
 		VALUES ($1, $2::date, $3)
-		ON CONFLICT (tenant, month) DO UPDATE SET seconds = billing_direct_months.seconds + EXCLUDED.seconds
+		ON CONFLICT (tenant, month) DO UPDATE SET seconds = `+months+`.seconds + EXCLUDED.seconds
 		RETURNING seconds`, tenant, monthDate(billing.MonthOf(month)), seconds).Scan(&total)
 	if err != nil {
 		return 0, err
 	}
 	prior := total - seconds
-	tag, err := tx.Exec(ctx, `INSERT INTO billing_direct_claims (idempotency_key, tenant, month, seconds, prior)
+	tag, err := tx.Exec(ctx, `INSERT INTO `+claims+` (idempotency_key, tenant, month, seconds, prior)
 		VALUES ($1, $2, $3::date, $4, $5) ON CONFLICT (idempotency_key) DO NOTHING`,
 		key, tenant, monthDate(billing.MonthOf(month)), seconds, prior)
 	if err != nil {

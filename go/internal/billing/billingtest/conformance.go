@@ -384,4 +384,26 @@ func Run(t *testing.T, open func(t *testing.T) billing.Store) {
 			t.Fatalf("concurrent claims began at %v", befores)
 		}
 	})
+
+	t.Run("cloudflare seconds are an allowance apart from direct seconds", func(t *testing.T) {
+		s := open(t)
+		october := time.Date(2026, 10, 1, 0, 0, 0, 0, time.UTC)
+		claim := func(key string, seconds int64) int64 {
+			t.Helper()
+			before, err := s.ClaimCloudflareSeconds(ctx, "t_1", october, key, seconds)
+			if err != nil {
+				t.Fatal(err)
+			}
+			return before
+		}
+		if claim("c1", 600) != 0 || claim("c2", 60) != 600 || claim("c1", 600) != 0 || claim("c3", 1) != 660 {
+			t.Fatal("cloudflare claims did not count once per key")
+		}
+		if before, err := s.ClaimDirectSeconds(ctx, "t_1", october, "d1", 30); err != nil || before != 0 {
+			t.Fatalf("direct time began at %d after Cloudflare claims (%v)", before, err)
+		}
+		if got := claim("c4", 1); got != 661 {
+			t.Fatalf("direct time counted against Cloudflare's allowance: %d", got)
+		}
+	})
 }

@@ -145,3 +145,21 @@ CREATE TABLE IF NOT EXISTS billing_direct_claims (
     prior           bigint      NOT NULL,
     at              timestamptz NOT NULL DEFAULT now()
 );
+
+-- The same pair for participant time on Cloudflare's relays, which has a free
+-- allowance separate from direct time.
+CREATE TABLE IF NOT EXISTS billing_cloudflare_months (
+    tenant  text   NOT NULL,
+    month   date   NOT NULL,
+    seconds bigint NOT NULL,
+    PRIMARY KEY (tenant, month)
+);
+
+CREATE TABLE IF NOT EXISTS billing_cloudflare_claims (
+    idempotency_key text        PRIMARY KEY,
+    tenant          text        NOT NULL,
+    month           date        NOT NULL,
+    seconds         bigint      NOT NULL,
+    prior           bigint      NOT NULL,
+    at              timestamptz NOT NULL DEFAULT now()
+);

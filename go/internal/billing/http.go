@@ -39,6 +39,8 @@ import (
 //	                                verified mqk_ keys are revoked at once
 //	GET    /v1/account/export       DSAR export of the account        (backend key)
 //	POST   /v1/usage                report usage                      (relay key or MOQOM relay)
+//	                                 "hosting": "cloudflare" with a relay key reports
+//	                                 usage on Cloudflare's relays
 //	GET    /v1/usage/summary        usage by role and tier for        (backend key)
 //	                                ?from&to, beside Agora's list
 //	POST   /v1/usage/estimate       what-if scenario, priced          (backend key)
@@ -715,6 +717,9 @@ func (h *handler) rotateKey(w http.ResponseWriter, r *http.Request, key Key) {
 }
 
 type usageBody struct {
+	// Hosting is "cloudflare" for usage on Cloudflare's relays, and absent for
+	// the reporter's own relay. Only a tenant's relay key may set it.
+	Hosting string `json:"hosting"`
 	Records []struct {
 		ID           string `json:"id"`
 		Tenant       string `json:"tenant"`
@@ -755,6 +760,14 @@ func (h *handler) usage(w http.ResponseWriter, r *http.Request) {
 	}
 	var body usageBody
 	if !decode(w, r, &body) {
+		return
+	}
+	switch {
+	case body.Hosting == "":
+	case body.Hosting == string(HostingCloudflare) && reporter.Tenant != "":
+		reporter.Hosting = HostingCloudflare
+	default:
+		writeError(w, errors.Join(ErrInvalid, errors.New(`hosting is "cloudflare", from a tenant's relay key, or absent`)))
 		return
 	}
 	if len(body.Records) > mostRecordsPerReport {

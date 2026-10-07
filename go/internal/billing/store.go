@@ -62,6 +62,9 @@ type Store interface {
 	// allowance. Atomic, so replicas pricing two records at once see
 	// different totals.
 	ClaimDirectSeconds(ctx context.Context, tenant string, month time.Time, key string, seconds int64) (before int64, err error)
+	// ClaimCloudflareSeconds is ClaimDirectSeconds for participant time on
+	// Cloudflare's relays, which has a free allowance of its own.
+	ClaimCloudflareSeconds(ctx context.Context, tenant string, month time.Time, key string, seconds int64) (before int64, err error)
 
 	// AppendEntry writes an entry unless one with the same idempotency key
 	// exists, in which case it returns that one and false. The uniqueness is
@@ -105,6 +108,8 @@ type Memory struct {
 	alerts  map[alertKey]time.Time
 	direct  map[directMonth]int64
 	claims  map[string]int64
+	cfUsed  map[directMonth]int64
+	cfClaim map[string]int64
 	audit   []AuditEntry
 	keyUse  []KeyUse
 }
@@ -133,7 +138,22 @@ func NewMemory() *Memory {
 		alerts:  map[alertKey]time.Time{},
 		direct:  map[directMonth]int64{},
 		claims:  map[string]int64{},
+		cfUsed:  map[directMonth]int64{},
+		cfClaim: map[string]int64{},
 	}
+}
+
+func (m *Memory) ClaimCloudflareSeconds(_ context.Context, tenant string, month time.Time, key string, seconds int64) (int64, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if before, claimed := m.cfClaim[key]; claimed {
+		return before, nil
+	}
+	which := directMonth{tenant, MonthOf(month)}
+	before := m.cfUsed[which]
+	m.cfUsed[which] = before + seconds
+	m.cfClaim[key] = before
+	return before, nil
 }
 
 func (m *Memory) ClaimDirectSeconds(_ context.Context, tenant string, month time.Time, key string, seconds int64) (int64, error) {

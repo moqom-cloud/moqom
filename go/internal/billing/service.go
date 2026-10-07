@@ -673,6 +673,10 @@ func (s *Service) RecordUsage(ctx context.Context, reporter Reporter, records []
 			record.DirectSeconds < 0 || record.DirectSeconds > longestInterval {
 			return result, fmt.Errorf("%w: record %s has a negative or implausible quantity", ErrInvalid, record.ID)
 		}
+		if reporter.Hosting == HostingCloudflare && record.DirectSeconds > 0 {
+			// Only a MOQOM relay issues direct tickets.
+			return result, fmt.Errorf("%w: record %s reports direct time from Cloudflare", ErrInvalid, record.ID)
+		}
 		tenant := record.Tenant
 		if reporter.Tenant != "" {
 			if tenant != "" && tenant != reporter.Tenant {
@@ -720,6 +724,19 @@ func (s *Service) RecordUsage(ctx context.Context, reporter Reporter, records []
 		// that failed between the two is priced the same when it is re-sent.
 		// After the cap, which is a ceiling on what relaying costs and has
 		// nothing to say about a direct path.
+		var trial bool
+		if reporter.Hosting == HostingCloudflare {
+			if s.now().Before(s.pricing.CloudflareFreeUntil) {
+				trial = true
+				charge = Charge{}
+			} else {
+				before, err := s.store.ClaimCloudflareSeconds(ctx, tenant, MonthOf(s.now()), key, record.Seconds)
+				if err != nil {
+					return result, err
+				}
+				charge.Price = s.pricing.CloudflarePrice(charge.Price, before, record.Seconds)
+			}
+		}
 		var directFee Micros
 		if record.DirectSeconds > 0 {
 			before, err := s.store.ClaimDirectSeconds(ctx, tenant, MonthOf(s.now()), key, record.DirectSeconds)
@@ -732,6 +749,9 @@ func (s *Service) RecordUsage(ctx context.Context, reporter Reporter, records []
 			"role": record.Role, "tier": record.Tier, "seconds": record.Seconds,
 			"egress_bytes": record.EgressBytes, "ingress_bytes": record.IngressBytes,
 			"hosting": reporter.Hosting, "room": record.Room, "participant": record.Participant,
+		}
+		if trial {
+			fields["trial"] = true
 		}
 		if record.DirectSeconds > 0 {
 			fields["direct_seconds"] = record.DirectSeconds
