@@ -130,6 +130,11 @@ func run() error {
 	if config.Recording, err = recordingConfig(backing); err != nil {
 		return err
 	}
+	storageBilling, stopStorageBilling := context.WithCancel(context.Background())
+	defer stopStorageBilling()
+	if err := billRecordingStorage(storageBilling, config.Recording, payments); err != nil {
+		return err
+	}
 	if config.Overlay, err = overlayConfig(backing); err != nil {
 		return err
 	}
@@ -752,6 +757,15 @@ func billingService(backing store.Store) (*billing.Service, error) {
 			*into = value
 		}
 	}
+	// Recording storage is priced where the bucket is, which DefaultPricing
+	// assumes is a North American region.
+	if location := strings.TrimSpace(os.Getenv("MOQOM_RECORDING_BUCKET_LOCATION")); location != "" {
+		prices, ok := billing.GCSStorageListPrice(location)
+		if !ok {
+			return nil, fmt.Errorf("MOQOM_RECORDING_BUCKET_LOCATION %q has no storage price; add it to billing.GCSStorageListPrice", location)
+		}
+		config.Pricing.Costs.Storage = prices
+	}
 
 	// The key file is absent until tools/sync-secrets.sh finds the key in Secret
 	// Manager, and billing runs without payments until it is there, rather than
@@ -960,6 +974,42 @@ func recordingConfig(backing store.Store) (*server.RecordingConfig, error) {
 	}
 	slog.Info("hosted recording on", "bucket", bucket, "signed_links", config.Signer != nil)
 	return config, nil
+}
+
+// billRecordingStorage charges tenants for what their recordings hold in the
+// bucket, hourly, a closed day at a time. MOQOM_RECORDING_LIFECYCLE must be
+// the bucket's lifecycle rules, which Terraform sets beside them.
+func billRecordingStorage(ctx context.Context, config *server.RecordingConfig, payments *billing.Service) error {
+	if config == nil {
+		return nil
+	}
+	lifecycle, err := recording.ParseLifecycle(os.Getenv("MOQOM_RECORDING_LIFECYCLE"))
+	if err != nil {
+		return err
+	}
+	if payments == nil {
+		slog.Warn("recording storage not billed", "reason", "billing is off")
+		return nil
+	}
+	job := &recording.StorageBilling{Store: config.Store, Biller: storageBiller{payments}, Lifecycle: lifecycle}
+	go job.Loop(ctx, time.Hour)
+	slog.Info("recording storage billed", "lifecycle", fmt.Sprintf("%+v", lifecycle))
+	return nil
+}
+
+// storageBiller is billing.Service as recording.StorageBiller.
+type storageBiller struct{ service *billing.Service }
+
+func (b storageBiller) BillStorage(ctx context.Context, charges []recording.StorageCharge) error {
+	records := make([]billing.StorageRecord, 0, len(charges))
+	for _, c := range charges {
+		records = append(records, billing.StorageRecord{
+			ID: c.ID, Tenant: c.Tenant, Room: c.Room, Recording: c.Recording,
+			Class: billing.StorageClass(c.Class), Bytes: c.Bytes, Seconds: c.Seconds,
+		})
+	}
+	_, err := b.service.RecordStorage(ctx, records)
+	return err
 }
 
 func secretFile(name string) (string, error) {

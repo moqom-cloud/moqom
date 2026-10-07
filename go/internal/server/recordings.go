@@ -709,12 +709,13 @@ func (s *recorderLinkService) Finish(ctx context.Context, request *recorderpb.Fi
 		stored = 0
 		for _, artifact := range request.GetArtifacts() {
 			r.Artifacts = append(r.Artifacts, recording.Artifact{
-				Name:    artifact.GetName(),
-				Kind:    artifact.GetKind(),
-				Track:   artifact.GetTrack(),
-				Bytes:   artifact.GetBytes(),
-				CRC32C:  artifact.GetCrc32C(),
-				Attempt: r.Attempt,
+				Name:     artifact.GetName(),
+				Kind:     artifact.GetKind(),
+				Track:    artifact.GetTrack(),
+				Bytes:    artifact.GetBytes(),
+				CRC32C:   artifact.GetCrc32C(),
+				Attempt:  r.Attempt,
+				StoredAt: now,
 			})
 			stored += artifact.GetBytes()
 		}

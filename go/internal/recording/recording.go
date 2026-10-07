@@ -67,6 +67,9 @@ type Artifact struct {
 	// against what the recorder wrote.
 	CRC32C  string `json:"crc32c,omitempty"`
 	Attempt uint32 `json:"attempt"`
+	// StoredAt is when the control plane learned of the file, which is when
+	// its storage is billed from.
+	StoredAt time.Time `json:"stored_at,omitzero"`
 }
 
 // Progress is what a worker reports.
@@ -138,6 +141,12 @@ type Recording struct {
 	Artifacts []Artifact `json:"artifacts,omitempty"`
 	// Manifests are the manifest names, one per attempt that finished.
 	Manifests []string `json:"manifests,omitempty"`
+
+	// StorageBilledThrough is the midnight, UTC, that the artifacts' storage
+	// has been billed to. StorageDone is set once the lifecycle has deleted
+	// all of them, and nothing more is owed.
+	StorageBilledThrough time.Time `json:"storage_billed_through,omitzero"`
+	StorageDone          bool      `json:"storage_done,omitempty"`
 }
 
 // Totals is every attempt's progress together.
@@ -196,6 +205,14 @@ type Store interface {
 	// attempt and folding the previous attempt's last report into Stored. ok
 	// is false when nothing is waiting.
 	Claim(ctx context.Context, worker string, now time.Time, lease time.Duration) (claimed Recording, ok bool, err error)
+	// StorageDue returns up to limit recordings, oldest first, that have
+	// artifacts whose storage is not done and not billed through before.
+	StorageDue(ctx context.Context, before time.Time, limit int) ([]Recording, error)
+}
+
+// StorageOwed is the test StorageDue applies, shared so the stores agree.
+func StorageOwed(r Recording, before time.Time) bool {
+	return len(r.Artifacts) > 0 && !r.StorageDone && r.StorageBilledThrough.Before(before)
 }
 
 // Claimed is what Claim does to a recording, shared by both stores so they
@@ -387,6 +404,27 @@ func (m *Memory) Claim(_ context.Context, worker string, now time.Time, lease ti
 	return next, true, nil
 }
 
+func (m *Memory) StorageDue(_ context.Context, before time.Time, limit int) ([]Recording, error) {
+	m.mu.Lock()
+	var due []Recording
+	for _, r := range m.recordings {
+		if StorageOwed(r, before) {
+			due = append(due, clone(r))
+		}
+	}
+	m.mu.Unlock()
+	slices.SortFunc(due, func(a, b Recording) int {
+		if c := a.CreatedAt.Compare(b.CreatedAt); c != 0 {
+			return c
+		}
+		return strings.Compare(a.ID, b.ID)
+	})
+	if len(due) > limit {
+		due = due[:limit]
+	}
+	return due, nil
+}
+
 // StorageUsage is bytes an attempt left in storage.
 type StorageUsage struct {
 	Tenant    string
@@ -401,10 +439,9 @@ type StorageUsage struct {
 // StorageMeter is told what each attempt stored, so storage can be billed at
 // cost alongside the recorder's viewing.
 //
-// A hook rather than a call into billing because billing has no storage
-// product yet: what it needs is byte-days, and those come from this plus the
-// deletions a retention policy will make. Until that exists LogMeter records
-// the facts so they can be billed from the log.
+// This is the moment an attempt's files appear; what they cost is billed
+// separately, by StorageBilling, from the artifacts' StoredAt and the bucket's
+// lifecycle. LogMeter records the facts for anyone reading the log.
 type StorageMeter interface {
 	Stored(ctx context.Context, usage StorageUsage) error
 }

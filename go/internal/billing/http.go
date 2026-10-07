@@ -201,7 +201,13 @@ func (h *handler) rates(w http.ResponseWriter, _ *http.Request) {
 			ceiling[role][tier] = moneyOf(rate)
 		}
 	}
+	storage := map[StorageClass]money{}
+	for class, rate := range pricing.Costs.Storage {
+		storage[class] = moneyOf(rate)
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
+		// Recording storage is charged at this cost plus the markup.
+		"recording_storage_cost_per_gib_month": storage,
 		"currency":                             "usd",
 		"model":                                "prepaid, cost-plus, capped",
 		"egress_cost_per_gib":                  moneyOf(pricing.Costs.EgressPerGiB),

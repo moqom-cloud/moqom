@@ -210,3 +210,29 @@ func (s *Store) Claim(ctx context.Context, worker string, now time.Time, lease t
 	})
 	return claimed, found, err
 }
+
+// StorageDue reads the billing watermark from the document, which is where
+// it lives, and checks each row with the same test the memory store uses.
+func (s *Store) StorageDue(ctx context.Context, before time.Time, limit int) ([]recording.Recording, error) {
+	rows, err := s.pool.Query(ctx, `SELECT doc FROM recordings
+		WHERE jsonb_array_length(COALESCE(doc->'artifacts', '[]'::jsonb)) > 0
+		  AND NOT COALESCE((doc->>'storage_done')::boolean, false)
+		  AND COALESCE((doc->>'storage_billed_through')::timestamptz, '-infinity') < $1
+		ORDER BY created_at, id
+		LIMIT $2`, before, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var due []recording.Recording
+	for rows.Next() {
+		r, err := scan(rows)
+		if err != nil {
+			return nil, err
+		}
+		if recording.StorageOwed(r, before) {
+			due = append(due, r)
+		}
+	}
+	return due, rows.Err()
+}

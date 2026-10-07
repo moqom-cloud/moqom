@@ -238,6 +238,7 @@ func (m *Memory) UsageBreakdown(_ context.Context, tenant string, from, to time.
 		role    Role
 		tier    Tier
 		hosting Hosting
+		product string
 	}
 	sums := map[group]*UsageBucket{}
 	for _, entry := range m.entries {
@@ -246,16 +247,17 @@ func (m *Memory) UsageBreakdown(_ context.Context, tenant string, from, to time.
 		}
 		var detail UsageDetail
 		_ = json.Unmarshal([]byte(entry.Detail), &detail)
-		key := group{detail.Role, detail.Tier, detail.Hosting}
+		key := group{detail.Role, detail.Tier, detail.Hosting, detail.Product}
 		bucket := sums[key]
 		if bucket == nil {
-			bucket = &UsageBucket{Role: key.role, Tier: key.tier, Hosting: key.hosting}
+			bucket = &UsageBucket{Role: key.role, Tier: key.tier, Hosting: key.hosting, Product: key.product}
 			sums[key] = bucket
 		}
 		bucket.Records++
 		bucket.Seconds += detail.Seconds
 		bucket.EgressBytes += detail.EgressBytes
 		bucket.IngressBytes += detail.IngressBytes
+		bucket.StorageByteHours += detail.StorageByteHours
 		bucket.Charged -= entry.Amount
 		if entry.Capped {
 			bucket.Capped++

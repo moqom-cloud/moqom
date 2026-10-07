@@ -20,6 +20,7 @@ func Run(t *testing.T, open func(t *testing.T) recording.Store) {
 	t.Run("ClaimsHonourTheLease", func(t *testing.T) { claimsHonourTheLease(t, open(t)) })
 	t.Run("ListingPagesNewestFirst", func(t *testing.T) { listingPagesNewestFirst(t, open(t)) })
 	t.Run("ReadsAreTenantScoped", func(t *testing.T) { readsAreTenantScoped(t, open(t)) })
+	t.Run("StorageDueIsUnbilledArtifacts", func(t *testing.T) { storageDue(t, open(t)) })
 }
 
 func create(t *testing.T, store recording.Store, id, room string, at time.Time) recording.Recording {
@@ -159,5 +160,48 @@ func readsAreTenantScoped(t *testing.T, store recording.Store) {
 	active, err := store.Active(ctx, "globex", "room")
 	if err != nil || len(active) != 0 {
 		t.Errorf("another tenant's same-named room shows %d of ours (%v)", len(active), err)
+	}
+}
+
+func storageDue(t *testing.T, store recording.Store) {
+	ctx := context.Background()
+	midnight := epoch.Truncate(24 * time.Hour).Add(24 * time.Hour)
+	create(t, store, "old", "a", epoch)
+	create(t, store, "new", "b", epoch.Add(time.Minute))
+	if _, err := store.Create(ctx, recording.Recording{ID: "empty", Tenant: "acme", Room: "c",
+		State: recording.StatePending, CreatedAt: epoch}); err != nil {
+		t.Fatal(err)
+	}
+	create(t, store, "done", "d", epoch)
+	create(t, store, "billed", "e", epoch)
+	for id, change := range map[string]func(*recording.Recording){
+		"done":   func(r *recording.Recording) { r.StorageDone = true },
+		"billed": func(r *recording.Recording) { r.StorageBilledThrough = midnight },
+	} {
+		if _, err := store.Update(ctx, id, func(r *recording.Recording) error { change(r); return nil }); err != nil {
+			t.Fatal(err)
+		}
+	}
+	ids := func(limit int) []string {
+		t.Helper()
+		due, err := store.StorageDue(ctx, midnight, limit)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var out []string
+		for _, r := range due {
+			out = append(out, r.ID)
+		}
+		return out
+	}
+	if got := fmt.Sprint(ids(10)); got != "[old new]" {
+		t.Errorf("due %s, want the two with artifacts unbilled, oldest first", got)
+	}
+	if got := fmt.Sprint(ids(1)); got != "[old]" {
+		t.Errorf("limited to one, due %s", got)
+	}
+	later, err := store.StorageDue(ctx, midnight.Add(24*time.Hour), 10)
+	if err != nil || len(later) != 3 {
+		t.Errorf("a day later the billed one is due again: %d (%v)", len(later), err)
 	}
 }

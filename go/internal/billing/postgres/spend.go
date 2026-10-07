@@ -56,23 +56,25 @@ func (s *Store) UsageSince(ctx context.Context, tenant string, since time.Time) 
 }
 
 // UsageBreakdown reads the range from billing_ledger_tenant_usage and groups
-// on the detail RecordUsage wrote. Every usage entry's detail is a JSON
-// object; an empty one groups under empty role and tier rather than failing
-// the query.
+// on the detail RecordUsage and RecordStorage wrote. Every usage entry's
+// detail is a JSON object; an empty one groups under empty role and tier
+// rather than failing the query.
 func (s *Store) UsageBreakdown(ctx context.Context, tenant string, from, to time.Time) ([]billing.UsageBucket, error) {
 	rows, err := s.pool.Query(ctx, `SELECT
 			COALESCE(d->>'role', ''), COALESCE(d->>'tier', ''), COALESCE(d->>'hosting', ''),
+			COALESCE(d->>'product', ''),
 			count(*),
 			COALESCE(SUM((d->>'seconds')::bigint), 0)::bigint,
 			COALESCE(SUM((d->>'egress_bytes')::bigint), 0)::bigint,
 			COALESCE(SUM((d->>'ingress_bytes')::bigint), 0)::bigint,
 			COALESCE(-SUM(amount), 0)::bigint,
-			count(*) FILTER (WHERE capped)
+			count(*) FILTER (WHERE capped),
+			COALESCE(SUM((d->>'storage_byte_hours')::bigint), 0)::bigint
 		FROM (SELECT amount, capped,
 				CASE WHEN detail LIKE '{%' THEN detail::jsonb ELSE '{}'::jsonb END AS d
 			FROM billing_ledger
 			WHERE tenant = $1 AND kind = $2 AND at >= $3 AND at < $4) usage
-		GROUP BY 1, 2, 3 ORDER BY 1, 2, 3`,
+		GROUP BY 1, 2, 3, 4 ORDER BY 4, 1, 2, 3`,
 		tenant, billing.KindUsage, from.UTC(), to.UTC())
 	if err != nil {
 		return nil, err
@@ -82,8 +84,8 @@ func (s *Store) UsageBreakdown(ctx context.Context, tenant string, from, to time
 	for rows.Next() {
 		var b billing.UsageBucket
 		var charged int64
-		if err := rows.Scan(&b.Role, &b.Tier, &b.Hosting, &b.Records, &b.Seconds,
-			&b.EgressBytes, &b.IngressBytes, &charged, &b.Capped); err != nil {
+		if err := rows.Scan(&b.Role, &b.Tier, &b.Hosting, &b.Product, &b.Records, &b.Seconds,
+			&b.EgressBytes, &b.IngressBytes, &charged, &b.Capped, &b.StorageByteHours); err != nil {
 			return nil, err
 		}
 		b.Charged = billing.Micros(charged)

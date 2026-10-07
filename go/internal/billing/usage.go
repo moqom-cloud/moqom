@@ -16,13 +16,19 @@ type UsageDetail struct {
 	EgressBytes  int64   `json:"egress_bytes"`
 	IngressBytes int64   `json:"ingress_bytes"`
 	Hosting      Hosting `json:"hosting"`
+	// Product is empty for a participant's session, and names anything else
+	// charged as usage: ProductRecordingStorage.
+	Product          string `json:"product,omitempty"`
+	StorageByteHours int64  `json:"storage_byte_hours,omitempty"`
 }
 
-// UsageBucket is the usage entries of one role, tier and hosting, summed.
+// UsageBucket is the usage entries of one role, tier, hosting and product,
+// summed.
 type UsageBucket struct {
 	Role         Role
 	Tier         Tier
 	Hosting      Hosting
+	Product      string
 	Records      int64
 	Seconds      int64
 	EgressBytes  int64
@@ -31,9 +37,14 @@ type UsageBucket struct {
 	Charged Micros
 	// Capped counts the entries the ceiling limited.
 	Capped int64
+	// StorageByteHours is recording storage held, for ProductRecordingStorage.
+	StorageByteHours int64
 }
 
 func (b UsageBucket) less(o UsageBucket) bool {
+	if b.Product != o.Product {
+		return b.Product < o.Product
+	}
 	if b.Role != o.Role {
 		return b.Role < o.Role
 	}
@@ -62,6 +73,7 @@ func (l *UsageLine) add(o UsageLine) {
 	l.IngressBytes += o.IngressBytes
 	l.Charged += o.Charged
 	l.Capped += o.Capped
+	l.StorageByteHours += o.StorageByteHours
 	l.AgoraList += o.AgoraList
 	l.Unrated = l.Unrated || o.Unrated
 }
@@ -97,7 +109,10 @@ func (s *Service) UsageReport(ctx context.Context, tenant string, from, to time.
 		line := UsageLine{UsageBucket: bucket}
 		if rate, ok := agora[bucket.Role][bucket.Tier]; ok {
 			line.AgoraList = Per1000Minutes(rate, bucket.Seconds)
-		} else {
+		} else if bucket.Product == "" {
+			// Storage is compared at nothing rather than marked unrated: Agora's
+			// rate card has no line for it, and leaving it out of the
+			// comparison would overstate the savings.
 			line.Unrated = true
 		}
 		report.Lines = append(report.Lines, line)
@@ -215,6 +230,7 @@ type usageLineView struct {
 	Role               Role    `json:"role,omitempty"`
 	Tier               Tier    `json:"tier,omitempty"`
 	Hosting            Hosting `json:"hosting,omitempty"`
+	Product            string  `json:"product,omitempty"`
 	Records            int64   `json:"records"`
 	Seconds            int64   `json:"seconds"`
 	ParticipantMinutes float64 `json:"participant_minutes"`
@@ -228,6 +244,8 @@ type usageLineView struct {
 	// percent; zero when Agora's list is zero.
 	SavingsBasisPoints int64 `json:"savings_basis_points"`
 	Unrated            bool  `json:"unrated,omitempty"`
+	// StorageGiBMonths is recording storage, in the unit it is priced in.
+	StorageGiBMonths float64 `json:"storage_gib_months,omitempty"`
 }
 
 func basisPoints(part, whole Micros) int64 {
@@ -242,11 +260,12 @@ func basisPoints(part, whole Micros) int64 {
 
 func viewUsageLine(l UsageLine) usageLineView {
 	return usageLineView{
-		Role: l.Role, Tier: l.Tier, Hosting: l.Hosting, Records: l.Records, Seconds: l.Seconds,
+		Role: l.Role, Tier: l.Tier, Hosting: l.Hosting, Product: l.Product, Records: l.Records, Seconds: l.Seconds,
 		ParticipantMinutes: float64(l.Seconds) / 60,
 		EgressBytes:        l.EgressBytes, IngressBytes: l.IngressBytes, CappedRecords: l.Capped,
 		Charged: moneyOf(l.Charged), AgoraList: moneyOf(l.AgoraList), Savings: moneyOf(l.Savings()),
 		SavingsBasisPoints: basisPoints(l.Savings(), l.AgoraList), Unrated: l.Unrated,
+		StorageGiBMonths: GiBMonths(l.StorageByteHours),
 	}
 }
 
@@ -297,8 +316,14 @@ func (h *handler) usageSummary(w http.ResponseWriter, r *http.Request, key Key) 
 	byRole, byTier := map[Role]*UsageLine{}, map[Tier]*UsageLine{}
 	var roles []Role
 	var tiers []Tier
+	storage := UsageLine{UsageBucket: UsageBucket{Product: ProductRecordingStorage}}
 	for _, line := range report.Lines {
 		lines = append(lines, viewUsageLine(line))
+		if line.Product != "" {
+			// Not a participant, so in neither breakdown; see "storage".
+			storage.add(line)
+			continue
+		}
 		if byRole[line.Role] == nil {
 			byRole[line.Role] = &UsageLine{UsageBucket: UsageBucket{Role: line.Role}}
 			roles = append(roles, line.Role)
@@ -326,6 +351,8 @@ func (h *handler) usageSummary(w http.ResponseWriter, r *http.Request, key Key) 
 		"by_role":         roleViews,
 		"by_tier":         tierViews,
 		"total":           viewUsageLine(report.Total),
+		// Hosted recording storage, which total includes.
+		"storage": viewUsageLine(storage),
 		"agora_basis": "Agora Interactive Live Streaming list price, October 2026: hosts and interactive " +
 			"audience at the interactive rate, broadcast audience at the broadcast rate, same tiers, by the second.",
 	}

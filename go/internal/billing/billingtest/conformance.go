@@ -165,7 +165,7 @@ func Run(t *testing.T, open func(t *testing.T) billing.Store) {
 		}
 	})
 
-	t.Run("usage breakdown groups a range by role, tier and hosting", func(t *testing.T) {
+	t.Run("usage breakdown groups a range by role, tier, hosting and product", func(t *testing.T) {
 		s := open(t)
 		_, _ = s.CreateTenant(ctx, tenant("t_1"))
 		_, _ = s.CreateTenant(ctx, tenant("t_2"))
@@ -180,6 +180,8 @@ func Run(t *testing.T, open func(t *testing.T) billing.Store) {
 		usage("t_1", "u2", 300, true, time.Minute, hd)
 		usage("t_1", "u3", 50, false, 2*time.Minute,
 			`{"egress_bytes":7,"hosting":"self_hosted","ingress_bytes":0,"role":"broadcast_audience","seconds":30,"tier":"audio"}`)
+		usage("t_1", "u7", 70, false, 3*time.Minute,
+			`{"hosting":"cloud","product":"recording_storage","storage_byte_hours":500,"storage_class":"standard"}`)
 		usage("t_1", "u4", 999, false, -time.Second, hd) // before the range
 		usage("t_1", "u5", 999, false, time.Hour, hd)    // at its end, excluded
 		usage("t_2", "u6", 999, false, time.Minute, hd)  // another tenant
@@ -195,6 +197,8 @@ func Run(t *testing.T, open func(t *testing.T) billing.Store) {
 				Records: 1, Seconds: 30, EgressBytes: 7, Charged: 50},
 			{Role: billing.RoleHost, Tier: billing.TierHD, Hosting: billing.HostingCloud,
 				Records: 2, Seconds: 120, EgressBytes: 2000, IngressBytes: 20, Charged: 400, Capped: 1},
+			{Hosting: billing.HostingCloud, Product: billing.ProductRecordingStorage,
+				Records: 1, Charged: 70, StorageByteHours: 500},
 		}
 		if len(got) != len(want) {
 			t.Fatalf("got %+v, want %+v", got, want)

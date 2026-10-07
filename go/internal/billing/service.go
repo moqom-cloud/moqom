@@ -133,7 +133,8 @@ func New(config Config) (*Service, error) {
 	if config.Logger == nil {
 		config.Logger = slog.Default()
 	}
-	if config.Pricing.Ceiling == nil && config.Pricing.Costs == (Costs{}) {
+	if costs := config.Pricing.Costs; config.Pricing.Ceiling == nil && costs.Storage == nil &&
+		costs.EgressPerGiB == 0 && costs.IngressPerGiB == 0 && costs.ConnectedSecond == 0 {
 		config.Pricing = DefaultPricing()
 	}
 	if config.GitHub == nil {

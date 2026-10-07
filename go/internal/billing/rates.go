@@ -123,16 +123,22 @@ type Costs struct {
 	// so compute is a rounding error beside the egress it produces. Kept as a
 	// meter so a cheaper egress deal does not leave it unpriced.
 	ConnectedSecond Micros
+	// Storage is keeping a GiB of hosted recordings for a month, by class.
+	Storage StoragePrices
 }
 
 // GCPListPrice is Premium Tier internet egress from North America at the first
 // volume band, which is the most expensive case and the safe default before a
-// negotiated rate exists.
+// negotiated rate exists, and Cloud Storage at a North American region, which
+// is where dev keeps recordings. A deployment whose bucket is elsewhere sets
+// Storage from GCSStorageListPrice.
 func GCPListPrice() Costs {
+	storage, _ := GCSStorageListPrice("us-west1")
 	return Costs{
 		EgressPerGiB:    120_000, // $0.12
 		IngressPerGiB:   0,
 		ConnectedSecond: 1, // $0.000001, about $0.0036 per participant-hour
+		Storage:         storage,
 	}
 }
 
