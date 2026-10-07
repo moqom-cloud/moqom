@@ -19,6 +19,10 @@ CREATE TABLE IF NOT EXISTS mls_rooms (
     PRIMARY KEY (tenant, room)
 );
 
+-- The MLS cipher suite the current group was founded in. Rows from before
+-- suites were recorded held groups in 0x0001, which the default says.
+ALTER TABLE mls_rooms ADD COLUMN IF NOT EXISTS cipher_suite integer NOT NULL DEFAULT 1;
+
 CREATE TABLE IF NOT EXISTS mls_messages (
     tenant      text        NOT NULL,
     room        text        NOT NULL,

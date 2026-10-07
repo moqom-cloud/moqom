@@ -140,22 +140,25 @@ func (s *Store) Presence(ctx context.Context, room mls.Room) ([]mls.Presence, er
 
 func (s *Store) Group(ctx context.Context, room mls.Room) (mls.Group, error) {
 	var group mls.Group
-	err := s.pool.QueryRow(ctx, `SELECT group_id, epoch FROM mls_rooms
-		WHERE tenant = $1 AND room = $2 AND group_id IS NOT NULL`, room.Tenant, room.Room).Scan(&group.ID, &group.Epoch)
+	var suite int32
+	err := s.pool.QueryRow(ctx, `SELECT group_id, epoch, cipher_suite FROM mls_rooms
+		WHERE tenant = $1 AND room = $2 AND group_id IS NOT NULL`, room.Tenant, room.Room).Scan(&group.ID, &group.Epoch, &suite)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return mls.Group{}, mls.ErrNotFound
 	}
+	group.CipherSuite = mls.CipherSuite(suite)
 	return group, err
 }
 
-func (s *Store) CreateGroup(ctx context.Context, room mls.Room, id []byte, founder string, at time.Time) (mls.Group, error) {
+func (s *Store) CreateGroup(ctx context.Context, room mls.Room, id []byte, suite mls.CipherSuite, founder string, at time.Time) (mls.Group, error) {
 	err := pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
 		// The upsert only takes a row whose group is empty, so two founders
 		// racing on the same room each see exactly one outcome.
-		tag, err := tx.Exec(ctx, `INSERT INTO mls_rooms (tenant, room, group_id, epoch, founded_at)
-			VALUES ($1, $2, $3, 0, $4)
-			ON CONFLICT (tenant, room) DO UPDATE SET group_id = EXCLUDED.group_id, epoch = 0, founded_at = EXCLUDED.founded_at
-			WHERE mls_rooms.group_id IS NULL`, room.Tenant, room.Room, id, at.UTC())
+		tag, err := tx.Exec(ctx, `INSERT INTO mls_rooms (tenant, room, group_id, epoch, founded_at, cipher_suite)
+			VALUES ($1, $2, $3, 0, $4, $5)
+			ON CONFLICT (tenant, room) DO UPDATE SET group_id = EXCLUDED.group_id, epoch = 0,
+				founded_at = EXCLUDED.founded_at, cipher_suite = EXCLUDED.cipher_suite
+			WHERE mls_rooms.group_id IS NULL`, room.Tenant, room.Room, id, at.UTC(), int32(suite))
 		if err != nil {
 			return err
 		}
@@ -171,7 +174,7 @@ func (s *Store) CreateGroup(ctx context.Context, room mls.Room, id []byte, found
 	if err != nil {
 		return mls.Group{}, err
 	}
-	return mls.Group{ID: id}, nil
+	return mls.Group{ID: id, CipherSuite: suite}, nil
 }
 
 func (s *Store) DropGroup(ctx context.Context, room mls.Room, id []byte) error {

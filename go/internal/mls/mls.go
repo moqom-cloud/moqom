@@ -35,7 +35,9 @@
 // new protocol.
 //
 // The rules a client relies on are all here and in Service: one group per
-// room; a commit is accepted only for the room's current epoch, and the first
+// room, in the cipher suite its founder named; a device's key packages are all
+// in one suite, and one in a suite other than the group's is not handed out;
+// a commit is accepted only for the room's current epoch, and the first
 // one wins; a key package is handed out once, except the last-resort one; a
 // Welcome is only ever returned to the devices it names; a room nobody in the
 // group has been heard from for OnlineWindow drops its group so the next
@@ -75,6 +77,11 @@ type Caller struct {
 type Group struct {
 	ID    []byte
 	Epoch uint64
+	// CipherSuite is the suite its founder declared. The service cannot check
+	// it against the group's own GroupContext, which it never sees, but it is
+	// what tells a device which suite of key packages to publish, and a
+	// package in any other is not handed out.
+	CipherSuite CipherSuite
 }
 
 // MessageKind is what a sequenced message is.
@@ -139,9 +146,9 @@ type Store interface {
 
 	// Group is the room's current group, ErrNotFound if it has none.
 	Group(ctx context.Context, room Room) (Group, error)
-	// CreateGroup founds a group at epoch 0 with founder as its only member.
-	// ErrConflict if the room has one.
-	CreateGroup(ctx context.Context, room Room, id []byte, founder string, at time.Time) (Group, error)
+	// CreateGroup founds a group in suite at epoch 0 with founder as its only
+	// member. ErrConflict if the room has one.
+	CreateGroup(ctx context.Context, room Room, id []byte, suite CipherSuite, founder string, at time.Time) (Group, error)
 	// DropGroup removes the group if its ID is still id, with its log and
 	// every device's membership. Sequence numbers are not reused afterwards.
 	DropGroup(ctx context.Context, room Room, id []byte) error

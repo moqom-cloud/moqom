@@ -33,9 +33,13 @@ const recheck = time.Second
 // again from the cursor it is given.
 const messagesPerSync = 256
 
-// maxCommitBytes bounds a commit or a Welcome: an HPKE ciphertext per member,
-// so roughly a hundred bytes each, and a room of a few hundred devices fits.
-const maxCommitBytes = 512 << 10
+// maxCommitBytes bounds a commit or a Welcome. A commit carries an HPKE
+// ciphertext per member and a Welcome carries every member's leaf, which in
+// SuiteX25519 is about a hundred bytes each and in SuiteXWing about 1,180 and
+// 1,260 (X-Wing's 1,120-byte encapsulation, its 1,216-byte public key). 1 MiB
+// keeps a room of 800 devices within bounds in either suite; at the 512 KiB
+// this was before X-Wing, a hybrid room would stop at about 400.
+const maxCommitBytes = 1 << 20
 
 // MessageRetention is how long a store keeps a commit or Welcome, pruned as
 // later ones arrive. Far longer than OnlineWindow: every member still in the
@@ -99,17 +103,28 @@ func (s *Service) waitFor(room Room) <-chan struct{} {
 // what binds a leaf in the group to a device the control plane admitted: the
 // token says who the caller is, and a package claiming to be anyone else is a
 // device trying to join under another's name.
+//
+// All of a device's packages are in one cipher suite, so whichever is claimed
+// is in the suite the device last chose. They are not checked against the
+// room's group: a device publishes before it has seen whether there is one,
+// and replaces its packages when the group turns out to be in another suite.
 func (s *Service) PublishKeyPackages(ctx context.Context, caller Caller, oneTime [][]byte, lastResort []byte) error {
 	if len(oneTime) > maxOneTimePackages {
 		return fmt.Errorf("%w: %d key packages, at most %d", ErrInvalid, len(oneTime), maxOneTimePackages)
 	}
-	for _, data := range append(slices.Clone(oneTime), lastResort) {
+	var suite CipherSuite
+	for i, data := range append(slices.Clone(oneTime), lastResort) {
 		parsed, err := ParseKeyPackage(data)
 		if err != nil {
 			return err
 		}
 		if parsed.Identity != caller.Device {
 			return fmt.Errorf("%w: key package is for %q, token is for %q", ErrForbidden, parsed.Identity, caller.Device)
+		}
+		if i == 0 {
+			suite = parsed.CipherSuite
+		} else if parsed.CipherSuite != suite {
+			return fmt.Errorf("%w: key packages in suites %#04x and %#04x", ErrInvalid, uint16(suite), uint16(parsed.CipherSuite))
 		}
 	}
 	if err := s.store.PutKeyPackages(ctx, caller.Room, caller.Device, oneTime, lastResort); err != nil {
@@ -148,22 +163,50 @@ func (s *Service) ClaimKeyPackage(ctx context.Context, caller Caller, device str
 	if !targetIsPending {
 		return nil, fmt.Errorf("%w: %q is not waiting to be added", ErrNotFound, device)
 	}
-	return s.store.ClaimKeyPackage(ctx, caller.Room, device)
+	group, err := s.store.Group(ctx, caller.Room)
+	if err != nil {
+		return nil, err
+	}
+	data, err := s.store.ClaimKeyPackage(ctx, caller.Room, device)
+	if err != nil {
+		return nil, err
+	}
+	// Checked after claiming, since the store hands out packages without
+	// reading them. A one-time package spent this way could never have joined
+	// this group, and its device replaces the lot once it sees the group's
+	// suite.
+	parsed, err := ParseKeyPackage(data)
+	if err != nil {
+		return nil, err
+	}
+	if parsed.CipherSuite != group.CipherSuite {
+		return nil, fmt.Errorf("%w: %q's key package is in suite %#04x, the group is in %#04x",
+			ErrConflict, device, uint16(parsed.CipherSuite), uint16(group.CipherSuite))
+	}
+	return data, nil
 }
 
 func (s *Service) online(entry Presence) bool {
 	return s.now().Sub(entry.LastSeen) <= OnlineWindow
 }
 
-// CreateGroup founds the room's group with the caller as its only member.
-func (s *Service) CreateGroup(ctx context.Context, caller Caller, id []byte) error {
+// CreateGroup founds the room's group in suite with the caller as its only
+// member. A suite of 0 is a client from before suites were declared, all of
+// whose groups are SuiteX25519.
+func (s *Service) CreateGroup(ctx context.Context, caller Caller, id []byte, suite CipherSuite) error {
 	if len(id) == 0 || len(id) > 64 {
 		return fmt.Errorf("%w: group id of %d bytes", ErrInvalid, len(id))
+	}
+	if suite == 0 {
+		suite = SuiteX25519
+	}
+	if !suite.Known() {
+		return fmt.Errorf("%w: cipher suite %#04x", ErrInvalid, uint16(suite))
 	}
 	if err := s.store.Touch(ctx, caller.Room, caller.Device, s.now()); err != nil {
 		return err
 	}
-	if _, err := s.store.CreateGroup(ctx, caller.Room, id, caller.Device, s.now()); err != nil {
+	if _, err := s.store.CreateGroup(ctx, caller.Room, id, suite, caller.Device, s.now()); err != nil {
 		return err
 	}
 	s.changed(caller.Room)

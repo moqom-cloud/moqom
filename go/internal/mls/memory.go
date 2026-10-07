@@ -133,21 +133,21 @@ func (m *Memory) Group(_ context.Context, room Room) (Group, error) {
 	if found == nil {
 		return Group{}, ErrNotFound
 	}
-	return Group{ID: clone(found.ID), Epoch: found.Epoch}, nil
+	return Group{ID: clone(found.ID), Epoch: found.Epoch, CipherSuite: found.CipherSuite}, nil
 }
 
-func (m *Memory) CreateGroup(_ context.Context, room Room, id []byte, founder string, at time.Time) (Group, error) {
+func (m *Memory) CreateGroup(_ context.Context, room Room, id []byte, suite CipherSuite, founder string, at time.Time) (Group, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	entry := m.room(room)
 	if entry.group != nil {
 		return Group{}, ErrConflict
 	}
-	entry.group = &Group{ID: clone(id), Epoch: 0}
+	entry.group = &Group{ID: clone(id), Epoch: 0, CipherSuite: suite}
 	founding := entry.device(founder)
 	founding.member = true
 	founding.lastSeen = at
-	return Group{ID: clone(id)}, nil
+	return Group{ID: clone(id), CipherSuite: suite}, nil
 }
 
 func (m *Memory) DropGroup(_ context.Context, room Room, id []byte) error {

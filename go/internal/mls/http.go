@@ -98,11 +98,13 @@ func Handler(service *Service, authenticate Authenticate) http.Handler {
 	route("POST "+PathPrefix+"group", func(w http.ResponseWriter, r *http.Request, caller Caller) error {
 		var body struct {
 			GroupID []byte `json:"groupId"`
+			// Absent from clients that predate suites, whose groups are 0x0001.
+			CipherSuite uint16 `json:"cipherSuite"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 			return errors.Join(ErrInvalid, err)
 		}
-		if err := service.CreateGroup(r.Context(), caller, body.GroupID); err != nil {
+		if err := service.CreateGroup(r.Context(), caller, body.GroupID, CipherSuite(body.CipherSuite)); err != nil {
 			return err
 		}
 		w.WriteHeader(http.StatusCreated)
@@ -150,8 +152,9 @@ func Handler(service *Service, authenticate Authenticate) http.Handler {
 }
 
 type wireGroup struct {
-	ID    []byte `json:"id"`
-	Epoch uint64 `json:"epoch"`
+	ID          []byte `json:"id"`
+	Epoch       uint64 `json:"epoch"`
+	CipherSuite uint16 `json:"cipherSuite"`
 }
 
 type wireMessage struct {
@@ -178,7 +181,9 @@ func syncResponse(snapshot Snapshot) wireSync {
 		Cursor:   snapshot.Cursor,
 	}
 	if snapshot.Group != nil {
-		out.Group = &wireGroup{ID: snapshot.Group.ID, Epoch: snapshot.Group.Epoch}
+		out.Group = &wireGroup{
+			ID: snapshot.Group.ID, Epoch: snapshot.Group.Epoch, CipherSuite: uint16(snapshot.Group.CipherSuite),
+		}
 	}
 	for _, message := range snapshot.Messages {
 		out.Messages = append(out.Messages, wireMessage{Seq: message.Seq, Kind: message.Kind, Data: message.Data})

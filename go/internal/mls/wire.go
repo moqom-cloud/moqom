@@ -3,6 +3,7 @@ package mls
 import (
 	"bytes"
 	"crypto/ed25519"
+	"crypto/mlkem"
 	"encoding/binary"
 	"fmt"
 )
@@ -13,12 +14,47 @@ import (
 // structures; see MLSGroup.swift. Nothing else is parsed, because nothing else
 // is the service's business.
 
-const (
-	protocolVersion = 0x0001
-	cipherSuite     = 0x0001 // MLS_128_DHKEMX25519_AES128GCM_SHA256_Ed25519
+const protocolVersion = 0x0001
 
-	// Bounds on what a device may store, generous for a 200-byte package.
-	maxKeyPackageBytes = 1 << 10
+// CipherSuite is an MLS cipher suite identifier, RFC 9420 §17.1.
+type CipherSuite uint16
+
+// The suites MoqomKit implements; see MLSCipherSuite.swift. They differ only
+// in the KEM, which for the service means only in the length of the init and
+// encryption keys in a key package.
+const (
+	// SuiteX25519 is MLS_128_DHKEMX25519_AES128GCM_SHA256_Ed25519, RFC 9420's
+	// mandatory suite, and what a group founded by a client that names no
+	// suite is in.
+	SuiteX25519 CipherSuite = 0x0001
+	// SuiteXWing is MLS_128_MLKEM768X25519_AES128GCM_SHA256_Ed25519, the first
+	// suite of draft-ietf-mls-pq-ciphersuites-06 (HPKE KEM 0x647a, X-Wing).
+	// The draft's value is still TBD, so this is from RFC 9420's private-use
+	// range (0xF000-0xFFFF) and must change with MoqomKit's when IANA assigns
+	// one.
+	SuiteXWing CipherSuite = 0xF0A1
+)
+
+// kemKeyLength is the init and encryption key length in each suite, or 0 for
+// a suite that is not implemented.
+func (s CipherSuite) kemKeyLength() int {
+	switch s {
+	case SuiteX25519:
+		return 32
+	case SuiteXWing:
+		return mlkem.EncapsulationKeySize768 + 32 // ML-KEM-768, then X25519: 1216
+	}
+	return 0
+}
+
+// Known reports whether the suite is one MoqomKit implements.
+func (s CipherSuite) Known() bool { return s.kemKeyLength() != 0 }
+
+const (
+	// Bounds on what a device may store. A package is about 200 bytes in
+	// SuiteX25519 and about 2.5 KiB in SuiteXWing, whose two keys are 1,216
+	// bytes each; 4 KiB leaves room for a long identity in either.
+	maxKeyPackageBytes = 4 << 10
 	maxOneTimePackages = 16
 )
 
@@ -116,6 +152,7 @@ func writeVector(buffer *bytes.Buffer, data []byte) {
 
 // KeyPackage is the part of a MoqomKit key package the service checks.
 type KeyPackage struct {
+	CipherSuite   CipherSuite
 	Identity      string
 	SignatureKey  []byte
 	InitKey       []byte
@@ -124,7 +161,7 @@ type KeyPackage struct {
 
 // ParseKeyPackage reads a key package and verifies it is signed by the key it
 // carries, so a malformed or unsigned blob is refused here rather than handed
-// to a committer.
+// to a committer. A suite MoqomKit does not implement is refused.
 func ParseKeyPackage(data []byte) (KeyPackage, error) {
 	if len(data) > maxKeyPackageBytes {
 		return KeyPackage{}, fmt.Errorf("%w: key package is %d bytes", ErrInvalid, len(data))
@@ -143,19 +180,30 @@ func ParseKeyPackage(data []byte) (KeyPackage, error) {
 	if len(r.data) != 0 {
 		return KeyPackage{}, fmt.Errorf("%w: trailing bytes after key package", ErrInvalid)
 	}
-	if version != protocolVersion || suite != cipherSuite {
+	if version != protocolVersion || !CipherSuite(suite).Known() {
 		return KeyPackage{}, fmt.Errorf("%w: version %#x suite %#x", ErrInvalid, version, suite)
 	}
-	if len(signatureKey) != ed25519.PublicKeySize || len(initKey) != 32 || len(encryptionKey) != 32 {
+	keyLength := CipherSuite(suite).kemKeyLength()
+	if len(signatureKey) != ed25519.PublicKeySize || len(initKey) != keyLength || len(encryptionKey) != keyLength {
 		return KeyPackage{}, fmt.Errorf("%w: key lengths", ErrInvalid)
 	}
 	if bytes.Equal(initKey, encryptionKey) {
 		return KeyPackage{}, fmt.Errorf("%w: init key reused as encryption key", ErrInvalid)
 	}
+	if CipherSuite(suite) == SuiteXWing {
+		// The ML-KEM half must pass FIPS 203's encapsulation key check, which
+		// every committer's X-Wing encapsulation would otherwise fail on.
+		for _, key := range [][]byte{initKey, encryptionKey} {
+			if _, err := mlkem.NewEncapsulationKey768(key[:mlkem.EncapsulationKeySize768]); err != nil {
+				return KeyPackage{}, fmt.Errorf("%w: ML-KEM-768 key: %v", ErrInvalid, err)
+			}
+		}
+	}
 	if !ed25519.Verify(signatureKey, signContent("KeyPackageTBS", data[:signed]), signature) {
 		return KeyPackage{}, fmt.Errorf("%w: key package signature", ErrInvalid)
 	}
 	return KeyPackage{
+		CipherSuite:   CipherSuite(suite),
 		Identity:      string(identity),
 		SignatureKey:  signatureKey,
 		InitKey:       initKey,
