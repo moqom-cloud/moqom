@@ -187,6 +187,12 @@ variable "relay_link_via_overlay" {
   default     = false
 }
 
+variable "relay_parent" {
+  type        = string
+  description = "HOST:PORT of a parent relay. Set, every relay here becomes an edge of it and mints a per-room link credential at the control plane's /relay/link. Empty (the default) keeps single-tier relays."
+  default     = ""
+}
+
 variable "relay_link_overlay_only" {
   type        = bool
   description = "The control plane refuses RelayLink unless it arrived over the overlay: the internal TCP path is dark to relays. Turn on only once every relay is attached via the overlay."

@@ -426,6 +426,38 @@ Leave `-on-behalf-of` unset for an action the service account takes on its own.
 Naming a moderator asks the control plane to check that they hold moderation in
 that room, and an operator at a terminal usually holds nothing in it.
 
+### Relay tiers: an edge's link to its parent
+
+RelayLink is a relay's link to the control plane. A relay's link to a parent relay is a
+separate thing: an ordinary MoQ session, opened per room, on a credential the edge mints for
+itself. `relay_parent` (empty by default, and empty in dev) turns every relay in an environment
+into an edge of the relay at that `HOST:PORT`. The relay then sets `MOQOM_RELAY_UPSTREAM`, plus
+`MOQOM_RELAY_LINK_URL` pointing at the control plane's `/relay/link` on the join port.
+
+For each room it is asked for and doesn't publish, the edge does the following:
+
+- It POSTs `{tenant, room, key}` with its relay account's credential. `key` is the public half
+  of a P-256 key that the edge generates at boot and keeps in memory.
+- It gets back a five-minute `rly` token for that room alone, bound to the key.
+- It opens a session to the parent, proving the key with a signature over the token and the
+  parent's certificate.
+- It renews the token over that session once a third of its life is left.
+
+The parent refuses the session if the proof is missing, reused, or made for another relay's
+certificate. A link can read only its room and announce nothing. When minting is refused, the
+room is refused at the edge for 30 seconds, and a link that is already up ends when its
+credential lapses.
+
+Before `relay_parent` is worth setting:
+
+- The parent's certificate must verify from the edge. `MOQOM_RELAY_UPSTREAM_CA` is not wired
+  here.
+- The parent must not be one of the relays it applies to. The hop limit (3 by default,
+  `MOQOM_RELAY_MAX_HOP_LIMIT`) ends a cycle, but only after it has been walked.
+- The relay account in `MOQOM_CONTROL_ACCOUNTS` must be `is_relay`.
+
+The design is in `docs/USAGE-METERING.md` under "Relay-to-relay links".
+
 ## The management overlay
 
 Everything that is management rather than media can also travel over a

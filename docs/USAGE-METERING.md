@@ -196,9 +196,11 @@ Alert on `time() - last_success_timestamp_seconds > 600`, any `unauthorized`, an
 3. Optionally set `MOQOM_RELAY_ID`; with `--network host` the default is the instance name, which
    is unique and stable.
 4. The systemd stop timeout must allow the drain plus up to 10 s for the last report.
-5. For tiers: deploy relays before the control plane that mints `rly`, and give each edge a link
-   token from `POST /relay/link` (relay account credential) in place of a viewer token. Until
-   edges fetch and renew those themselves (see Known gaps), no hosted tier is double-count free.
+5. For tiers: deploy relays before the control plane that mints `rly`, and set
+   `MOQOM_RELAY_LINK_URL` on each edge (beside `MOQOM_RELAY_UPSTREAM`) to the control plane's
+   `/relay/link`, so the edge mints its own link credentials (see Relay-to-relay links). An edge
+   still configured with a static `MOQOM_RELAY_UPSTREAM_TOKEN` viewer token is metered as
+   audience at its parent.
 
 ## Relay-to-relay links
 
@@ -221,6 +223,31 @@ link to watch unmetered.
   metered session into a link or back.
 - **Forged or unsigned** link tokens fail verification and the session is refused, so it is
   neither served nor unmetered.
+- **One room per link.** The minter requires `room` and refuses a room that doesn't exist (404)
+  or has ended (410). The relay refuses an `rly` token with no room, and on a link it refuses
+  `PUBLISH_NAMESPACE` and any read outside that room, backstage included, with `UNAUTHORIZED`.
+- **Bound to a key.** The minter requires `key` (a public JWK) and binds the token to it with
+  `cnf.jkt`. The edge generates a P-256 key at startup, held only in memory, and on every link
+  presents an ES256 `MOQT-POP` proof with the token, made the same way as a client's
+  (`moqom-client`'s device key). It binds `ath` (the token's hash), `rel` (the SHA-256 of the
+  parent's leaf certificate, which the edge reads off its own TLS connection) and a `jti` that
+  the parent accepts only once. A parent with `MOQOM_RELAY_POSSESSION=required` refuses a link
+  with no proof, a reused proof, or a proof made for another relay's certificate, and counts each
+  refusal in `moqom_relay_tokens_refused_total{cause}`.
+- **Short-lived and renewed.** A link token lasts 5 minutes. The parent ends the session at
+  `exp` plus 30 s of clock skew. The edge (`moqom-relay/src/edge.rs`) mints the replacement once
+  a third of the lifetime is left, with ±10% jitter, retrying on failure with exponential backoff
+  (a random wait between half and all of a delay that starts at 1 s and doubles to at most 60 s). It sends the new token and a fresh proof as a
+  `REQUEST_UPDATE` on the room's namespace watch, and keeps serving on the current token until
+  it lapses. A renewal must name the same scope and the same principal.
+- **Revocation.** The edge treats 401, 403, 404 or 410 from the minter as revoked. A room that
+  is refused when the link first opens gets no link, and its viewers are refused, for 30 s; then
+  the next request tries again. When renewal is refused, the link ends with its current
+  credential, at most 5 minutes and 30 seconds later. Nothing pushes a revocation to the parent
+  sooner.
+- **Per room, on demand.** With `MOQOM_RELAY_LINK_URL` set, the edge opens a link the first time
+  a viewer asks for a room it doesn't publish, holds the subscription for up to 5 s while the
+  link comes up, and closes the link after it has carried nothing for a minute.
 
 Rollout order: relays first. The relay parses `moqt` strictly, so a relay older than this
 refuses link tokens, which fails closed. The Go verifier is strict too, and it ships in the same
@@ -228,16 +255,15 @@ binary as the minter.
 
 ## Known gaps
 
-- **Edge relays don't fetch link tokens themselves yet.** `MOQOM_RELAY_UPSTREAM_TOKEN` is
-  still a static value read at startup, and a link token lasts at most 15 minutes like any
-  other. A hosted tier needs the edge to call `/relay/link` with its `MOQOM_CONTROL_CREDENTIAL`
-  and present a fresh token before the old one lapses. That isn't built, and hosted tiers
-  aren't deployed today. An edge still configured with a viewer token is still metered as
-  audience at the parent.
-- **One room per link token.** A link is scoped like a viewer: one tenant, one room. An edge
-  serving several rooms needs a credential per room, or a wider grant that doesn't exist yet.
-- **Possession proofs.** `upstream::attach` presents a bearer token with no proof, so a
-  parent with `MOQOM_RELAY_POSSESSION=required` (the default) refuses it whatever its claims.
+- **Hosted tiers aren't deployed.** The edge's link minting is built and tested against a relay
+  parent, but no Terraform environment sets `MOQOM_RELAY_LINK_URL` yet.
+- **Links serve subscriptions only.** A link forwards `SUBSCRIBE`. It does not forward
+  `FETCH`, `TRACK_STATUS` or `SUBSCRIBE_TRACKS`, and a backstage (`bs`) namespace can't be read
+  over a link.
+- **Single-link mode is unchanged.** Without `MOQOM_RELAY_LINK_URL`, `upstream::attach` still
+  presents `MOQOM_RELAY_UPSTREAM_TOKEN` as a bearer token with no proof. A parent with
+  `MOQOM_RELAY_POSSESSION=required` (the default) refuses it unless that token is unbound.
+- **`relay_link_overlay_only` isn't enforced on `/relay/link`** yet, only on the gRPC RelayLink.
 - **Links appear on the parent's roster** as a participant named `moqom-relay`.
 - **`broadcast_audience`** is only reached by view-only grants with no room; see Role.
 - **Sampling** — roles and pixels are sampled at subscription changes and every 5 s, so a change

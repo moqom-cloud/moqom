@@ -650,7 +650,7 @@ module "relay" {
   # of this file named ports that nothing looks for; a relay started with those
   # binds its defaults and the mismatch shows up as a health check that never
   # passes.
-  container_env = {
+  container_env = merge({
     MOQOM_RELAY_REGION = each.key
     RUST_LOG           = "info"
 
@@ -715,7 +715,14 @@ module "relay" {
     #
     # So the setting stays off, and the code behind it stays: it costs nothing idle and is the
     # part that would be hard to write again on the day a path honours it.
-  }
+    }, var.relay_parent == "" ? {} : {
+    # An edge tier: rooms nobody here publishes are read from the parent, one link per room, each
+    # on a five-minute credential minted at /relay/link for this relay's in-memory key and
+    # renewed before it lapses. The relay account must be is_relay.
+    MOQOM_RELAY_UPSTREAM = var.relay_parent
+    MOQOM_RELAY_LINK_URL = "https://${module.control.public_address}:${local.control_join_port}/relay/link"
+    MOQOM_RELAY_LINK_CA  = "/etc/moqom/link/ca.pem"
+  })
 
   # The overlay tunneler: an identity minted for each instance at boot by the
   # control plane, on the join port beside /relay/link.
