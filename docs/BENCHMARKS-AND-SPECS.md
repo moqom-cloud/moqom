@@ -271,7 +271,7 @@ and both backend SDKs against the real Go control plane.
 | Device binding | `cnf.jkt` thumbprint of a Secure Enclave key; ES256 proof per check, bound to the relay's certificate, single use (`MOQOM_RELAY_POSSESSION=required`) |
 | Revocation | A ban closes the open connection, not only the next join |
 | Media encryption | SFrame (RFC 9605) over MOQT, AES-256-GCM (0x0005) by default, AES-128-GCM supported; payload-only, so relay caching and priority survive |
-| E2EE key management | MLS (RFC 9420 suite 1, simplified group) per room, built in MoqomKit and the control plane; sender keys for large rooms not built |
+| E2EE key management | MLS (RFC 9420, simplified group) per room in the hybrid X-Wing suite from draft-ietf-mls-pq-ciphersuites (private-use `0xF0A1`; suite 1 still supported), built in MoqomKit and the control plane; sender keys for large rooms not built |
 
 ### Platforms
 
