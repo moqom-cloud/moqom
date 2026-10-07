@@ -6,12 +6,12 @@ import (
 	"testing"
 )
 
-func TestStorageIsPricedAtCostPlusTheMarkup(t *testing.T) {
+func TestStorageIsPricedAtCost(t *testing.T) {
 	pricing := DefaultPricing()
 	month := int64(hoursPerMonth * 3600)
-	// A GiB for a month on Standard in us-west1 is $0.020, plus 15%.
+	// A GiB for a month on Standard in us-west1 is $0.020, with no markup.
 	charge := pricing.RateStorage(StorageStandard, gibibyte, month)
-	if charge.Cost != 20_000 || charge.Price != 23_000 || charge.Capped {
+	if charge.Cost != 20_000 || charge.Price != 20_000 || charge.Capped {
 		t.Fatalf("a GiB-month on Standard: %+v", charge)
 	}
 	// Prorated by the second, and colder classes cost less.

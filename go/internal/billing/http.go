@@ -206,7 +206,7 @@ func (h *handler) rates(w http.ResponseWriter, _ *http.Request) {
 		storage[class] = moneyOf(rate)
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		// Recording storage is charged at this cost plus the markup.
+		// Recording storage is charged at this cost, with no markup.
 		"recording_storage_cost_per_gib_month": storage,
 		"currency":                             "usd",
 		"model":                                "prepaid, cost-plus, capped",

@@ -3,7 +3,7 @@
 The hosted recorder records a room for a tenant without the tenant running
 anything. It is billed the way the product promises: no recording fee. The
 recorder is a viewer and is billed as one, for the bytes it receives, and
-storage is charged per GiB-month at cost plus the usual markup.
+storage is charged per GiB-month at cost, with no markup.
 
 This document is for whoever operates or changes it. The public guide
 (`sites/moqom-dev/.../guides/recording.md`) covers the API from a customer's side.
@@ -258,8 +258,8 @@ do not emit usage records yet**, so today this is billed exactly as much as
 every other viewer is, which is not at all. Nothing here needs to change when
 that lands.
 
-**Storage.** Charged per GiB-month stored, at cost plus the same markup as
-relaying (`MOQOM_BILLING_MARKUP_BP`, 15% by default). There is no fee and no
+**Storage.** Charged per GiB-month stored, at cost: Cloud Storage's list price
+with no markup, as the public pricing pages state. There is no fee and no
 ceiling. The charge goes on the tenant's prepaid ledger as a usage entry, so it:
 
 - counts against the balance, spend limits and alerts like any other usage;

@@ -73,16 +73,16 @@ const (
 	largestStoredBytes     = int64(1) << 46 // 64 TiB
 )
 
-// RateStorage prices bytes held in one class for some seconds: cost at the
-// configured price, plus the same markup as relaying. No platform fee and no
-// ceiling: Agora has no line for this to be capped against.
+// RateStorage prices bytes held in one class for some seconds, at cost: the
+// configured price with no markup, no platform fee and no ceiling. The public
+// pricing pages promise that recording storage is passed through at cost.
 func (p Pricing) RateStorage(class StorageClass, bytes, seconds int64) Charge {
 	rate := p.Costs.Storage[class]
 	if bytes <= 0 || seconds <= 0 || rate <= 0 {
 		return Charge{}
 	}
 	cost := scale(rate, bytes*seconds, gibibyte*hoursPerMonth*3600)
-	return Charge{Cost: cost, Price: cost + scale(cost, p.MarkupBasisPoints, 10_000)}
+	return Charge{Cost: cost, Price: cost}
 }
 
 // StorageRecord is the bytes one recording held in one storage class over
