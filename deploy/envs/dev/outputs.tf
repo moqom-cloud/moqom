@@ -3,6 +3,11 @@ output "relay_endpoints" {
   description = "Address to dial on UDP/443, per region."
 }
 
+output "relay_endpoints_v6" {
+  value       = { for region, relay in module.relay : region => relay.external_ipv6 if relay.external_ipv6 != null }
+  description = "IPv6 address to dial on UDP/443 and ask STUN on UDP/3478, per region."
+}
+
 output "control_endpoint" {
   value       = module.control.endpoint
   description = "What a relay in this VPC puts in MOQOM_CONTROL_ENDPOINT. Internal, so nothing outside the VPC can reach it."
