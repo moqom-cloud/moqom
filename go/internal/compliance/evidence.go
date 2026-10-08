@@ -38,6 +38,9 @@ type Evidence struct {
 	NotificationChans []NotificationChan `json:"notification_channels"`
 	Clusters          []Cluster          `json:"clusters"`
 	Repositories      []Repository       `json:"repositories"`
+	DomainDNS         []DomainDNS        `json:"domain_dns,omitempty"`
+	Issuances         []Issuance         `json:"ct_issuances,omitempty"`
+	OwnCertificates   []OwnCertificate   `json:"ssl_certificates,omitempty"`
 
 	// Errors records collectors that failed. A section that could not be read
 	// is reported as a finding of its own rather than silently treated as

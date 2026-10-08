@@ -144,3 +144,21 @@ variable "overlay_ports" {
   description = "TCP ports on var.overlay_cidrs: the controller's client API and the routers' edge listeners."
   default     = [1280, 3022]
 }
+
+variable "dnssec" {
+  type        = bool
+  description = "Sign the zone. Takes effect once the parent holds the DS record from `dns_ds_records`."
+  default     = true
+}
+
+variable "caa_issuers" {
+  type        = list(string)
+  description = "Certificate authorities CAA permits at the zone apex. Empty publishes no CAA record."
+  default     = ["pki.goog", "letsencrypt.org"]
+}
+
+variable "caa_iodef" {
+  type        = string
+  description = "Where authorities report refused requests, e.g. mailto:security@moqom.cloud. Null omits it."
+  default     = "mailto:security@moqom.cloud"
+}

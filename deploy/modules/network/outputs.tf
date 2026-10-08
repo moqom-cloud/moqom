@@ -57,3 +57,8 @@ output "dns_domain" {
   value       = one(google_dns_managed_zone.edge[*].dns_name)
   description = "Zone DNS name with trailing dot, or null when `create_dns_zone` is false."
 }
+
+output "dns_ds_records" {
+  description = "DS records to give the parent zone's registrar. Until they are there, the zone is signed and nothing checks it."
+  value       = var.create_dns_zone && var.dnssec ? [for k in data.google_dns_keys.edge[0].key_signing_keys : k.ds_record] : []
+}

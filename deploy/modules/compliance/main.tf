@@ -392,6 +392,7 @@ resource "google_cloud_run_v2_job" "compliance" {
           "-allowed-owners=${join(",", var.allowed_owners)}",
           "-registry-locations=${join(",", var.registry_locations)}",
           "-require-deletion-protection=${var.require_deletion_protection}",
+          "-domains=${join(",", var.domains)}",
         ]
         resources {
           limits = {

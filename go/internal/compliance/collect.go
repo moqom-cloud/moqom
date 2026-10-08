@@ -47,6 +47,15 @@ type Collector struct {
 	// RegistryLocations are the Artifact Registry locations to list.
 	RegistryLocations []string
 	Now               func() time.Time
+
+	// Domains are checked from outside: CAA, DNSSEC and Certificate
+	// Transparency. Empty skips those sections.
+	Domains []string
+	// Public is the client for the services Domains are checked against. It
+	// must not carry credentials; nil uses a plain client.
+	Public *http.Client
+	// CertSpotterToken raises Cert Spotter's rate limit; empty is anonymous.
+	CertSpotterToken string
 }
 
 func (c *Collector) base(api string) string {
@@ -75,7 +84,11 @@ func (c *Collector) do(ctx context.Context, method, rawURL string, body io.Reade
 	if contentType != "" {
 		request.Header.Set("Content-Type", contentType)
 	}
-	response, err := c.Client.Do(request)
+	return send(c.Client, request, into)
+}
+
+func send(client *http.Client, request *http.Request, into any) error {
+	response, err := client.Do(request)
 	if err != nil {
 		return err
 	}
@@ -158,6 +171,16 @@ func (c *Collector) Collect(ctx context.Context) Evidence {
 		{"notification_channels", c.notificationChannels},
 		{"clusters", c.clusters},
 		{"repositories", c.repositories},
+	}
+	if len(c.Domains) > 0 {
+		sections = append(sections, []struct {
+			name string
+			run  func(context.Context, *Evidence) error
+		}{
+			{"domain_dns", c.domainDNS},
+			{"ct_issuances", c.issuances},
+			{"ssl_certificates", c.ownCertificates},
+		}...)
 	}
 	for _, section := range sections {
 		if err := section.run(ctx, &e); err != nil {

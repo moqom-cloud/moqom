@@ -93,6 +93,16 @@ type Policy struct {
 
 	MaxServiceAccountKeyAge time.Duration
 	MaxSecretVersionAge     time.Duration
+
+	// CAAIssuers are the certificate authorities CAA may name: the two that
+	// issue Google-managed certificates.
+	CAAIssuers []string
+	// CTWindow is how far back a logged certificate is still news. Longer than
+	// the nightly interval, so a run that fails does not open a gap.
+	CTWindow time.Duration
+	// KnownPublicKeys are SHA-256 SPKI hashes, hex, of certificates we serve
+	// from somewhere other than this project's load balancers.
+	KnownPublicKeys []string
 }
 
 // DefaultPolicy is MOQOM's baseline. Every number here is quoted in
@@ -110,6 +120,8 @@ func DefaultPolicy() Policy {
 		ManagedFirewallPrefixes:     []string{"k8s-", "gke-"},
 		MaxServiceAccountKeyAge:     90 * 24 * time.Hour,
 		MaxSecretVersionAge:         365 * 24 * time.Hour,
+		CAAIssuers:                  []string{"pki.goog", "letsencrypt.org"},
+		CTWindow:                    4 * 24 * time.Hour,
 	}
 }
 
@@ -142,6 +154,7 @@ func Evaluate(e Evidence, p Policy, now time.Time) []Finding {
 	loggingRules(e, p, add)
 	monitoringRules(e, add)
 	registryRules(e, add)
+	domainRules(e, p, now, add)
 
 	sort.SliceStable(out, func(i, j int) bool {
 		if severityRank[out[i].Severity] != severityRank[out[j].Severity] {

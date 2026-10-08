@@ -68,6 +68,8 @@ type options struct {
 	project, evidenceBucket, out string
 	policy                       compliance.Policy
 	registryLocations            []string
+	domains                      []string
+	certSpotterToken             string
 	alertOn                      compliance.Severity
 	failOn                       compliance.Severity
 }
@@ -75,7 +77,7 @@ type options struct {
 func parse() (options, error) {
 	var o options
 	policy := compliance.DefaultPolicy()
-	var publicBuckets, owners, registries, ingress, alertOn, failOn, auditBucket string
+	var publicBuckets, owners, registries, ingress, alertOn, failOn, auditBucket, domains, caa, knownKeys string
 	var requireDeletion bool
 
 	flag.StringVar(&o.project, "project", env("MOQOM_COMPLIANCE_PROJECT", os.Getenv("GOOGLE_CLOUD_PROJECT")), "project to audit")
@@ -86,6 +88,10 @@ func parse() (options, error) {
 	flag.StringVar(&owners, "allowed-owners", env("MOQOM_ALLOWED_OWNERS", strings.Join(policy.AllowedOwners, ",")), "comma-separated members allowed roles/owner")
 	flag.StringVar(&registries, "registry-locations", env("MOQOM_REGISTRY_LOCATIONS", "us"), "comma-separated Artifact Registry locations")
 	flag.StringVar(&ingress, "public-ingress", env("MOQOM_PUBLIC_INGRESS", strings.Join(policy.PublicIngress, ",")), "protocol:port entries allowed from 0.0.0.0/0")
+	flag.StringVar(&domains, "domains", os.Getenv("MOQOM_DOMAINS"), "comma-separated public domains whose CAA, DNSSEC and CT log are checked; empty skips")
+	flag.StringVar(&caa, "caa-issuers", env("MOQOM_CAA_ISSUERS", strings.Join(policy.CAAIssuers, ",")), "certificate authorities CAA may name")
+	flag.StringVar(&knownKeys, "known-public-keys", os.Getenv("MOQOM_KNOWN_PUBLIC_KEYS"), "comma-separated hex SHA-256 SPKI hashes of certificates served outside this project")
+	o.certSpotterToken = os.Getenv("MOQOM_CERTSPOTTER_TOKEN")
 	flag.BoolVar(&requireDeletion, "require-deletion-protection", os.Getenv("MOQOM_REQUIRE_DELETION_PROTECTION") == "true", "treat Cloud SQL without deletion protection as High")
 	flag.StringVar(&alertOn, "alert-on", env("MOQOM_ALERT_ON", "HIGH"), "new findings at or above this severity are logged as compliance_drift")
 	flag.StringVar(&failOn, "fail-on", os.Getenv("MOQOM_FAIL_ON"), "exit 2 if any finding is at or above this severity (CI gate); empty never fails")
@@ -100,8 +106,11 @@ func parse() (options, error) {
 	policy.AuditLogBucket = auditBucket
 	policy.EvidenceBucket = o.evidenceBucket
 	policy.RequireDeletionProtection = requireDeletion
+	policy.CAAIssuers = split(caa)
+	policy.KnownPublicKeys = split(knownKeys)
 	o.policy = policy
 	o.registryLocations = split(registries)
+	o.domains = split(domains)
 
 	var err error
 	if o.alertOn, err = compliance.ParseSeverity(alertOn); err != nil {
@@ -128,7 +137,10 @@ func run() error {
 		return fmt.Errorf("credentials: %w", err)
 	}
 	client.Timeout = time.Minute
-	collector := &compliance.Collector{Client: client, Project: o.project, RegistryLocations: o.registryLocations}
+	collector := &compliance.Collector{
+		Client: client, Project: o.project, RegistryLocations: o.registryLocations,
+		Domains: o.domains, CertSpotterToken: o.certSpotterToken,
+	}
 	return check(ctx, collector, o, time.Now().UTC())
 }
 

@@ -878,6 +878,7 @@ module "compliance" {
   public_buckets     = ["moqom-sites"]
   allowed_owners     = ["user:elliott@moqom.cloud"]
   registry_locations = ["us"]
+  domains            = ["moqom.cloud", "moqom.dev", "elliottwave.studio", "elliottwave.dev"]
 
   labels = local.labels
 }

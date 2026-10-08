@@ -188,3 +188,9 @@ variable "job_deletion_protection" {
   description = "Deletion protection on the Cloud Run job."
   default     = false
 }
+
+variable "domains" {
+  type        = list(string)
+  description = "Public domains whose CAA, DNSSEC and Certificate Transparency log the nightly check reads. A certificate logged for one of them whose key no load balancer here holds is Critical."
+  default     = []
+}

@@ -108,6 +108,9 @@ IDs are referenced from every other document. "Check" names the rule in
 | NET-4 | GKE control-plane endpoint restricted to authorized networks | Automated | **Planned** | GKE-002 | **Fail** |
 | NET-5 | Firewall change alert | Automated | Planned (code ready) | — | — |
 | NET-6 | Edge DDoS and WAF (Cloudflare or Cloud Armor) | — | Planned | — | — |
+| NET-7 | CAA on every public domain names only Google Trust Services (`pki.goog`) and Let's Encrypt, with `issuewild ";"` | Automated | **Planned**: records not yet published at the registrar | DNS-001, DNS-002 | **Fail (HIGH)**, 8 Oct 2026 |
+| NET-8 | DNSSEC on every public domain | Automated | **Planned**: zones unsigned | DNS-003 | **Fail**, 8 Oct 2026 |
+| NET-9 | Certificate Transparency watched nightly: a certificate for one of our names whose key no load balancer here serves is Critical. Relays are self-signed and pinned, so they never appear in CT | Automated | Implemented | CT-001 | Pass, 8 Oct 2026 |
 
 ### Data protection ([DATA-RETENTION.md](DATA-RETENTION.md), [POLICIES.md](POLICIES.md))
 

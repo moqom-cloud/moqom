@@ -388,5 +388,34 @@ resource "google_dns_managed_zone" "edge" {
 
   visibility = "public"
 
+  # Signing is on by default. It protects nothing until the parent zone holds
+  # the DS record in the `dns_ds_records` output, which is a registrar change.
+  dnssec_config {
+    state = var.dnssec ? "on" : "off"
+  }
+
   labels = var.labels
+}
+
+data "google_dns_keys" "edge" {
+  count        = var.create_dns_zone && var.dnssec ? 1 : 0
+  managed_zone = google_dns_managed_zone.edge[0].id
+}
+
+# Only these authorities may issue for the zone, and nobody may issue a
+# wildcard. The two are the ones Google-managed certificates come from; the
+# relays' certificate is self-signed and pinned, so it needs no authority.
+resource "google_dns_record_set" "caa" {
+  count = var.create_dns_zone && length(var.caa_issuers) > 0 ? 1 : 0
+
+  project      = var.project_id
+  managed_zone = google_dns_managed_zone.edge[0].name
+  name         = var.dns_domain
+  type         = "CAA"
+  ttl          = 3600
+  rrdatas = concat(
+    [for issuer in var.caa_issuers : "0 issue \"${issuer}\""],
+    ["0 issuewild \";\""],
+    var.caa_iodef == null ? [] : ["0 iodef \"${var.caa_iodef}\""],
+  )
 }
