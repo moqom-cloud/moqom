@@ -48,6 +48,16 @@ Status: **done** · **in progress** · **to do** · **blocked** (needs a person)
 | Swift dependency on moqom-security by URL and tag, not path | to do | at publication: needs the repo public and tagged |
 | `docs/post-quantum.md` | done | |
 
+## Security libraries 0.1.0
+
+| Item | Status | Notes |
+| --- | --- | --- |
+| moqom.dev page per library, with examples the test suites run | in progress | sframe done; token, proof, mls agents running |
+| SFrame binds the full track name (a relay could move an object between one sender's tracks) | in progress | in all three languages and every product caller, before 0.1.0 |
+| CHANGELOG, README install lines, Versions section on moqom.dev | done | moqom-security 1f0b495 |
+| Push main, tag `v0.1.0` and `go/v0.1.0` (repo stays private) | to do | after the four libraries are done and all suites pass |
+| crates.io publish, repo public | blocked | release day, with counsel sign-off |
+
 ## Release and merge
 
 | Item | Status | Notes |
