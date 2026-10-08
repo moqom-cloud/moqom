@@ -149,7 +149,13 @@ already trust each other.
 - Backstage between cohosts
 - Only in **E2EE rooms**, where server-side moderation and recording are already
   off, so direct mode takes nothing away that was not already gone
-- Only when **every participant opts in**, with the IP exposure stated in the UI
+- Only when **every participant opts in**, with the IP exposure stated in the UI.
+  MoqomKit opts in by default (`DirectPolicy.automatic`); `.relayOnly` opts out
+- Only where the room's policy allows: `RoomPolicy.direct_paths` (allowed unless
+  `DIRECT_PATHS_RELAY_ONLY`) and `max_direct_participants` (2 to 4, default 4).
+  Every token states it (`MintClientTokenResponse.direct`, `direct` from
+  `/join`), the SDK skips the opt-in where it is not allowed, and the relay
+  issues no direct tickets in a relay-only room (`RoomSnapshot.direct`)
 
 Never for public broadcast, never for viewers, never when a watchdog (recorder,
 safety detector) is required in the room.
@@ -210,7 +216,7 @@ safety detector) is required in the room.
 
 | Piece | Rust (`moqom_client::direct`) | Swift (`MoqomKit/Direct`) |
 |---|---|---|
-| Eligibility rules and the IP-exposure acknowledgement | Built | Built, same rules and order |
+| Eligibility rules and the IP-exposure acknowledgement | Built, with the room's limit and `DirectPolicy` | Built, same rules and order; `DirectPolicy` on `MoqomSession`, automatic by default |
 | Sealed candidate offers | Built | Built; byte-identical, pinned by a shared test vector |
 | Offer exchange on the participant's `.direct` track | Caller publishes on its stage slot | `DirectOffers` |
 | Direct endpoint: pinned mutual TLS, hole-punching, MOQT both ways | Built, loopback-tested | `DirectEndpoint`, loopback-tested on macOS; builds for iOS. The dialler is a legacy `NWConnectionGroup`, because `NetworkConnection<QUIC>` cannot open streams from a fixed local port. No QUIC datagrams on direct paths |
@@ -218,7 +224,7 @@ safety detector) is required in the room.
 | Peer verification | Through the `PeerVerifier` trait; the relay's `PeerCheck` implements it | `DirectPeerCheck`, a port of the relay's token and proof checks, with a required proof. A refused peer is closed with `0x03`; the dialler's empty unidirectional stream is the final admission |
 | Merging relay and direct paths, with fallback | `DualSubscription` | `DualSubscription`, same rules |
 | Pausing the relay copy while direct | Not built: its stall detection compares against relay objects | `FORWARD=0` in `REQUEST_UPDATE` once direct, `FORWARD=1` on fallback or after 500 ms of direct silence |
-| Wired into `Room` | No | Opt-in: `join(room:direct:)` or `setDirect(_:)` with `DirectRoomOptions`; per-participant path state (`directPathChanged`), relay fallback with backoff, tickets per path. Offers sealed under `MLS-Exporter("MOQOM direct offer")`. Loopback-tested on both backends |
+| Wired into `Room` | No | On by default under `DirectPolicy.automatic` (peers verified against `authorityKeys`), or `.custom(DirectRoomOptions)`; per-participant path state (`directPathChanged`), relay fallback with backoff, tickets per path. Backstage publishers pair with each other. Offers sealed under `MLS-Exporter("MOQOM direct offer")`. Loopback-tested on both backends |
 | Direct tickets | Not enforced | `DirectTicketFeed` asks the relay; `DirectTicketGuard` presents them and holds the peer to its own |
 | Metering | Relay session, plus direct seconds from tickets | Same; `DirectUsage` counts direct bytes for the app |
 
