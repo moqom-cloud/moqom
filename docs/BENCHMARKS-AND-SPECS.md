@@ -266,12 +266,12 @@ and both backend SDKs against the real Go control plane.
 | | |
 |---|---|
 | Transport | TLS 1.3, inherent in QUIC, on every media connection |
-| Tokens | Ed25519-signed, tenant, room, grants and expiry checked against every namespace a request names |
+| Tokens | ML-DSA-65-signed, tenant, room, grants and expiry checked against every namespace a request names |
 | Session lifetime | Bounded by the token; renewed in-session via `REQUEST_UPDATE`, no reconnect |
-| Device binding | `cnf.jkt` thumbprint of a Secure Enclave key; ES256 proof per check, bound to the relay's certificate, single use (`MOQOM_RELAY_POSSESSION=required`) |
+| Device binding | `cnf.jkt` thumbprint of a Secure Enclave key; ES256 proof per check, bound to the relay's certificate, single use; required on every relay, and the control plane mints no token without it |
 | Revocation | A ban closes the open connection, not only the next join |
-| Media encryption | SFrame (RFC 9605) over MOQT, AES-256-GCM (0x0005) by default, AES-128-GCM supported; payload-only, so relay caching and priority survive |
-| E2EE key management | MLS (RFC 9420, simplified group) per room in the hybrid X-Wing suite from draft-ietf-mls-pq-ciphersuites (private-use `0xF0A1`; suite 1 still supported), built in MoqomKit and the control plane; sender keys for large rooms not built |
+| Media encryption | SFrame (RFC 9605) over MOQT, required in every room with no way to turn it off; AES-256-GCM (0x0005) by default, AES-128-GCM supported; payload-only, so relay caching and priority survive. Catalogs sealed by their publisher; the control log ML-DSA-65-signed |
+| E2EE key management | MLS (RFC 9420, simplified group) per room in `MLS_192_MLKEM768_AES256GCM_SHA384_MLDSA65` from draft-ietf-mls-pq-ciphersuites (private-use `0xF0AA`, the only founding suite), built in MoqomKit and the control plane; viewers outside the group are sealed each epoch's key over ML-KEM-768 (sender keys), rotated every five minutes while there is an audience |
 
 ### Platforms
 
@@ -280,7 +280,6 @@ and both backend SDKs against the real Go control plane.
 | `MoqomKit` (Swift) | iOS, macOS, visionOS, tvOS 26; Swift 6 strict concurrency | Network.framework QUIC, VideoToolbox |
 | `moqom-go` | Go 1.23+ | gRPC admin API |
 | `moqom-rust` | Toolchain pinned in repo | gRPC admin API, no QUIC dependency |
-| `moqom-web` | Evergreen browsers with WebTransport | Scoped, work ongoing, release planned October 2026 |
 | `moqom-android` | — | Scoped, work ongoing, release planned October 2026 |
 | `moqom-desktop` | Windows, macOS, Linux | Scoped, work ongoing, release planned October 2026 |
 | `moqom-obs` | OBS Studio | Scoped, work ongoing, release planned October 2026 |

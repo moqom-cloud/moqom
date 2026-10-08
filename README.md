@@ -20,7 +20,6 @@ the SDKs each live in a repository of their own.
 | [`moqom-swift`](https://github.com/moqom-cloud/moqom-swift) | Apache-2.0 | `MoqomKit`, the Apple-platform client SDK, and the `MoqomRoom` sample |
 | [`moqom-go`](https://github.com/moqom-cloud/moqom-go) | Apache-2.0 | Server-side SDK for backends |
 | [`moqom-rust`](https://github.com/moqom-cloud/moqom-rust) | Apache-2.0 | Server-side SDK for backends |
-| `moqom-web` | Apache-2.0 | Browser client SDK over WebTransport — scoped, work ongoing, release planned October 2026 |
 | `moqom-android` | Apache-2.0 | Android client SDK — scoped, work ongoing, release planned October 2026 |
 | `moqom-desktop` | Apache-2.0 | Windows, macOS and Linux client SDK — scoped, work ongoing, release planned October 2026 |
 | `moqom-obs` | GPL-2.0-or-later | The OBS output plugin — scoped, work ongoing, release planned October 2026 |
@@ -86,12 +85,11 @@ Postgres store is written and reachable with `MOQOM_CONTROL_STORE=postgres`,
 against Cloud SQL as the runtime's own Google identity, so there is no password
 to configure, store, or rotate — but it is the choice rather than the default,
 and a default that loses the moderation log is the one that will be running
-somewhere. Tokens are Ed25519 over JSON rather than CAT/CWT's CBOR and COSE,
+somewhere. Tokens are ML-DSA-65 over JSON rather than CAT/CWT's CBOR and COSE,
 which is an encoding away from the target and no longer a binding away from it:
 `cnf.jkt` is derived from a key the device sends at join, held in its Secure
-Enclave, and a relay set to `MOQOM_RELAY_POSSESSION=required` makes every session
-sign for it — so a stolen token works from nowhere. That is not yet the default,
-because a fleet upgrades one build at a time. And
+Enclave, the control plane mints no token without one, and every relay makes every
+session sign for it — so a stolen token works from nowhere. And
 the relay registry is per-replica and in memory, which means a directive reaches
 the relays one replica happens to know about — enough for a single control plane,
 not for two.
