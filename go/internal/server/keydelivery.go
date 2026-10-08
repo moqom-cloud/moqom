@@ -7,6 +7,7 @@ import (
 
 	"github.com/moqom-cloud/moqom/go/internal/control"
 	"github.com/moqom-cloud/moqom/go/internal/mls"
+	"github.com/moqom-cloud/moqom/go/internal/token"
 )
 
 // KeyDeliveryHandler serves the MLS delivery service under mls.PathPrefix,
@@ -38,14 +39,14 @@ func (s *Server) KeyDeliveryHandler(service *mls.Service) http.Handler {
 		if err != nil {
 			return mls.Caller{}, err
 		}
-		if claims.MOQT.Room == "" {
+		if claims.Grant.Room == "" {
 			return mls.Caller{}, errors.New("token names no room")
 		}
-		identity, err := claims.Identity()
+		identity, err := token.Identity(claims)
 		if err != nil {
 			return mls.Caller{}, err
 		}
-		bans, err := s.core.store.ListBans(r.Context(), claims.Audience, claims.MOQT.Room)
+		bans, err := s.core.store.ListBans(r.Context(), claims.Tenant, claims.Grant.Room)
 		if err != nil {
 			return mls.Caller{}, err
 		}
@@ -55,9 +56,9 @@ func (s *Server) KeyDeliveryHandler(service *mls.Service) http.Handler {
 			}
 		}
 		return mls.Caller{
-			Room:   mls.Room{Tenant: claims.Audience, Room: claims.MOQT.Room},
+			Room:   mls.Room{Tenant: claims.Tenant, Room: claims.Grant.Room},
 			Device: identity.String(),
-			Viewer: claims.MOQT.Publish == 0 && !strings.HasPrefix(identity.Username, control.AgentUsernamePrefix),
+			Viewer: claims.Grant.Publish == 0 && !strings.HasPrefix(identity.Username, control.AgentUsernamePrefix),
 		}, nil
 	})
 }

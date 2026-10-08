@@ -126,14 +126,14 @@ func buildFixture(t *testing.T) fixture {
 		signed, _, err := Mint(key, Claims{
 			Issuer:       built.Issuer,
 			Subject:      spec.username,
-			Audience:     "acme",
+			Tenant:       "acme",
 			ID:           spec.id,
 			Confirmation: Confirmation{Thumbprint: thumbprint},
-			MOQT: ScopeFrom(
+			Grant: ScopeFrom(
 				control.Grants{Publish: control.PublishCamera},
 				spec.room, false, false,
 			),
-			ArrivedVia: spec.via,
+			Via: spec.via,
 		}, 10*time.Minute, interopNow)
 		if err != nil {
 			t.Fatalf("minting %s: %v", spec.name, err)
@@ -210,7 +210,7 @@ func TestInteropFixture(t *testing.T) {
 		if err != nil {
 			t.Fatalf("%s: the committed token no longer verifies here: %v", c.Name, err)
 		}
-		identity, err := claims.Identity()
+		identity, err := Identity(claims)
 		if err != nil {
 			t.Fatalf("%s: deriving the identity: %v", c.Name, err)
 		}
@@ -218,12 +218,12 @@ func TestInteropFixture(t *testing.T) {
 			t.Errorf("%s: fixture says %s/%s, this build reads %s/%s",
 				c.Name, c.Username, c.Device, identity.Username, identity.Device)
 		}
-		if claims.Audience != c.Tenant {
-			t.Errorf("%s: fixture says tenant %s, token carries %s", c.Name, c.Tenant, claims.Audience)
+		if claims.Tenant != c.Tenant {
+			t.Errorf("%s: fixture says tenant %s, token carries %s", c.Name, c.Tenant, claims.Tenant)
 		}
-		if claims.ArrivedVia != c.ArrivedVia {
+		if claims.Via != c.ArrivedVia {
 			t.Errorf("%s: fixture says brought by %q, token carries %q",
-				c.Name, c.ArrivedVia, claims.ArrivedVia)
+				c.Name, c.ArrivedVia, claims.Via)
 		}
 	}
 }

@@ -140,16 +140,16 @@ func (s *tokensService) MintClientToken(
 	claims := token.Claims{
 		Issuer:       s.core.issuer,
 		Subject:      username,
-		Audience:     request.GetTenant(),
+		Tenant:       request.GetTenant(),
 		Confirmation: token.Confirmation{Thumbprint: request.GetDeviceThumbprint()},
-		MOQT: token.ScopeFrom(
+		Grant: token.ScopeFrom(
 			requested,
 			request.GetRoom(),
 			request.GetBackstage(),
 			request.GetAgeVerified(),
 		),
-		ArrivedVia: arrivedVia,
-		E2EE:       e2ee,
+		Via:  arrivedVia,
+		E2EE: string(e2ee),
 	}
 
 	signing := s.core.keys[0]
@@ -158,7 +158,7 @@ func (s *tokensService) MintClientToken(
 		return nil, statusFor(err)
 	}
 
-	identity, err := claims.Identity()
+	identity, err := token.Identity(claims)
 	if err != nil {
 		return nil, statusFor(err)
 	}

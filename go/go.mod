@@ -9,7 +9,11 @@ go 1.27.0
 // release and name a real version above.
 replace github.com/moqom-cloud/moqom-go => ../../moqom-go
 
+// The security libraries, from a sibling checkout until they are tagged.
+replace github.com/moqom-cloud/moqom-security/go => ../../moqom-security/go
+
 require (
+	github.com/moqom-cloud/moqom-security/go v0.0.0-00010101000000-000000000000
 	cloud.google.com/go/cloudsqlconn v1.18.1
 	github.com/jackc/pgx/v5 v5.9.2
 	github.com/moqom-cloud/moqom-go v0.0.0-00010101000000-000000000000

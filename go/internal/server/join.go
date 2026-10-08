@@ -81,8 +81,8 @@ type JoinRequest struct {
 	//
 	// The thumbprint is derived from this rather than taken from Device, which
 	// is the whole difference between binding a token to a key and labelling it
-	// with a name. Sending it costs a client four short strings it already has;
-	// see internal/token.PublicKey.
+	// with a name. An ML-DSA-65 key (kty "AKP") is the default and an EC P-256
+	// key is accepted while devices roll over; see internal/token.PublicKey.
 	Key *token.PublicKey `json:"key,omitempty"`
 }
 
@@ -123,10 +123,11 @@ const howManyJoinsPerMinute = 30
 
 // howBigAJoinRequestMayBe caps the body.
 //
-// Four fields of a few dozen characters. Anything larger is either a mistake or
-// somebody seeing what happens, and reading it into memory to find out which is
-// the mistake.
-const howBigAJoinRequestMayBe = 4 << 10
+// Three names and a device key. An ML-DSA-65 JWK is about 2.7 KB on its own,
+// and each name may be up to control.MaxFieldBytes, so this leaves room for
+// both. Anything larger is either a mistake or somebody seeing what happens,
+// and reading it into memory to find out which is the mistake.
+const howBigAJoinRequestMayBe = 16 << 10
 
 // JoinHandler serves “JoinPath“, minting participant tokens for devices.
 //

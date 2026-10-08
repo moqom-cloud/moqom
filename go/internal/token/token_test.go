@@ -12,8 +12,19 @@ import (
 	"testing"
 	"time"
 
+	sectoken "github.com/moqom-cloud/moqom-security/go/token"
+
 	"github.com/moqom-cloud/moqom/go/internal/control"
 )
+
+// header and tokenType are the JWS header as tokens carry it, for forging one.
+type header struct {
+	Algorithm string `json:"alg"`
+	Type      string `json:"typ"`
+	KeyID     string `json:"kid"`
+}
+
+const tokenType = sectoken.Type
 
 func testKey(t *testing.T) (Key, *Verifier) {
 	t.Helper()
@@ -28,9 +39,9 @@ func claimsFor(grants control.Grants) Claims {
 	return Claims{
 		Issuer:       "moqom",
 		Subject:      "alice",
-		Audience:     "acme",
+		Tenant:       "acme",
 		Confirmation: Confirmation{Thumbprint: "MpXqvQAmv7Y3Kk9dHnJpLwRtUvXyZaBcDeFgHiJkLmM"},
-		MOQT:         ScopeFrom(grants, "room-42", false, false),
+		Grant:        ScopeFrom(grants, "room-42", false, false),
 	}
 }
 
@@ -52,7 +63,7 @@ func TestRoundTrip(t *testing.T) {
 		t.Fatalf("verifying: %v", err)
 	}
 
-	recovered, err := claims.MOQT.Grants()
+	recovered, err := Grants(claims.Grant)
 	if err != nil {
 		t.Fatalf("reading grants: %v", err)
 	}
@@ -62,7 +73,7 @@ func TestRoundTrip(t *testing.T) {
 
 	// The device is derived, never carried, so a token cannot name a device its
 	// key does not imply -- which is what makes a device ban match it.
-	identity, err := claims.Identity()
+	identity, err := Identity(claims)
 	if err != nil {
 		t.Fatalf("deriving identity: %v", err)
 	}
@@ -85,7 +96,7 @@ func TestARelayLinkGrantRoundTripsAndIsAbsentOtherwise(t *testing.T) {
 	now := time.Date(2026, 7, 27, 12, 0, 0, 0, time.UTC)
 
 	link := claimsFor(control.Grants{})
-	link.MOQT.Relay = true
+	link.Grant.Relay = true
 	minted, _, err := Mint(key, link, 5*time.Minute, now)
 	if err != nil {
 		t.Fatalf("minting: %v", err)
@@ -94,7 +105,7 @@ func TestARelayLinkGrantRoundTripsAndIsAbsentOtherwise(t *testing.T) {
 	if err != nil {
 		t.Fatalf("verifying: %v", err)
 	}
-	if !claims.MOQT.Relay {
+	if !claims.Grant.Relay {
 		t.Error("the relay-link grant did not survive verification")
 	}
 
@@ -177,8 +188,8 @@ func TestTamperedClaimsFailVerification(t *testing.T) {
 	}
 
 	// Promote themselves to owner, which is the escalation an attacker wants.
-	claims.MOQT.Owner = true
-	claims.MOQT.Capabilities = uint32(control.CapAll)
+	claims.Grant.Owner = true
+	claims.Grant.Capabilities = uint32(control.CapAll)
 	tampered := encodeSegment(t, claims)
 
 	if _, err := verifier.Verify(parts[0]+"."+tampered+"."+parts[2], now); !errors.Is(err, ErrSignature) {
@@ -236,11 +247,11 @@ func TestExpiryIsEnforcedAndSkewIsBounded(t *testing.T) {
 
 	// Just past expiry, inside the skew allowance: still accepted, because that
 	// is two machines disagreeing about the time.
-	if _, err := verifier.Verify(minted, expires.Add(clockSkew/2)); err != nil {
+	if _, err := verifier.Verify(minted, expires.Add(sectoken.ClockSkew/2)); err != nil {
 		t.Errorf("a token inside the skew allowance was refused: %v", err)
 	}
 	// Well past it: refused. Skew tolerance is not an extension.
-	if _, err := verifier.Verify(minted, expires.Add(clockSkew*2)); !errors.Is(err, ErrExpired) {
+	if _, err := verifier.Verify(minted, expires.Add(sectoken.ClockSkew*2)); !errors.Is(err, ErrExpired) {
 		t.Errorf("an expired token gave %v, want ErrExpired", err)
 	}
 }
@@ -285,7 +296,7 @@ func TestUnknownCapabilityBitsAreRefused(t *testing.T) {
 	now := time.Now()
 
 	future := claimsFor(control.Grants{})
-	future.MOQT.Capabilities = uint32(control.CapKick) | (1 << 31)
+	future.Grant.Capabilities = uint32(control.CapKick) | (1 << 31)
 
 	if _, _, err := Mint(key, future, time.Minute, now); !errors.Is(err, ErrUnsupported) {
 		t.Errorf("minting with an unknown bit gave %v, want ErrUnsupported", err)
@@ -303,7 +314,7 @@ func TestUnknownCapabilityBitsAreRefused(t *testing.T) {
 	if err := json.Unmarshal(decoded, &claims); err != nil {
 		t.Fatalf("parsing: %v", err)
 	}
-	claims.MOQT.Capabilities = 1 << 31
+	claims.Grant.Capabilities = 1 << 31
 	resigned, _, err := Mint(key, claims, time.Minute, now)
 	if err == nil {
 		if _, err := verifier.Verify(resigned, now); !errors.Is(err, ErrUnsupported) {
@@ -343,7 +354,7 @@ func TestForeignIssuerIsRefused(t *testing.T) {
 	if err != nil {
 		t.Fatalf("minting: %v", err)
 	}
-	if _, err := verifier.Verify(minted, now); !errors.Is(err, ErrMalformed) {
+	if _, err := verifier.Verify(minted, now); !errors.Is(err, ErrWrongIssuer) {
 		t.Errorf("a token from another issuer gave %v, want a rejection", err)
 	}
 }
@@ -471,7 +482,7 @@ func TestProvenanceSurvivesTheRoundTripAndIsSigned(t *testing.T) {
 	now := time.Date(2026, 7, 27, 12, 0, 0, 0, time.UTC)
 
 	claims := claimsFor(control.Grants{})
-	claims.ArrivedVia = "bea"
+	claims.Via = "bea"
 
 	minted, _, err := Mint(key, claims, time.Minute, now)
 	if err != nil {
@@ -481,8 +492,8 @@ func TestProvenanceSurvivesTheRoundTripAndIsSigned(t *testing.T) {
 	if err != nil {
 		t.Fatalf("verifying: %v", err)
 	}
-	if verified.ArrivedVia != "bea" {
-		t.Errorf("provenance should survive, got %q", verified.ArrivedVia)
+	if verified.Via != "bea" {
+		t.Errorf("provenance should survive, got %q", verified.Via)
 	}
 
 	// The property the whole design rests on: these counts divide revenue between
@@ -490,14 +501,15 @@ func TestProvenanceSurvivesTheRoundTripAndIsSigned(t *testing.T) {
 	// somebody's audience for nothing.
 	segments := strings.Split(minted, ".")
 	var edited Claims
-	if err := decodeJSON(segments[1], &edited); err != nil {
+	decoded, err := base64.RawURLEncoding.DecodeString(segments[1])
+	if err != nil {
 		t.Fatalf("decoding claims: %v", err)
 	}
-	edited.ArrivedVia = "ana"
-	forged, err := encodeJSON(edited)
-	if err != nil {
-		t.Fatalf("re-encoding: %v", err)
+	if err := json.Unmarshal(decoded, &edited); err != nil {
+		t.Fatalf("decoding claims: %v", err)
 	}
+	edited.Via = "ana"
+	forged := encodeSegment(t, edited)
 	if _, err := verifier.Verify(segments[0]+"."+forged+"."+segments[2], now); !errors.Is(err, ErrSignature) {
 		t.Errorf("a rewritten provenance claim should fail the signature, got %v", err)
 	}
@@ -510,15 +522,15 @@ func TestProvenanceIsRefusedWhenItCannotMeanAnything(t *testing.T) {
 	// Attributed to itself: nobody brings themselves, and counting it would put a
 	// cohost in their own audience.
 	itself := claimsFor(control.Grants{})
-	itself.ArrivedVia = itself.Subject
+	itself.Via = itself.Subject
 	if _, _, err := Mint(key, itself, time.Minute, now); !errors.Is(err, control.ErrInvalid) {
 		t.Errorf("a self-attributed token should be refused, got %v", err)
 	}
 
 	// Attributed but naming no room: there is no audience for it to belong to.
 	roomless := claimsFor(control.Grants{})
-	roomless.MOQT = ScopeFrom(control.Grants{}, "", false, false)
-	roomless.ArrivedVia = "bea"
+	roomless.Grant = ScopeFrom(control.Grants{}, "", false, false)
+	roomless.Via = "bea"
 	if _, _, err := Mint(key, roomless, time.Minute, now); !errors.Is(err, control.ErrInvalid) {
 		t.Errorf("attribution with no room should be refused, got %v", err)
 	}
@@ -540,8 +552,8 @@ func TestATokenWithNoProvenanceIsNormal(t *testing.T) {
 	if err != nil {
 		t.Fatalf("verifying: %v", err)
 	}
-	if verified.ArrivedVia != "" {
-		t.Errorf("nobody brought them, got %q", verified.ArrivedVia)
+	if verified.Via != "" {
+		t.Errorf("nobody brought them, got %q", verified.Via)
 	}
 	// And the claim is absent from the wire rather than present and empty, so a
 	// token for a viewer who arrived alone is no larger than it was. Checked
@@ -565,7 +577,7 @@ func TestE2EEClaim(t *testing.T) {
 
 	for _, policy := range []control.E2EEPolicy{"", control.E2EERequired} {
 		claims := claimsFor(control.Grants{})
-		claims.E2EE = policy
+		claims.E2EE = string(policy)
 		minted, _, err := Mint(key, claims, time.Minute, now)
 		if err != nil {
 			t.Fatalf("minting e2ee=%q: %v", policy, err)
@@ -574,14 +586,14 @@ func TestE2EEClaim(t *testing.T) {
 		if err != nil {
 			t.Fatalf("verifying e2ee=%q: %v", policy, err)
 		}
-		if verified.E2EE != policy {
+		if verified.E2EE != string(policy) {
 			t.Errorf("e2ee came back as %q, want %q", verified.E2EE, policy)
 		}
 	}
 
 	for _, policy := range []control.E2EEPolicy{"off", "optional"} {
 		relaxed := claimsFor(control.Grants{})
-		relaxed.E2EE = policy
+		relaxed.E2EE = string(policy)
 		if _, _, err := Mint(key, relaxed, time.Minute, now); !errors.Is(err, control.ErrInvalid) {
 			t.Errorf("minting e2ee=%q gave %v, want ErrInvalid", policy, err)
 		}

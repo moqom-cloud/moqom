@@ -128,9 +128,9 @@ func (s *Server) relayLink(limiter *joinLimiter) http.HandlerFunc {
 		claims := token.Claims{
 			Issuer:       s.core.issuer,
 			Subject:      RelaySubject,
-			Audience:     asked.Tenant,
+			Tenant:       asked.Tenant,
 			Confirmation: token.Confirmation{Thumbprint: device},
-			MOQT:         token.Scope{Room: asked.Room, Relay: true},
+			Grant:        token.Scope{Room: asked.Room, Relay: true},
 		}
 		minted, expires, err := token.Mint(s.core.keys[0], claims, relayLinkLifetime, s.core.now())
 		if err != nil {

@@ -22,6 +22,7 @@ import (
 	"time"
 
 	adminpb "github.com/moqom-cloud/moqom-go/admin/adminpb"
+	"github.com/moqom-cloud/moqom-security/go/proof"
 	"github.com/moqom-cloud/moqom/go/internal/control"
 	"github.com/moqom-cloud/moqom/go/internal/server"
 	"github.com/moqom-cloud/moqom/go/internal/token"
@@ -304,6 +305,28 @@ func TestATokenIsBoundToTheKeyTheDeviceSent(t *testing.T) {
 	// the credential to find out.
 	if response.Device != deviceKeyThumbprint {
 		t.Errorf("device = %q, want %q", response.Device, deviceKeyThumbprint)
+	}
+}
+
+// What every SDK now sends: an ML-DSA-65 key, as kty "AKP".
+func TestATokenIsBoundToAnMLDSAKey(t *testing.T) {
+	h := newHarness(t)
+	h.createRoom(t, "alice")
+
+	device, err := proof.GenerateProver(proof.MLDSA65)
+	if err != nil {
+		t.Fatal(err)
+	}
+	key := device.JWK()
+	code, response, body := ask(t, h.server.JoinHandler(false), joinKey, server.JoinRequest{
+		Tenant: tenant, Username: "alice", Room: roomName,
+		Device: device.Thumbprint()[:16], Key: &key,
+	})
+	if code != http.StatusOK {
+		t.Fatalf("joining with an ML-DSA-65 key: %d %s", code, body)
+	}
+	if got := scopeOf(t, response.Token).Confirmation.Thumbprint; got != device.Thumbprint() {
+		t.Errorf("cnf.jkt = %q, want the thumbprint of the key sent: %q", got, device.Thumbprint())
 	}
 }
 

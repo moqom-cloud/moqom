@@ -1,7 +1,6 @@
 package token
 
 import (
-	"crypto/rand"
 	"errors"
 	"fmt"
 	"strings"
@@ -12,6 +11,9 @@ import (
 // the published key set. A relay forwarding the log can drop an entry, which the
 // log's sequence numbers surface; it cannot write one, alter one, or move one
 // from another room.
+//
+// MOQOM's protocol rather than moqom-token's, so it stays here and signs
+// through the library's Signer.SignMessage, whose domain separation it owns.
 //
 // What is signed is roomLogContext ‖ 0 ‖ tenant ‖ 0 ‖ room ‖ 0 ‖ entry. The
 // context keeps a log signature from ever verifying as a token's — a JWS signs
@@ -39,7 +41,7 @@ func (k Key) SignRoomLog(tenant, room string, entry []byte) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	signature, err := k.signer.Sign(rand.Reader, message, nil)
+	signature, err := k.signer.SignMessage(message)
 	if err != nil {
 		return nil, fmt.Errorf("token: signing a room log entry: %w", err)
 	}
@@ -66,8 +68,8 @@ func VerifyRoomLog(keys []Key, tenant, room string, entry, property []byte) bool
 		return false
 	}
 	for _, key := range keys {
-		if key.ID == id && key.mldsa != nil {
-			return key.verify(message, property[end:])
+		if key.ID == id && key.Algorithm == AlgorithmMLDSA65 {
+			return key.public.Verify(message, property[end:])
 		}
 	}
 	return false

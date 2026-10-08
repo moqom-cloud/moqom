@@ -525,10 +525,10 @@ func (s *recorderLinkService) credential(r recording.Recording, room control.Roo
 	claims := token.Claims{
 		Issuer:       s.core.issuer,
 		Subject:      RecorderSubject,
-		Audience:     r.Tenant,
+		Tenant:       r.Tenant,
 		Confirmation: token.Confirmation{Thumbprint: s.core.recording.thumbprint},
-		MOQT:         token.ScopeFrom(control.Grants{}, r.Room, false, false),
-		E2EE:         room.Policy.WithDefaults().E2EE,
+		Grant:        token.ScopeFrom(control.Grants{}, r.Room, false, false),
+		E2EE:         string(room.Policy.WithDefaults().E2EE),
 	}
 	minted, expires, err := token.Mint(s.core.keys[0], claims, token.DefaultLifetime, s.core.now())
 	if err != nil {
