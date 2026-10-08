@@ -1,11 +1,13 @@
 package server_test
 
 import (
+	"context"
 	"testing"
 
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
+	moqom "github.com/moqom-cloud/moqom-go"
 	adminpb "github.com/moqom-cloud/moqom-go/admin/adminpb"
 )
 
@@ -86,5 +88,31 @@ func TestDirectLimitsOutsideTheRangeAreRefused(t *testing.T) {
 		if status.Code(err) != codes.InvalidArgument {
 			t.Errorf("a limit of %d gave %v, want InvalidArgument", limit, status.Code(err))
 		}
+	}
+}
+
+// The Go SDK writes and reads the policy, and hands a backend the grant to
+// pass on with each token.
+func TestTheSDKCarriesTheDirectPolicy(t *testing.T) {
+	h := newHarness(t)
+	client := h.sdk(t, ownerKey)
+	room, err := client.CreateRoom(context.Background(), moqom.NewRoom{
+		Name:   "private-call",
+		Policy: moqom.Policy{DirectPaths: moqom.DirectRelayOnly, MaxDirectParticipants: 2},
+	})
+	if err != nil {
+		t.Fatalf("creating a room: %v", err)
+	}
+	if room.Policy.DirectPaths != moqom.DirectRelayOnly || room.Policy.MaxDirectParticipants != 2 {
+		t.Fatalf("the room reads back as %q for %d", room.Policy.DirectPaths, room.Policy.MaxDirectParticipants)
+	}
+	token, err := client.MintToken(context.Background(), moqom.TokenRequest{
+		Username: "bob", DeviceThumbprint: "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQ", Room: "private-call",
+	})
+	if err != nil {
+		t.Fatalf("minting: %v", err)
+	}
+	if token.Direct == nil || token.Direct.Allowed || token.Direct.MaxParticipants != 2 {
+		t.Errorf("the token states %+v", token.Direct)
 	}
 }
