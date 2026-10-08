@@ -52,10 +52,11 @@ Status: **done** · **in progress** · **to do** · **blocked** (needs a person)
 
 | Item | Status | Notes |
 | --- | --- | --- |
-| moqom.dev page per library, with examples the test suites run | in progress | sframe done; token, proof, mls agents running |
-| SFrame binds the full track name (a relay could move an object between one sender's tracks) | in progress | in all three languages and every product caller, before 0.1.0 |
+| moqom.dev page per library, with examples the test suites run | done | token, proof, sframe, mls pages; examples run in all three suites |
+| SFrame binds the full track name (a relay could move an object between one sender's tracks) | done | moqom-security 7e70980, d5170f2; swift b13e6b8 (also fixed two nonce-reuse bugs: shared-key KIDs and counters restarting on rekey) |
+| Pre-release parity: strict JSON in token and proof, typed errors, `configuration` checks, raw key lengths, MLS `invalid-length`, Swift byte-for-byte string compares | done | moqom-security 9422a91 through c0caafa; 120 token, 49 key-set, 104 proof vectors |
 | CHANGELOG, README install lines, Versions section on moqom.dev | done | moqom-security 1f0b495 |
-| Push main, tag `v0.1.0` and `go/v0.1.0` (repo stays private) | to do | after the four libraries are done and all suites pass |
+| Push main, tag `v0.1.0` and `go/v0.1.0` (repo stays private) | done | at c0caafa. Library suites: Swift 109, Rust 70, Go all with -race. Products against it: engine 963, Swift SDK 1029, Go control plane and SDK all pass. Known gap: public JWK types decode with each language's own JSON decoder |
 | crates.io publish, repo public | blocked | release day, with counsel sign-off |
 
 ## Release and merge
