@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/moqom-cloud/moqom/go/internal/control"
@@ -64,6 +65,16 @@ func TestKeyDeliveryIsAuthenticatedByTheParticipantToken(t *testing.T) {
 	presence, _ := store.Presence(context.Background(), mls.Room{Tenant: tenant, Room: roomName})
 	if len(presence) != 1 || presence[0].Device != identity.String() {
 		t.Fatalf("the service saw %+v, want %s in %s/%s", presence, identity, tenant, roomName)
+	}
+
+	// A token that may publish is a member, not audience: it founds the group.
+	found := httptest.NewRequest(http.MethodPost, mls.PathPrefix+"group",
+		strings.NewReader(`{"groupId":"Z3JvdXAtMQ==","cipherSuite":61610}`))
+	found.Header.Set("Authorization", "Bearer "+joined.Token)
+	founded := httptest.NewRecorder()
+	handler.ServeHTTP(founded, found)
+	if founded.Code != http.StatusCreated {
+		t.Fatalf("a publisher founding the group: %d %s", founded.Code, founded.Body)
 	}
 
 	// Banned after joining, with the token still valid: refused from then on,

@@ -71,6 +71,9 @@ type Caller struct {
 	// Device is the control plane's identity string, `username/device`, which
 	// is also the identity inside the device's key packages.
 	Device string
+	// Viewer is a device that may not publish and is not an agent. It is
+	// sealed the group's keys as audience and never added to the group.
+	Viewer bool
 }
 
 // Group is the room's current group.
@@ -159,4 +162,19 @@ type Store interface {
 	// Messages returns up to limit entries after `after` that device may see,
 	// and the cursor to ask from next.
 	Messages(ctx context.Context, room Room, after uint64, device string, limit int) ([]Message, uint64, error)
+
+	// PutAudienceKey records a viewer's public key and that it was heard from.
+	PutAudienceKey(ctx context.Context, room Room, device string, key []byte, at time.Time) error
+	// LeaveAudience forgets a viewer and its envelope.
+	LeaveAudience(ctx context.Context, room Room, device string) error
+	// Audience lists a room's viewers.
+	Audience(ctx context.Context, room Room) ([]AudienceSeat, error)
+	// AudienceCount counts the viewers heard from since `since`, and of those
+	// the ones whose newest envelope is not for ref.
+	AudienceCount(ctx context.Context, room Room, ref EpochRef, since time.Time) (present, waiting int, err error)
+	// PutEnvelopes replaces each named viewer's envelope. Envelopes for devices
+	// that are not viewers are dropped.
+	PutEnvelopes(ctx context.Context, room Room, envelopes []Envelope) error
+	// Envelope is a viewer's newest envelope, ErrNotFound if it has none.
+	Envelope(ctx context.Context, room Room, device string) (Envelope, error)
 }

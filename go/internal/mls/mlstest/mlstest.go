@@ -269,4 +269,64 @@ func Run(t *testing.T, open func(t *testing.T) mls.Store) {
 			t.Fatalf("a departed device's packages: %v", err)
 		}
 	})
+
+	t.Run("audience: keys, envelopes, counts", func(t *testing.T) {
+		store := open(t)
+		first := mls.EpochRef{GroupID: []byte("group-one"), Epoch: 3}
+		second := mls.EpochRef{GroupID: []byte("group-one"), Epoch: 4}
+		key := bytes.Repeat([]byte{1}, mls.AudienceKeyBytes)
+		_ = store.PutAudienceKey(ctx, room, "viewer/a", key, at)
+		_ = store.PutAudienceKey(ctx, room, "viewer/b", key, at.Add(-time.Hour))
+		if _, err := store.Envelope(ctx, room, "viewer/a"); !errors.Is(err, mls.ErrNotFound) {
+			t.Fatalf("an envelope before any was sealed: %v", err)
+		}
+		present, waiting, _ := store.AudienceCount(ctx, room, first, at.Add(-time.Minute))
+		if present != 1 || waiting != 1 {
+			t.Fatalf("present %d waiting %d, want 1 and 1: the stale viewer is not counted", present, waiting)
+		}
+
+		err := store.PutEnvelopes(ctx, room, []mls.Envelope{
+			{Device: "viewer/a", EpochRef: first, Data: []byte("sealed")},
+			{Device: "stranger/x", EpochRef: first, Data: []byte("dropped")},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		envelope, err := store.Envelope(ctx, room, "viewer/a")
+		if err != nil || !envelope.EpochRef.Equal(first) || string(envelope.Data) != "sealed" {
+			t.Fatalf("envelope %+v, %v", envelope, err)
+		}
+		if _, err := store.Envelope(ctx, room, "stranger/x"); !errors.Is(err, mls.ErrNotFound) {
+			t.Fatalf("an envelope for a device that is not a viewer was kept: %v", err)
+		}
+		if _, waiting, _ := store.AudienceCount(ctx, room, first, at.Add(-time.Minute)); waiting != 0 {
+			t.Fatalf("waiting %d once sealed", waiting)
+		}
+		if _, waiting, _ := store.AudienceCount(ctx, room, second, at.Add(-time.Minute)); waiting != 1 {
+			t.Fatalf("waiting %d once the epoch moved on", waiting)
+		}
+		seats, _ := store.Audience(ctx, room)
+		if len(seats) != 2 || seats[0].Device != "viewer/a" || seats[0].Sealed == nil || !seats[0].Sealed.Equal(first) ||
+			!bytes.Equal(seats[0].Key, key) || seats[1].Sealed != nil {
+			t.Fatalf("seats %+v", seats)
+		}
+
+		// The same key again keeps its envelope; a new one cannot open it.
+		_ = store.PutAudienceKey(ctx, room, "viewer/a", key, at.Add(time.Second))
+		if _, err := store.Envelope(ctx, room, "viewer/a"); err != nil {
+			t.Fatalf("a renewed key lost its envelope: %v", err)
+		}
+		_ = store.PutAudienceKey(ctx, room, "viewer/a", bytes.Repeat([]byte{2}, mls.AudienceKeyBytes), at.Add(2*time.Second))
+		if _, err := store.Envelope(ctx, room, "viewer/a"); !errors.Is(err, mls.ErrNotFound) {
+			t.Fatalf("a replaced key kept an envelope it cannot open: %v", err)
+		}
+
+		_ = store.LeaveAudience(ctx, room, "viewer/a")
+		if seats, _ := store.Audience(ctx, room); len(seats) != 1 {
+			t.Fatalf("left, still seated: %+v", seats)
+		}
+		if seats, _ := store.Audience(ctx, other); len(seats) != 0 {
+			t.Fatalf("another room's audience: %+v", seats)
+		}
+	})
 }

@@ -57,7 +57,16 @@ type Snapshot struct {
 	// package to be added with.
 	Pending []string
 	Cursor  uint64
+	// Audience is the viewers heard from within OnlineWindow, and
+	// AudienceWaiting those of them without the current epoch's key. Both are
+	// counted for members only, who are the ones that seal.
+	Audience        int
+	AudienceWaiting int
 }
+
+// errViewer refuses a viewer what only a member does. The group is the
+// devices that may publish and the agents; see audience.go.
+var errViewer = fmt.Errorf("%w: a viewer is sealed the group's keys, not added to it", ErrForbidden)
 
 // Service is the delivery service's rules over a store.
 type Service struct {
@@ -109,6 +118,9 @@ func (s *Service) waitFor(room Room) <-chan struct{} {
 // room's group: a device publishes before it has seen whether there is one,
 // and replaces its packages when the group turns out to be in another suite.
 func (s *Service) PublishKeyPackages(ctx context.Context, caller Caller, oneTime [][]byte, lastResort []byte) error {
+	if caller.Viewer {
+		return errViewer
+	}
 	if len(oneTime) > maxOneTimePackages {
 		return fmt.Errorf("%w: %d key packages, at most %d", ErrInvalid, len(oneTime), maxOneTimePackages)
 	}
@@ -194,6 +206,9 @@ func (s *Service) online(entry Presence) bool {
 // member. Only FoundingSuite is accepted: groups already founded in an older
 // suite keep working, but no new one is classical in its signatures or its KEM.
 func (s *Service) CreateGroup(ctx context.Context, caller Caller, id []byte, suite CipherSuite) error {
+	if caller.Viewer {
+		return errViewer
+	}
 	if len(id) == 0 || len(id) > 64 {
 		return fmt.Errorf("%w: group id of %d bytes", ErrInvalid, len(id))
 	}
@@ -385,6 +400,16 @@ func (s *Service) snapshot(ctx context.Context, caller Caller, after uint64) (Sn
 	}
 	slices.Sort(snapshot.Members)
 	slices.Sort(snapshot.Pending)
+	if callerIsMember && current != nil {
+		ref := EpochRef{GroupID: current.ID, Epoch: current.Epoch}
+		snapshot.Audience, snapshot.AudienceWaiting, err = s.store.AudienceCount(ctx, caller.Room, ref, s.now().Add(-OnlineWindow))
+		if err != nil {
+			return Snapshot{}, false, err
+		}
+		if snapshot.AudienceWaiting > 0 {
+			work = true // somebody to seal to
+		}
+	}
 	actionable := len(messages) > 0 || current == nil || (callerIsMember && work)
 	return snapshot, actionable, nil
 }

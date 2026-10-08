@@ -148,6 +148,7 @@ func Handler(service *Service, authenticate Authenticate) http.Handler {
 		return nil
 	})
 
+	audienceRoutes(service, route)
 	return mux
 }
 
@@ -169,6 +170,8 @@ type wireSync struct {
 	Members  []string      `json:"members"`
 	Pending  []string      `json:"pending"`
 	Cursor   uint64        `json:"cursor"`
+	Audience int           `json:"audience"`
+	Waiting  int           `json:"audienceWaiting"`
 }
 
 // syncResponse is a snapshot as a device reads it. Who sent each message and
@@ -179,6 +182,8 @@ func syncResponse(snapshot Snapshot) wireSync {
 		Members:  snapshot.Members,
 		Pending:  snapshot.Pending,
 		Cursor:   snapshot.Cursor,
+		Audience: snapshot.Audience,
+		Waiting:  snapshot.AudienceWaiting,
 	}
 	if snapshot.Group != nil {
 		out.Group = &wireGroup{

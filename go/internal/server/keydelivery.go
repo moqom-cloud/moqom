@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/moqom-cloud/moqom/go/internal/control"
 	"github.com/moqom-cloud/moqom/go/internal/mls"
 )
 
@@ -21,6 +22,10 @@ import (
 // could keep claiming places in the group; refused here, it stops being heard
 // from, and the room's next commit removes it, which rotates the room's keys.
 // Address bans are left to the relay, which sees the address media comes from.
+//
+// A token that grants no publishing, unless it is an agent's, is a viewer: it
+// may post an audience key and be sealed the group's, and is refused a place
+// in the group itself.
 func (s *Server) KeyDeliveryHandler(service *mls.Service) http.Handler {
 	return mls.Handler(service, func(r *http.Request) (mls.Caller, error) {
 		header := r.Header.Get("Authorization")
@@ -52,6 +57,7 @@ func (s *Server) KeyDeliveryHandler(service *mls.Service) http.Handler {
 		return mls.Caller{
 			Room:   mls.Room{Tenant: claims.Audience, Room: claims.MOQT.Room},
 			Device: identity.String(),
+			Viewer: claims.MOQT.Publish == 0 && !strings.HasPrefix(identity.Username, control.AgentUsernamePrefix),
 		}, nil
 	})
 }

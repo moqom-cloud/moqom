@@ -23,6 +23,7 @@ type memoryRoom struct {
 	lastSeq  uint64
 	messages []Message
 	devices  map[string]*memoryDevice
+	audience map[string]*memoryViewer
 }
 
 type memoryDevice struct {

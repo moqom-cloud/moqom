@@ -57,3 +57,17 @@ CREATE TABLE IF NOT EXISTS mls_key_packages (
 
 CREATE INDEX IF NOT EXISTS mls_key_packages_device
     ON mls_key_packages (tenant, room, device, last_resort, id);
+
+-- A broadcast's viewers, who are not in the group: each one's HPKE public key,
+-- and the newest epoch key a member sealed to it.
+CREATE TABLE IF NOT EXISTS mls_audience (
+    tenant         text        NOT NULL,
+    room           text        NOT NULL,
+    device         text        NOT NULL,
+    public_key     bytea       NOT NULL,
+    last_seen      timestamptz NOT NULL,
+    sealed_group   bytea,
+    sealed_epoch   bigint,
+    envelope       bytea,
+    PRIMARY KEY (tenant, room, device)
+);
