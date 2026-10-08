@@ -276,6 +276,15 @@ The control plane is strict in the same way: it will not start without
 Run, or a laptop) and `MOQOM_CONTROL_ALLOW_NO_CLIENT_CERT=true` are the explicit
 ways out, and each logs a warning at startup.
 
+`MOQOM_CONTROL_STUN` names the STUN server put in every direct grant
+(`direct.stun` in a minted token and in `/join`), as `host` or `host:port`;
+the port defaults to 3478. The SDKs ask it for the public address they offer a
+peer, so direct paths can cross NATs. Every relay answers STUN on UDP 3478
+(`MOQOM_RELAY_STUN_ADDR`, `off` to disable). The relay and network modules
+open it (`stun_port` and `relay_stun_port`, null to close), and the
+environments point `MOQOM_CONTROL_STUN` at the steered edge name. Unset means
+grants name no server, and the SDKs offer only local addresses.
+
 `MOQOM_CONTROL_ZITI_IDENTITY` (an enrolled OpenZiti identity file) and
 `MOQOM_CONTROL_ZITI_SERVICE` (the service to bind) serve the same gRPC port —
 admin API and RelayLink — on an OpenZiti overlay as well, where only identities
@@ -760,8 +769,8 @@ module "relay" {
 }
 ```
 
-They also need the firewall rules — UDP/443 from anywhere to the relay tag, TCP
-on the health port from the prober ranges, and egress for NTP and for the
+They also need the firewall rules — UDP/443 and UDP/3478 (STUN) from anywhere
+to the relay tag, TCP on the health port from the prober ranges, and egress for NTP and for the
 control plane's port. Those live in `modules/network` and are readable in
 isolation; taking the whole network module is easier than reproducing them, and
 it will not conflict with an existing VPC as long as `name_prefix` differs.
@@ -782,7 +791,7 @@ waiting for connect" against a process that answers the same request locally.
 **Container-Optimized OS has its own firewall.** It boots `-P INPUT DROP` and
 permits loopback, ICMP, established flows and SSH. A VPC rule is necessary and
 not sufficient: the packet is allowed onto the wire and dropped by the machine it
-was addressed to. The relay unit opens UDP/443 and the health port with
+was addressed to. The relay unit opens UDP/443, UDP/3478 and the health port with
 `iptables` on every start, rather than once at first boot, so a reboot cannot
 lose them.
 

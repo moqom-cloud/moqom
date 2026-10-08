@@ -168,6 +168,13 @@ safety detector) is required in the room.
 2. **Exchange candidates over the room.** Each peer publishes its candidate
    addresses on a private track only the other members can read, encrypted
    under the room's MLS key, so the relay carries them but cannot read them.
+   The candidates are the device's own addresses plus its public one. The
+   device learns the public address by asking a STUN server from the socket
+   the direct path will use. Every relay answers STUN on UDP 3478, and the
+   room's direct grant names one (`DirectGrant.stun`, set from
+   `MOQOM_CONTROL_STUN`). Both SDKs ask that server by default, and an app can
+   name its own instead. The relay answers only well-formed Binding requests,
+   rate-limits each source, and replies from the address it was asked on.
 3. **Hole-punch with QUIC NAT traversal.** Simultaneous outbound connections
    from both sides, the technique standardised in the IETF QUIC NAT traversal
    work. [iroh](https://docs.iroh.computer/concepts/nat-traversal) runs it in
@@ -211,6 +218,14 @@ safety detector) is required in the room.
 - **Mobile networks.** Carrier-grade NAT is where hole-punching fails most, so
   phone-to-phone on cellular will often stay on the relay. Measure before
   advertising.
+- **Symmetric NATs, and no TURN.** STUN tells a device the public port its
+  NAT used toward the relay. A NAT that picks a new port for each destination
+  (address-dependent mapping) gives the peer a different one, so the punch
+  misses. MOQOM runs no TURN server, so those pairs fall back to the relay.
+  That fallback already carries the media, so the call keeps working, but it
+  is not point to point. The relays' load balancer is IPv4-only, so the relay
+  reports no IPv6 public address. IPv6 host candidates still work where
+  neither side filters inbound traffic.
 
 ### Status
 
@@ -220,6 +235,7 @@ safety detector) is required in the room.
 | Sealed candidate offers | Built | Built; byte-identical, pinned by a shared test vector |
 | Offer exchange on the participant's `.direct` track | Caller publishes on its stage slot | `DirectOffers` |
 | Direct endpoint: pinned mutual TLS, hole-punching, MOQT both ways | Built, loopback-tested | `DirectEndpoint`, loopback-tested on macOS; builds for iOS. The dialler is a legacy `NWConnectionGroup`, because `NetworkConnection<QUIC>` cannot open streams from a fixed local port. No QUIC datagrams on direct paths |
+| STUN server | `DirectPolicy::AUTOMATIC` asks the grant's (`RoomDirectPolicy::stun`), an explicit one wins | `.automatic` asks the grant's (`DirectRoomPolicy.stun`), `.automatic(stun:)` wins, `.relayOnly` asks none |
 | Direct socket backend | quinn on one UDP socket, STUN and continuous probing (`direct::socket`) | `DirectBackend`: `.networkFramework` (default) or `.rust`, which runs the Rust socket layer through `moqom-direct-ffi` (opt-in `MoqomDirectRust` module, iOS and macOS). All pairings interoperate on macOS |
 | Peer verification | Through the `PeerVerifier` trait; the relay's `PeerCheck` implements it | `DirectPeerCheck`, a port of the relay's token and proof checks, with a required proof. A refused peer is closed with `0x03`; the dialler's empty unidirectional stream is the final admission |
 | Merging relay and direct paths, with fallback | `DualSubscription` | `DualSubscription`, same rules |
