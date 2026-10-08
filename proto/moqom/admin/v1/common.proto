@@ -275,3 +275,12 @@ message ActorContext {
   // within the retention window returns the original result unchanged.
   string idempotency_key = 3;
 }
+
+// What a room allows of direct (device-to-device) paths, as stated to a client
+// with its token. See `RoomPolicy.direct_paths`.
+message DirectGrant {
+  bool allowed = 1;
+
+  // The most participants the room may have and still use direct paths.
+  uint32 max_participants = 2;
+}

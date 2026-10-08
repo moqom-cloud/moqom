@@ -233,8 +233,9 @@ func (s *Store) CreateRoom(ctx context.Context, room control.Room) (control.Room
 			tenant, room, lifecycle, owner, acting_host_user, acting_host_device,
 			starts_at, created_at, ended_at,
 			age_minimum, age_verified, recording, residency_zone,
-			max_participants, stage_slots, watchdog_limit, e2ee
-		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)
+			max_participants, stage_slots, watchdog_limit, e2ee,
+			direct_paths, max_direct_participants
+		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19)
 		ON CONFLICT (tenant, room) DO NOTHING`,
 		room.Tenant, room.Room, string(room.Lifecycle), room.Owner,
 		room.ActingHost.Username, room.ActingHost.Device,
@@ -243,6 +244,7 @@ func (s *Store) CreateRoom(ctx context.Context, room control.Room) (control.Room
 		string(room.Policy.Recording), room.Policy.ResidencyZone,
 		int64(room.Policy.MaxParticipants), int64(room.Policy.StageSlots),
 		int64(room.Policy.WatchdogLimit), string(room.Policy.E2EE),
+		string(room.Policy.DirectPaths), int64(room.Policy.MaxDirectParticipants),
 	)
 	if err != nil {
 		return control.Room{}, fmt.Errorf("creating a room: %w", err)
@@ -257,19 +259,21 @@ const roomColumns = `
 	tenant, room, lifecycle, owner, acting_host_user, acting_host_device,
 	starts_at, created_at, ended_at,
 	age_minimum, age_verified, recording, residency_zone,
-	max_participants, stage_slots, watchdog_limit, e2ee`
+	max_participants, stage_slots, watchdog_limit, e2ee,
+	direct_paths, max_direct_participants`
 
 func scanRoom(row pgx.Row) (control.Room, error) {
 	var room control.Room
-	var lifecycle, recording, e2ee string
+	var lifecycle, recording, e2ee, direct string
 	var startsAt, endedAt *time.Time
-	var age, maximum, slots, watchdogs int64
+	var age, maximum, slots, watchdogs, maxDirect int64
 	err := row.Scan(
 		&room.Tenant, &room.Room, &lifecycle, &room.Owner,
 		&room.ActingHost.Username, &room.ActingHost.Device,
 		&startsAt, &room.CreatedAt, &endedAt,
 		&age, &room.Policy.AgeGate.RequireVerification, &recording, &room.Policy.ResidencyZone,
 		&maximum, &slots, &watchdogs, &e2ee,
+		&direct, &maxDirect,
 	)
 	if err != nil {
 		return control.Room{}, err
@@ -281,6 +285,8 @@ func scanRoom(row pgx.Row) (control.Room, error) {
 	room.Policy.MaxParticipants = uint32(maximum)
 	room.Policy.StageSlots = uint32(slots)
 	room.Policy.WatchdogLimit = uint32(watchdogs)
+	room.Policy.DirectPaths = control.DirectPaths(direct)
+	room.Policy.MaxDirectParticipants = uint32(maxDirect)
 	room.StartsAt = at(startsAt)
 	room.EndedAt = at(endedAt)
 	return room, nil
@@ -304,7 +310,8 @@ func (s *Store) SaveRoom(ctx context.Context, room control.Room) (control.Room, 
 			lifecycle = $3, owner = $4, acting_host_user = $5, acting_host_device = $6,
 			starts_at = $7, ended_at = $8,
 			age_minimum = $9, age_verified = $10, recording = $11, residency_zone = $12,
-			max_participants = $13, stage_slots = $14, watchdog_limit = $15, e2ee = $16
+			max_participants = $13, stage_slots = $14, watchdog_limit = $15, e2ee = $16,
+			direct_paths = $17, max_direct_participants = $18
 		WHERE tenant = $1 AND room = $2`,
 		room.Tenant, room.Room, string(room.Lifecycle), room.Owner,
 		room.ActingHost.Username, room.ActingHost.Device,
@@ -313,6 +320,7 @@ func (s *Store) SaveRoom(ctx context.Context, room control.Room) (control.Room, 
 		string(room.Policy.Recording), room.Policy.ResidencyZone,
 		int64(room.Policy.MaxParticipants), int64(room.Policy.StageSlots),
 		int64(room.Policy.WatchdogLimit), string(room.Policy.WithDefaults().E2EE),
+		string(room.Policy.DirectPaths), int64(room.Policy.MaxDirectParticipants),
 	)
 	if err != nil {
 		return control.Room{}, fmt.Errorf("saving a room: %w", err)

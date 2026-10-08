@@ -1220,8 +1220,11 @@ type RoomSnapshot struct {
 	// effect without waiting for a reissue.
 	GrantOverrides  []*GrantOverride `protobuf:"bytes,6,rep,name=grant_overrides,json=grantOverrides,proto3" json:"grant_overrides,omitempty"`
 	MaxParticipants uint32           `protobuf:"varint,7,opt,name=max_participants,json=maxParticipants,proto3" json:"max_participants,omitempty"`
-	unknownFields   protoimpl.UnknownFields
-	sizeCache       protoimpl.SizeCache
+	// What the room allows of direct paths, so a relay can refuse direct
+	// tickets in a room that keeps media on the relay.
+	Direct        *adminpb.DirectGrant `protobuf:"bytes,8,opt,name=direct,proto3" json:"direct,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *RoomSnapshot) Reset() {
@@ -1301,6 +1304,13 @@ func (x *RoomSnapshot) GetMaxParticipants() uint32 {
 		return x.MaxParticipants
 	}
 	return 0
+}
+
+func (x *RoomSnapshot) GetDirect() *adminpb.DirectGrant {
+	if x != nil {
+		return x.Direct
+	}
+	return nil
 }
 
 type Ban struct {
@@ -2245,7 +2255,7 @@ const file_moqom_relay_v1_relay_proto_rawDesc = "" +
 	"\x11backstage_changed\x18\x04 \x01(\bR\x10backstageChanged\x12\x1c\n" +
 	"\tbackstage\x18\x05 \x01(\bR\tbackstage\x12%\n" +
 	"\x0elocale_changed\x18\x06 \x01(\bR\rlocaleChanged\x12\x16\n" +
-	"\x06locale\x18\a \x01(\tR\x06locale\"\x9a\x02\n" +
+	"\x06locale\x18\a \x01(\tR\x06locale\"\xcf\x02\n" +
 	"\fRoomSnapshot\x12\x16\n" +
 	"\x06tenant\x18\x01 \x01(\tR\x06tenant\x12\x12\n" +
 	"\x04room\x18\x02 \x01(\tR\x04room\x12\x16\n" +
@@ -2253,7 +2263,8 @@ const file_moqom_relay_v1_relay_proto_rawDesc = "" +
 	"\x04bans\x18\x04 \x03(\v2\x13.moqom.relay.v1.BanR\x04bans\x12*\n" +
 	"\x05mutes\x18\x05 \x03(\v2\x14.moqom.relay.v1.MuteR\x05mutes\x12F\n" +
 	"\x0fgrant_overrides\x18\x06 \x03(\v2\x1d.moqom.relay.v1.GrantOverrideR\x0egrantOverrides\x12)\n" +
-	"\x10max_participants\x18\a \x01(\rR\x0fmaxParticipants\"\xec\x01\n" +
+	"\x10max_participants\x18\a \x01(\rR\x0fmaxParticipants\x123\n" +
+	"\x06direct\x18\b \x01(\v2\x1b.moqom.admin.v1.DirectGrantR\x06direct\"\xec\x01\n" +
 	"\x03Ban\x12\x1c\n" +
 	"\busername\x18\x01 \x01(\tH\x00R\busername\x122\n" +
 	"\x06device\x18\x02 \x01(\v2\x18.moqom.admin.v1.IdentityH\x00R\x06device\x12\x1d\n" +
@@ -2361,10 +2372,11 @@ var file_moqom_relay_v1_relay_proto_goTypes = []any{
 	(*durationpb.Duration)(nil),     // 27: google.protobuf.Duration
 	(*adminpb.Identity)(nil),        // 28: moqom.admin.v1.Identity
 	(*adminpb.Grants)(nil),          // 29: moqom.admin.v1.Grants
-	(adminpb.ModerationCode)(0),     // 30: moqom.admin.v1.ModerationCode
-	(adminpb.MediaKind)(0),          // 31: moqom.admin.v1.MediaKind
-	(*adminpb.ParticipantRef)(nil),  // 32: moqom.admin.v1.ParticipantRef
-	(*adminpb.VerificationKey)(nil), // 33: moqom.admin.v1.VerificationKey
+	(*adminpb.DirectGrant)(nil),     // 30: moqom.admin.v1.DirectGrant
+	(adminpb.ModerationCode)(0),     // 31: moqom.admin.v1.ModerationCode
+	(adminpb.MediaKind)(0),          // 32: moqom.admin.v1.MediaKind
+	(*adminpb.ParticipantRef)(nil),  // 33: moqom.admin.v1.ParticipantRef
+	(*adminpb.VerificationKey)(nil), // 34: moqom.admin.v1.VerificationKey
 }
 var file_moqom_relay_v1_relay_proto_depIdxs = []int32{
 	7,  // 0: moqom.relay.v1.RelayMessage.hello:type_name -> moqom.relay.v1.Hello
@@ -2396,37 +2408,38 @@ var file_moqom_relay_v1_relay_proto_depIdxs = []int32{
 	14, // 26: moqom.relay.v1.RoomSnapshot.bans:type_name -> moqom.relay.v1.Ban
 	15, // 27: moqom.relay.v1.RoomSnapshot.mutes:type_name -> moqom.relay.v1.Mute
 	16, // 28: moqom.relay.v1.RoomSnapshot.grant_overrides:type_name -> moqom.relay.v1.GrantOverride
-	28, // 29: moqom.relay.v1.Ban.device:type_name -> moqom.admin.v1.Identity
-	26, // 30: moqom.relay.v1.Ban.expires_at:type_name -> google.protobuf.Timestamp
-	30, // 31: moqom.relay.v1.Ban.code:type_name -> moqom.admin.v1.ModerationCode
-	28, // 32: moqom.relay.v1.Mute.identity:type_name -> moqom.admin.v1.Identity
-	31, // 33: moqom.relay.v1.Mute.media:type_name -> moqom.admin.v1.MediaKind
-	26, // 34: moqom.relay.v1.Mute.expires_at:type_name -> google.protobuf.Timestamp
-	28, // 35: moqom.relay.v1.GrantOverride.identity:type_name -> moqom.admin.v1.Identity
-	29, // 36: moqom.relay.v1.GrantOverride.grants:type_name -> moqom.admin.v1.Grants
-	18, // 37: moqom.relay.v1.Directive.eject:type_name -> moqom.relay.v1.Eject
-	19, // 38: moqom.relay.v1.Directive.apply_mute:type_name -> moqom.relay.v1.ApplyMute
-	20, // 39: moqom.relay.v1.Directive.apply_grants:type_name -> moqom.relay.v1.ApplyGrants
-	21, // 40: moqom.relay.v1.Directive.close_room:type_name -> moqom.relay.v1.CloseRoom
-	22, // 41: moqom.relay.v1.Directive.update_ban:type_name -> moqom.relay.v1.UpdateBan
-	32, // 42: moqom.relay.v1.Eject.target:type_name -> moqom.admin.v1.ParticipantRef
-	30, // 43: moqom.relay.v1.Eject.code:type_name -> moqom.admin.v1.ModerationCode
-	32, // 44: moqom.relay.v1.ApplyMute.target:type_name -> moqom.admin.v1.ParticipantRef
-	31, // 45: moqom.relay.v1.ApplyMute.media:type_name -> moqom.admin.v1.MediaKind
-	26, // 46: moqom.relay.v1.ApplyMute.expires_at:type_name -> google.protobuf.Timestamp
-	32, // 47: moqom.relay.v1.ApplyGrants.target:type_name -> moqom.admin.v1.ParticipantRef
-	29, // 48: moqom.relay.v1.ApplyGrants.grants:type_name -> moqom.admin.v1.Grants
-	30, // 49: moqom.relay.v1.CloseRoom.code:type_name -> moqom.admin.v1.ModerationCode
-	14, // 50: moqom.relay.v1.UpdateBan.ban:type_name -> moqom.relay.v1.Ban
-	26, // 51: moqom.relay.v1.Heartbeat.at:type_name -> google.protobuf.Timestamp
-	33, // 52: moqom.relay.v1.VerificationKeys.keys:type_name -> moqom.admin.v1.VerificationKey
-	1,  // 53: moqom.relay.v1.RelayLink.Attach:input_type -> moqom.relay.v1.RelayMessage
-	6,  // 54: moqom.relay.v1.RelayLink.Attach:output_type -> moqom.relay.v1.ControlMessage
-	54, // [54:55] is the sub-list for method output_type
-	53, // [53:54] is the sub-list for method input_type
-	53, // [53:53] is the sub-list for extension type_name
-	53, // [53:53] is the sub-list for extension extendee
-	0,  // [0:53] is the sub-list for field type_name
+	30, // 29: moqom.relay.v1.RoomSnapshot.direct:type_name -> moqom.admin.v1.DirectGrant
+	28, // 30: moqom.relay.v1.Ban.device:type_name -> moqom.admin.v1.Identity
+	26, // 31: moqom.relay.v1.Ban.expires_at:type_name -> google.protobuf.Timestamp
+	31, // 32: moqom.relay.v1.Ban.code:type_name -> moqom.admin.v1.ModerationCode
+	28, // 33: moqom.relay.v1.Mute.identity:type_name -> moqom.admin.v1.Identity
+	32, // 34: moqom.relay.v1.Mute.media:type_name -> moqom.admin.v1.MediaKind
+	26, // 35: moqom.relay.v1.Mute.expires_at:type_name -> google.protobuf.Timestamp
+	28, // 36: moqom.relay.v1.GrantOverride.identity:type_name -> moqom.admin.v1.Identity
+	29, // 37: moqom.relay.v1.GrantOverride.grants:type_name -> moqom.admin.v1.Grants
+	18, // 38: moqom.relay.v1.Directive.eject:type_name -> moqom.relay.v1.Eject
+	19, // 39: moqom.relay.v1.Directive.apply_mute:type_name -> moqom.relay.v1.ApplyMute
+	20, // 40: moqom.relay.v1.Directive.apply_grants:type_name -> moqom.relay.v1.ApplyGrants
+	21, // 41: moqom.relay.v1.Directive.close_room:type_name -> moqom.relay.v1.CloseRoom
+	22, // 42: moqom.relay.v1.Directive.update_ban:type_name -> moqom.relay.v1.UpdateBan
+	33, // 43: moqom.relay.v1.Eject.target:type_name -> moqom.admin.v1.ParticipantRef
+	31, // 44: moqom.relay.v1.Eject.code:type_name -> moqom.admin.v1.ModerationCode
+	33, // 45: moqom.relay.v1.ApplyMute.target:type_name -> moqom.admin.v1.ParticipantRef
+	32, // 46: moqom.relay.v1.ApplyMute.media:type_name -> moqom.admin.v1.MediaKind
+	26, // 47: moqom.relay.v1.ApplyMute.expires_at:type_name -> google.protobuf.Timestamp
+	33, // 48: moqom.relay.v1.ApplyGrants.target:type_name -> moqom.admin.v1.ParticipantRef
+	29, // 49: moqom.relay.v1.ApplyGrants.grants:type_name -> moqom.admin.v1.Grants
+	31, // 50: moqom.relay.v1.CloseRoom.code:type_name -> moqom.admin.v1.ModerationCode
+	14, // 51: moqom.relay.v1.UpdateBan.ban:type_name -> moqom.relay.v1.Ban
+	26, // 52: moqom.relay.v1.Heartbeat.at:type_name -> google.protobuf.Timestamp
+	34, // 53: moqom.relay.v1.VerificationKeys.keys:type_name -> moqom.admin.v1.VerificationKey
+	1,  // 54: moqom.relay.v1.RelayLink.Attach:input_type -> moqom.relay.v1.RelayMessage
+	6,  // 55: moqom.relay.v1.RelayLink.Attach:output_type -> moqom.relay.v1.ControlMessage
+	55, // [55:56] is the sub-list for method output_type
+	54, // [54:55] is the sub-list for method input_type
+	54, // [54:54] is the sub-list for extension type_name
+	54, // [54:54] is the sub-list for extension extendee
+	0,  // [0:54] is the sub-list for field type_name
 }
 
 func init() { file_moqom_relay_v1_relay_proto_init() }

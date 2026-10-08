@@ -104,6 +104,17 @@ type JoinResponse struct {
 	// refused by the relay: the alternative is a session that fails to
 	// authenticate with the reason buried in a credential nobody reads.
 	Device string `json:"device"`
+
+	// Direct is what the room allows of direct (device-to-device) paths,
+	// which MoqomKit reads as the room's limit on its own direct policy.
+	// Absent for a token that names no room.
+	Direct *JoinDirect `json:"direct,omitempty"`
+}
+
+// JoinDirect is control.DirectGrant as the join endpoint renders it.
+type JoinDirect struct {
+	Allowed         bool   `json:"allowed"`
+	MaxParticipants uint32 `json:"maxParticipants"`
 }
 
 // JoinPath is the only route this handler serves.
@@ -264,6 +275,7 @@ func (s *Server) join(
 		Username:  minted.GetIdentity().GetUsername(),
 		KeyID:     minted.GetKeyId(),
 		Device:    device,
+		Direct:    joinDirect(minted.GetDirect()),
 	}, http.StatusOK, nil
 }
 
@@ -436,4 +448,11 @@ func (l *joinLimiter) permit(name string) bool {
 	}
 	l.seen[name]++
 	return l.seen[name] <= l.per
+}
+
+func joinDirect(grant *adminpb.DirectGrant) *JoinDirect {
+	if grant == nil {
+		return nil
+	}
+	return &JoinDirect{Allowed: grant.GetAllowed(), MaxParticipants: grant.GetMaxParticipants()}
 }

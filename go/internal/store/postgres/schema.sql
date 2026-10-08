@@ -259,3 +259,8 @@ ALTER TABLE rooms ADD COLUMN IF NOT EXISTS e2ee text NOT NULL DEFAULT 'required'
 -- What a policy update did to a room's security settings. See
 -- control.ModerationEntry.PolicyChange.
 ALTER TABLE moderation_log ADD COLUMN IF NOT EXISTS policy_change text NOT NULL DEFAULT '';
+
+-- Direct paths. An empty value and a zero limit read as allowed and four, so
+-- rooms from before the columns follow MoqomKit's default.
+ALTER TABLE rooms ADD COLUMN IF NOT EXISTS direct_paths text NOT NULL DEFAULT '';
+ALTER TABLE rooms ADD COLUMN IF NOT EXISTS max_direct_participants bigint NOT NULL DEFAULT 0;

@@ -613,6 +613,7 @@ func (c *core) snapshot(ctx context.Context, ref roomRef) (*relaypb.RoomSnapshot
 	case err == nil:
 		snapshot.Closed = !room.IsOpen()
 		snapshot.MaxParticipants = room.Policy.MaxParticipants
+		snapshot.Direct = directGrantToProto(room.Policy.Direct())
 	case errors.Is(err, control.ErrNotFound):
 		// A room nobody created, holding a session. Reported as closed rather than
 		// permissive: a relay serving a room the control plane has never heard of

@@ -91,12 +91,14 @@ func (s *tokensService) MintClientToken(
 	// Stated even when it is the default, so a client reading the claim sees what
 	// the control plane decided rather than inferring it from silence.
 	var e2ee control.E2EEPolicy
+	var direct *adminpb.DirectGrant
 	if request.GetRoom() != "" {
 		room, err := s.core.store.GetRoom(ctx, request.GetTenant(), request.GetRoom())
 		if err != nil {
 			return nil, statusFor(err)
 		}
 		e2ee = room.Policy.WithDefaults().E2EE
+		direct = directGrantToProto(room.Policy.Direct())
 		if !room.IsOpen() {
 			return nil, statusFor(fmt.Errorf("%w: %s has ended", control.ErrRoomClosed, room.Room))
 		}
@@ -168,6 +170,7 @@ func (s *tokensService) MintClientToken(
 		ExpiresAt: timeToProto(expires),
 		Identity:  identityToProto(identity),
 		KeyId:     signing.ID,
+		Direct:    direct,
 	}, nil
 }
 

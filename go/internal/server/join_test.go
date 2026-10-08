@@ -149,6 +149,10 @@ func TestADeviceMintsItsOwnTokenForAnExistingRoom(t *testing.T) {
 	if response.ExpiresAt.IsZero() {
 		t.Error("the response does not say when the token dies, so a client cannot refresh")
 	}
+	// MoqomKit reads the room's direct-path limit from here.
+	if response.Direct == nil || !response.Direct.Allowed || response.Direct.MaxParticipants != 4 {
+		t.Errorf("the response states direct paths as %+v, want allowed for 4", response.Direct)
+	}
 }
 
 func TestADeviceGetsThePublishRightsOfItsCredentialAndNoMore(t *testing.T) {

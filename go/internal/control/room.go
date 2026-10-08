@@ -78,6 +78,57 @@ type Policy struct {
 
 	// E2EE is always E2EERequired once WithDefaults has run.
 	E2EE E2EEPolicy
+
+	// DirectPaths is whether participants may carry media device to device,
+	// and MaxDirectParticipants how many a room may have while they do.
+	DirectPaths           DirectPaths
+	MaxDirectParticipants uint32
+}
+
+// DirectPaths is whether a room's participants may carry media device to
+// device. A direct path tells each participant the others' IP addresses, which
+// is what DirectRelayOnly exists to prevent.
+//
+// The strings are protocol: they are stored, and a client reads the result
+// through DirectGrant.
+type DirectPaths string
+
+const (
+	DirectAllowed   DirectPaths = "allowed"
+	DirectRelayOnly DirectPaths = "relay_only"
+)
+
+// MaxDirectParticipants is the most participants any room may have and still
+// use direct paths, and every room's limit unless it sets a lower one. Each
+// extra peer costs every publisher a full upload; MoqomKit refuses above it
+// whatever the policy says.
+const MaxDirectParticipants = 4
+
+// DirectGrant is what a room allows of direct paths, as stated to a client
+// with its token.
+type DirectGrant struct {
+	Allowed         bool
+	MaxParticipants uint32
+}
+
+// Direct is the room's direct-path policy as a client is told it.
+func (p Policy) Direct() DirectGrant {
+	p = p.WithDefaults()
+	return DirectGrant{Allowed: p.DirectPaths == DirectAllowed, MaxParticipants: p.MaxDirectParticipants}
+}
+
+// ValidateDirect refuses a direct-path policy MoqomKit could not honour.
+func (p Policy) ValidateDirect() error {
+	switch p.DirectPaths {
+	case "", DirectAllowed, DirectRelayOnly:
+	default:
+		return fmt.Errorf("%w: direct_paths %q", ErrInvalid, p.DirectPaths)
+	}
+	if p.MaxDirectParticipants == 1 || p.MaxDirectParticipants > MaxDirectParticipants {
+		return fmt.Errorf("%w: max_direct_participants %d: between 2 and %d, or 0 for %d",
+			ErrInvalid, p.MaxDirectParticipants, MaxDirectParticipants, MaxDirectParticipants)
+	}
+	return nil
 }
 
 // WithDefaults fills the zero values that have sensible answers.
@@ -96,6 +147,12 @@ func (p Policy) WithDefaults() Policy {
 	if p.WatchdogLimit == 0 {
 		p.WatchdogLimit = DefaultWatchdogLimit
 	}
+	if p.DirectPaths == "" {
+		p.DirectPaths = DirectAllowed
+	}
+	if p.MaxDirectParticipants == 0 {
+		p.MaxDirectParticipants = MaxDirectParticipants
+	}
 	return p
 }
 
@@ -108,6 +165,9 @@ func (p Policy) WithDefaults() Policy {
 func (p Policy) ValidateChange(next Policy) error {
 	if p.ResidencyZone != next.ResidencyZone {
 		return fmt.Errorf("%w: residency_zone, %q to %q", ErrImmutablePolicy, p.ResidencyZone, next.ResidencyZone)
+	}
+	if err := next.ValidateDirect(); err != nil {
+		return err
 	}
 	return next.ValidateE2EE()
 }

@@ -285,6 +285,10 @@ message RoomSnapshot {
   repeated GrantOverride grant_overrides = 6;
 
   uint32 max_participants = 7;
+
+  // What the room allows of direct paths, so a relay can refuse direct
+  // tickets in a room that keeps media on the relay.
+  moqom.admin.v1.DirectGrant direct = 8;
 }
 
 message Ban {

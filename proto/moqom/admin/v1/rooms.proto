@@ -127,6 +127,31 @@ message RoomPolicy {
   // Unset reads as `E2EE_POLICY_REQUIRED`, and a room read back from the server
   // always states it. `E2EE_POLICY_OPTIONAL` is refused.
   E2EEPolicy e2ee = 7;
+
+  // Whether participants may carry media device to device. Unset reads as
+  // `DIRECT_PATHS_ALLOWED`. See `DirectPaths`.
+  DirectPaths direct_paths = 8;
+
+  // The most participants the room may have and still use direct paths. Zero
+  // reads as 4, which is also the most allowed: every extra peer costs each
+  // publisher a full upload.
+  uint32 max_direct_participants = 9;
+}
+
+// Whether a room's participants may carry media device to device rather than
+// through a relay.
+//
+// A direct path tells each participant the others' IP addresses, so a room
+// whose users must not learn them is `DIRECT_PATHS_RELAY_ONLY`. Even where
+// allowed, only an end-to-end encrypted room of at most
+// `max_direct_participants`, with no watchdog and no audience, where every
+// participant has opted in, goes direct. Clients learn the policy with each
+// token (`MintClientTokenResponse.direct`); a client that does not opt in keeps
+// the whole room on the relay.
+enum DirectPaths {
+  DIRECT_PATHS_UNSPECIFIED = 0;
+  DIRECT_PATHS_ALLOWED = 1;
+  DIRECT_PATHS_RELAY_ONLY = 2;
 }
 
 message Room {

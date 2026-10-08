@@ -205,6 +205,10 @@ func applyMask(current, next control.Policy, mask []string) control.Policy {
 			result.WatchdogLimit = next.WatchdogLimit
 		case "e2ee":
 			result.E2EE = next.E2EE
+		case "direct_paths":
+			result.DirectPaths = next.DirectPaths
+		case "max_direct_participants":
+			result.MaxDirectParticipants = next.MaxDirectParticipants
 		}
 	}
 	return result
