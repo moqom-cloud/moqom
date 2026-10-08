@@ -13,6 +13,10 @@ locals {
     udp_port          = var.udp_port
     stun_port         = var.stun_port == null ? "" : tostring(var.stun_port)
 
+    # The wildcard the relay binds. `[::]` takes IPv4 as well, as mapped
+    # addresses, so a dual-stack relay needs one socket per port, not two.
+    listen_host = var.enable_ipv6 ? "[::]" : "0.0.0.0"
+
     # The relay fetches these itself at boot, from the metadata server's token.
     # Empty strings rather than null because the template tests them, and a null
     # interpolates as the word "null".

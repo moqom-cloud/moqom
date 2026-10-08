@@ -3,6 +3,11 @@ output "external_ip" {
   description = "Regional anycast-adjacent address clients dial on UDP/443. The environment root points DNS at this."
 }
 
+output "external_ipv6" {
+  value       = var.enable_ipv6 ? google_compute_address.relay_v6[0].address : null
+  description = "The relay's IPv6 address, for the edge name's AAAA record. Null without `enable_ipv6`."
+}
+
 output "region" {
   value       = var.region
   description = "Region this relay tier serves, echoed so callers can key on the module output alone."

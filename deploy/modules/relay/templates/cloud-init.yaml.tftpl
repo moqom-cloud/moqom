@@ -383,11 +383,11 @@ write_files:
         --log-opt gcp-log-cmd=true \
         --volume /run/moqom/tls:/etc/moqom/tls:ro \
         --env-file /run/moqom/relay.env \
-        --env MOQOM_RELAY_ADDR=0.0.0.0:${udp_port} \
-        --env MOQOM_RELAY_ADMIN_ADDR=0.0.0.0:${health_check_port} \
+        --env MOQOM_RELAY_ADDR=${listen_host}:${udp_port} \
+        --env MOQOM_RELAY_ADMIN_ADDR=${listen_host}:${health_check_port} \
         --env MOQOM_RELAY_ADMIN_AUTH=probes-only \
 %{ if stun_port != "" ~}
-        --env MOQOM_RELAY_STUN_ADDR=0.0.0.0:${stun_port} \
+        --env MOQOM_RELAY_STUN_ADDR=${listen_host}:${stun_port} \
 %{ else ~}
         --env MOQOM_RELAY_STUN_ADDR=off \
 %{ endif ~}

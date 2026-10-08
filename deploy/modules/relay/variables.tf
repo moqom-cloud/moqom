@@ -123,6 +123,12 @@ variable "stun_port" {
   nullable    = true
 }
 
+variable "enable_ipv6" {
+  type        = bool
+  description = "Serve QUIC and STUN on an IPv6 address as well, behind the same backends. Needs the subnet to be dual stack: set the network module's `enable_ipv6` too."
+  default     = false
+}
+
 variable "health_check_port" {
   type        = number
   description = "TCP port for the load-balancer health probe. See the comment in main.tf for why this cannot be the serving port."

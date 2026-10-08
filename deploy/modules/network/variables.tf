@@ -62,6 +62,12 @@ variable "relay_stun_port" {
   nullable    = true
 }
 
+variable "enable_ipv6" {
+  type        = bool
+  description = "Give the relay subnets an external IPv6 range and open the relay's ports to IPv6 as well. Must match the relay module's `enable_ipv6`."
+  default     = false
+}
+
 variable "relay_health_check_port" {
   type        = number
   description = "TCP port the relay serves its load-balancer health probe on. Cannot be the QUIC port: GCP health checks cannot speak UDP."

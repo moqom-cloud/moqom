@@ -24,6 +24,17 @@ locals {
     "209.85.204.0/22",
   ]
 
+  # Google's IPv6 prober ranges, for backend services that also serve an IPv6
+  # forwarding rule. Both sets for the same reason as above.
+  health_check_ranges_v6 = [
+    "2600:2d00:1:b029::/64",
+    "2600:1901:8001::/48",
+  ]
+
+  # A firewall rule takes IPv4 or IPv6 source ranges, never both, so every rule
+  # that admits the internet has an IPv6 twin built from this.
+  ipv6_rules = var.enable_ipv6 ? toset(["v6"]) : toset([])
+
   # google_compute_firewall has no count/for_each on log_config, so build it
   # once and splat it into every rule.
   log_config = var.enable_firewall_logging ? [{ metadata = "INCLUDE_ALL_METADATA" }] : []
@@ -53,6 +64,11 @@ resource "google_compute_subnetwork" "relay" {
   # through Cloud NAT, which keeps NAT port pressure for genuinely external
   # traffic such as ACME.
   private_ip_google_access = true
+
+  # Dual stack lets the relays answer on IPv6 behind the same load balancer,
+  # and lets the STUN responder report a device's public IPv6 address.
+  stack_type       = var.enable_ipv6 ? "IPV4_IPV6" : "IPV4_ONLY"
+  ipv6_access_type = var.enable_ipv6 ? "EXTERNAL" : null
 
   log_config {
     aggregation_interval = "INTERVAL_10_MIN"
@@ -447,4 +463,99 @@ resource "google_dns_record_set" "caa" {
     ["0 issuewild \";\""],
     var.caa_iodef == null ? [] : ["0 iodef \"${var.caa_iodef}\""],
   )
+}
+
+# The IPv6 twins of the rules that admit the internet, and of the egress deny,
+# so turning IPv6 on opens exactly what IPv4 opens and nothing more. A relay
+# with an external IPv6 address and no IPv6 egress deny could reach anywhere.
+resource "google_compute_firewall" "relay_quic_v6" {
+  for_each = local.ipv6_rules
+
+  name    = "${var.name_prefix}-allow-relay-quic-v6"
+  project = var.project_id
+  network = google_compute_network.this.name
+
+  direction     = "INGRESS"
+  priority      = 1000
+  source_ranges = ["::/0"]
+  target_tags   = [var.relay_target_tag]
+
+  allow {
+    protocol = "udp"
+    ports    = [tostring(var.relay_udp_port)]
+  }
+
+  dynamic "log_config" {
+    for_each = local.log_config
+    content {
+      metadata = log_config.value.metadata
+    }
+  }
+}
+
+resource "google_compute_firewall" "relay_stun_v6" {
+  for_each = var.relay_stun_port == null ? toset([]) : local.ipv6_rules
+
+  name    = "${var.name_prefix}-allow-relay-stun-v6"
+  project = var.project_id
+  network = google_compute_network.this.name
+
+  direction     = "INGRESS"
+  priority      = 1000
+  source_ranges = ["::/0"]
+  target_tags   = [var.relay_target_tag]
+
+  allow {
+    protocol = "udp"
+    ports    = [tostring(var.relay_stun_port)]
+  }
+
+  dynamic "log_config" {
+    for_each = local.log_config
+    content {
+      metadata = log_config.value.metadata
+    }
+  }
+}
+
+resource "google_compute_firewall" "health_checks_v6" {
+  for_each = local.ipv6_rules
+
+  name    = "${var.name_prefix}-allow-health-checks-v6"
+  project = var.project_id
+  network = google_compute_network.this.name
+
+  direction     = "INGRESS"
+  priority      = 900
+  source_ranges = local.health_check_ranges_v6
+  target_tags   = [var.relay_target_tag]
+
+  allow {
+    protocol = "tcp"
+    ports    = [tostring(var.relay_health_check_port)]
+  }
+}
+
+resource "google_compute_firewall" "relay_deny_egress_v6" {
+  for_each = local.ipv6_rules
+
+  name    = "${var.name_prefix}-deny-relay-egress-v6"
+  project = var.project_id
+  network = google_compute_network.this.name
+
+  direction          = "EGRESS"
+  priority           = 65000
+  destination_ranges = ["::/0"]
+  target_tags        = [var.relay_target_tag]
+
+  deny {
+    protocol = "all"
+  }
+
+  dynamic "log_config" {
+    for_each = local.log_config
+    content {
+      metadata = log_config.value.metadata
+    }
+  }
 }

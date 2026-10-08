@@ -23,6 +23,12 @@ locals {
   # plane hands out, so the three cannot disagree.
   relay_stun_port = 3478
 
+  # Relays on IPv6 too, behind the same backends, so a device on an IPv6-only
+  # or dual-stack network reaches one natively and STUN reports its public
+  # IPv6 address for a direct path. One switch for the subnet, the firewall,
+  # the relays and the AAAA record.
+  relay_ipv6 = true
+
   relay_endpoints = { for region, relay in module.relay : region => relay.external_ip }
 
   secrets = {
@@ -71,6 +77,7 @@ module "network" {
   dns_domain      = var.dns_domain
 
   relay_stun_port = local.relay_stun_port
+  enable_ipv6     = local.relay_ipv6
 
   labels = local.labels
 
@@ -197,6 +204,7 @@ module "relay" {
   subnetwork   = module.network.relay_subnets[each.key]
   network_tags = [module.network.relay_target_tag]
   stun_port    = local.relay_stun_port
+  enable_ipv6  = local.relay_ipv6
 
   image         = var.relay_image
   registry_host = module.registry.registry_host
@@ -345,6 +353,9 @@ module "edge_dns" {
   zone_name   = module.network.dns_zone_name
   record_name = local.edge_host
   endpoints   = local.relay_endpoints
+  endpoints_v6 = {
+    for region, relay in module.relay : region => relay.external_ipv6 if relay.external_ipv6 != null
+  }
 
   # Short, because this TTL is the failover time for a region going dark and
   # there is no health checking behind a geolocation policy.
