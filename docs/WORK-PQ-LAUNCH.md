@@ -41,7 +41,7 @@ Status: **done** · **in progress** · **to do** · **blocked** (needs a person)
 | `terraform validate` and dev `plan` | done | both envs valid; dev plan clean with `-lock=false`; prod has never been initialised (no backend or tfvars), so it can't be planned |
 | Field test of direct paths on real networks | in progress | `moqom-nat-probe` (engine 8c63efb) and `docs/FIELD-TEST-DIRECT.md`; first network: symmetric on IPv4, punchable on IPv6. Needs a person on other networks, and the relays deployed for real calls |
 | Rust client: direct paths wired into a room, relay copy paused once direct, Swift `.custom` uses the grant's STUN | in progress | Rust room agent |
-| Backstage moves tested against a relay that enforces the backstage grant | in progress | backstage agent |
+| Backstage moves tested against a relay that enforces the backstage grant | done | swift d30ec7a (six MoqomKit fixes: backstage direct tickets, retried offer requests, revocation after REQUEST_OK, own and ended-backstage roster entries, catalog re-send), 18dd1f5 (`BackstageRelayTests` on moqom-relay, going live by renewal and by rejoin); full suite 1,027 tests pass. Not covered: automatic reconnection, audio-only go-live |
 | Postgres test for `direct_paths` and `max_direct_participants` | done | pq 5acbad5; conformance case and a migration test, run on a local Postgres 17 with every other Go test |
 | `directPolicy` with `.relayOnly`; 1:1 calls point to point by default | in progress | direct-mode agent |
 | Small private rooms point to point (mesh up to a limit) | in progress | direct-mode agent |
