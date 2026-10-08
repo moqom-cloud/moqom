@@ -20,8 +20,10 @@ Status: **done** · **in progress** · **to do** · **blocked** (needs a person)
 | Proof: same certificate-less behaviour in all three languages | done | a71c89d; opt-in `requireCertificate` |
 | Proof: Go error class for signing failures | done | 11f8fc0, `ErrSigning` |
 | Token: duplicate JSON member names refused in all three languages | done | 9321820; Rust and Go product suites pass against it; Swift checked by the direct-mode run |
-| Rust X-Wing HPKE (suite 0xF0A1, legacy groups only) | in progress | X-Wing agent |
-| Review the unsafe ML-KEM seed load through aws-lc-sys | in progress | X-Wing agent |
+| Rust X-Wing HPKE (suite 0xF0A1, legacy groups only) | done | moqom-security a46fa03 (pushed); matches the draft's and the HPKE working group's vectors; Swift, Go and Rust open each other's ciphertexts |
+| Review the unsafe ML-KEM seed load through aws-lc-sys | done | moqom-security fb9cec8 (pushed); no memory-safety bug; seed and expanded key now wiped, strict PKCS#8 parse, guard frees the key once |
+| Wipe other private keys and shared secrets in Rust moqom-mls | to do | from the unsafe review; plain buffers today |
+| Confirm Swift refuses an X-Wing ciphertext whose X25519 half is all zero | to do | Rust and Go refuse; honest senders never produce one |
 | Licence check on copied vectors (RFC 9605, mlswg) | blocked | counsel; fallback is fetch-at-test-time |
 
 ## Products
