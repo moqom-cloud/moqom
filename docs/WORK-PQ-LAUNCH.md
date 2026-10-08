@@ -22,8 +22,8 @@ Status: **done** · **in progress** · **to do** · **blocked** (needs a person)
 | Token: duplicate JSON member names refused in all three languages | done | 9321820; Rust and Go product suites pass against it; Swift checked by the direct-mode run |
 | Rust X-Wing HPKE (suite 0xF0A1, legacy groups only) | done | moqom-security a46fa03 (pushed); matches the draft's and the HPKE working group's vectors; Swift, Go and Rust open each other's ciphertexts |
 | Review the unsafe ML-KEM seed load through aws-lc-sys | done | moqom-security fb9cec8 (pushed); no memory-safety bug; seed and expanded key now wiped, strict PKCS#8 parse, guard frees the key once |
-| Wipe other private keys and shared secrets in Rust moqom-mls | to do | from the unsafe review; plain buffers today |
-| Confirm Swift refuses an X-Wing ciphertext whose X25519 half is all zero | to do | Rust and Go refuse; honest senders never produce one |
+| Wipe other private keys and shared secrets in Rust moqom-mls | done | moqom-security 04c97f0 (pushed); keys returned by `generate_key_pair` are the caller's to wipe |
+| Confirm Swift refuses an X-Wing ciphertext whose X25519 half is all zero | done | CryptoKit refuses it (CoreCrypto error -7), so all three languages agree |
 | Licence check on copied vectors (RFC 9605, mlswg) | blocked | counsel; fallback is fetch-at-test-time |
 
 ## Products
