@@ -188,8 +188,7 @@ CMAF is not written, and the reason goes in the manifest's `cmaf_skipped`, for:
 
 | Case | Why |
 | --- | --- |
-| The room requires E2EE | Payloads are ciphertext, and the recorder holds no media key. |
-| The catalog names a `keyID` for the track | The same, for a track encrypted in a room where E2EE is optional. |
+| Every room: payloads are ciphertext | The hosted recorder holds no media key. A tenant that wants a playable recording runs an agent; see below. |
 | Codecs other than H.264, HEVC and Opus; PCM; data tracks | There is no sample mapping without parsing or transcoding the payload. Transcoding is a different product with a different price, and it would put plaintext media in a MOQOM process. |
 | Format `ARCHIVE` | It was not asked for. |
 
@@ -205,16 +204,35 @@ first/last times, and the track's `joins` (see
 
 ## End-to-end encryption
 
-Rooms are E2EE by default, and the recorder never has a media key. In an E2EE
-room it stores exactly the ciphertext it receives: archive only, with
-`encrypted: true` in every header, the manifest and the API. A customer decrypts
-it with their own keys. No plaintext of an E2EE room is ever in a MOQOM process.
+Every room is end-to-end encrypted, and the hosted recorder is never a member of
+a room's group, so it never holds a media key. It stores exactly the ciphertext
+it receives: archive only, with `encrypted: true` in every header, the manifest
+and the API. No plaintext of any room is ever in a MOQOM process. The catalog is
+sealed too; the recorder files tracks by the catalog's disclosure (names, kinds
+and video geometry), and archives the sealed catalog and the signed control log
+beside the media.
+
+That archive cannot be opened later by anyone, the tenant included: the keys
+are per MLS epoch, held only by the group's members, and gone when the epoch
+ends. A tenant that needs plaintext — a recording it can play, or a classifier
+that has to see the picture — runs an **agent** instead: MoqomKit's `RoomAgent`,
+on the tenant's own machines. It joins as a member of the group under the
+username `watchdog.<id>`, decrypts there, and hands the tenant's code decrypted
+media. The agent is never hidden:
+
+1. Attach the watchdog first (`AttachWatchdog`), with the descriptor people will
+   be shown. `MintClientToken` mints a `watchdog.<id>` token only while a
+   watchdog with that ID is attached to the room and has not failed, and the
+   token grants watching and nothing else.
+2. Every member's device sees the agent's leaf in the group — the epoch
+   authenticator proves they all see the same leaves — and withholds its own
+   media until the room's signed control log discloses that watchdog. Detaching
+   the watchdog holds media again until the agent has been removed.
 
 The recorder decides a track is ciphertext if **either** the room requires E2EE
-(the assignment's `e2ee_required`, from the room's policy at claim time) **or**
-the publisher's catalog names a key for the track. Either alone is enough. A
-room switched to optional mid-recording is treated as encrypted until the next
-claim, which is the safe direction.
+(the assignment's `e2ee_required`) **or** the catalog's disclosure names a key
+for the track. Every room now does both; the rule stays so that an archive made
+before encryption became mandatory reads the same.
 
 ## Hidden, and disclosed
 
