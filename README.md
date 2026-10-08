@@ -180,7 +180,7 @@ contract in `proto/` and one token fixture, and both are checked in CI.
 
 **OBS, by the GPL.** A plugin links `libobs` and is a combined work, so its
 source must be public and GPL-licensed — which this repository, private and half
-BUSL-1.1, cannot be. Only Apache-2.0 code may cross that boundary; see
+proprietary, cannot be. Only Apache-2.0 code may cross that boundary; see
 [LICENSING.md](LICENSING.md#the-gpl-boundary-plugins-for-hosts-we-do-not-own)
 for what that costs. Treat the next host integration as a new repository by
 default.
@@ -256,11 +256,11 @@ written from the draft by different people. Interop against `moq-rs` and
 
 ## Licence
 
-Dual-licensed. Protocol, client core, SDKs, schemas, and samples are
-Apache-2.0; the relay, control plane, and `moqom-cc` are BUSL-1.1, converting to
-Apache-2.0 four years after each release. The Business Source License permits
-self-hosting for your own applications and users, including commercially, and
-prohibits only offering MOQOM to third parties as a competing hosted service.
+Split by role. Protocol, client core, SDKs, schemas, and samples are
+Apache-2.0; the relay, control plane, recorder and `moqom-cc` are proprietary and
+ship only as binaries. Self-hosting (BYOC) customers get them under a written
+licence that permits self-hosting for their own applications and users and
+prohibits offering MOQOM to third parties as a hosted service.
 
 The split is by role rather than by repository, so both this repository and
 `moqom-engine` contain each half. See [LICENSING.md](LICENSING.md) for the full

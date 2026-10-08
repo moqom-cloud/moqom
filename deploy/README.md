@@ -808,8 +808,9 @@ Cloud has no UDP health check, so nothing else does.
 are all nullable, so a relay that pulls from elsewhere and records nowhere is a
 supported configuration.
 
-The relay is BUSL-1.1. Self-hosting for your own applications and users is
-permitted, including commercially; see [LICENSING.md](../LICENSING.md).
+The relay is proprietary and ships as a binary. Self-hosting for your own
+applications and users is permitted under a BYOC licence; see
+[LICENSING.md](../LICENSING.md).
 
 ## Rollouts and draining
 

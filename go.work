@@ -1,7 +1,7 @@
 // The control plane and the SDK it is developed against, which now live in
 // different repositories.
 //
-// They cannot be one module: the control plane is BUSL-1.1 and the SDK is
+// They cannot be one module: the control plane is proprietary and the SDK is
 // Apache-2.0, and the boundary between them has to be the gRPC contract in
 // proto/ rather than a package import. But they are still written together --
 // the control plane's own tests drive the SDK against a real server over

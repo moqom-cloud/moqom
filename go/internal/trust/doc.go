@@ -1,4 +1,4 @@
-// Copyright 2026 Elliott Wave LLC. Licensed under BUSL-1.1; see LICENSING.md.
+// Copyright 2026 Elliott Wave LLC. Proprietary and confidential; see LICENSING.md.
 // CONFIDENTIAL: describes patent-pending methods. Never publish this package,
 // in any licence, before the filings in docs/INVENTION-DISCLOSURE-TRUST.md.
 

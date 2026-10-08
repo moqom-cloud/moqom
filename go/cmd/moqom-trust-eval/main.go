@@ -1,4 +1,4 @@
-// Copyright 2026 Elliott Wave LLC. Licensed under BUSL-1.1; see LICENSING.md.
+// Copyright 2026 Elliott Wave LLC. Proprietary and confidential; see LICENSING.md.
 // CONFIDENTIAL: see internal/trust/doc.go.
 
 // Command moqom-trust-eval runs the trust adversarial harness and prints its

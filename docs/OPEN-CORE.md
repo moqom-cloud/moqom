@@ -46,8 +46,8 @@ flowchart LR
 
 | Repository | Visibility | Licence | Contents |
 |---|---|---|---|
-| `moqom` | **Private, permanently** | BUSL-1.1 + Apache `proto/` | Control plane, billing and metering, director, deploy, plans, patent assessment |
-| `moqom-engine` | **Private** | BUSL relay + internal crates | Relay, `moqom-cc`, codec and dependency descriptor, load generator |
+| `moqom` | **Private, permanently** | Proprietary + Apache `proto/` | Control plane, billing and metering, director, deploy, plans, patent assessment |
+| `moqom-engine` | **Private** | Proprietary relay + internal crates | Relay, `moqom-cc`, codec and dependency descriptor, load generator |
 | `moqom-swift-core` | **Private, new** | Proprietary EULA, binary only | Today's `moqom-swift` sources, whole: `MoqomCore`, `MoqomWire`, `MoqomKit`, `MoqomLoopback` |
 | `moqom-core` | **Private, new** | Proprietary EULA, binary only | Shared Rust client core with a C ABI, for Android, desktop and web (WebAssembly) |
 | `moqom-swift` | Public, **fresh history** | Apache-2.0 shell | `Package.swift` with `binaryTarget`s, README, `MoqomRoom` sample, docs |
@@ -176,8 +176,8 @@ Repositories:
 - [ ] **CI that clones private repositories.** Gate those jobs on the pull
       request coming from the same repository.
 - [ ] **Links into private repositories.** Point READMEs at moqom.dev.
-- [ ] **Licensing contact.** BUSL-1.1 names `legal@moqom.com`; the domain is
-      `moqom.cloud`.
+- [ ] **Licensing contact.** The proprietary licence names `legal@moqom.cloud`,
+      which must exist.
 - [ ] **CLA enforcement** before the first outside pull request is merged.
 - [x] Microsoft MIT notice for `MoqomRans.xcframework`, in `NOTICE`.
 
