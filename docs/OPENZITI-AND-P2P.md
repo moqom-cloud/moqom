@@ -233,15 +233,15 @@ safety detector) is required in the room.
 |---|---|---|
 | Eligibility rules and the IP-exposure acknowledgement | Built, with the room's limit and `DirectPolicy` | Built, same rules and order; `DirectPolicy` on `MoqomSession`, automatic by default |
 | Sealed candidate offers | Built | Built; byte-identical, pinned by a shared test vector |
-| Offer exchange on the participant's `.direct` track | Caller publishes on its stage slot | `DirectOffers` |
+| Offer exchange on the participant's `.direct` track | `DirectRoom`, on the stage or backstage slot | `DirectOffers` |
 | Direct endpoint: pinned mutual TLS, hole-punching, MOQT both ways | Built, loopback-tested | `DirectEndpoint`, loopback-tested on macOS; builds for iOS. The dialler is a legacy `NWConnectionGroup`, because `NetworkConnection<QUIC>` cannot open streams from a fixed local port. No QUIC datagrams on direct paths |
 | STUN server | `DirectPolicy::AUTOMATIC` asks the grant's (`RoomDirectPolicy::stun`), an explicit one wins | `.automatic` asks the grant's (`DirectRoomPolicy.stun`), `.automatic(stun:)` wins, `.relayOnly` asks none |
 | Direct socket backend | quinn on one UDP socket, STUN and continuous probing (`direct::socket`) | `DirectBackend`: `.networkFramework` (default) or `.rust`, which runs the Rust socket layer through `moqom-direct-ffi` (opt-in `MoqomDirectRust` module, iOS and macOS). All pairings interoperate on macOS |
 | Peer verification | Through the `PeerVerifier` trait; the relay's `PeerCheck` implements it | `DirectPeerCheck`, a port of the relay's token and proof checks, with a required proof. A refused peer is closed with `0x03`; the dialler's empty unidirectional stream is the final admission |
 | Merging relay and direct paths, with fallback | `DualSubscription` | `DualSubscription`, same rules |
-| Pausing the relay copy while direct | Not built: its stall detection compares against relay objects | `FORWARD=0` in `REQUEST_UPDATE` once direct, `FORWARD=1` on fallback or after 500 ms of direct silence |
-| Wired into `Room` | No | On by default under `DirectPolicy.automatic` (peers verified against `authorityKeys`), or `.custom(DirectRoomOptions)`; per-participant path state (`directPathChanged`), relay fallback with backoff, tickets per path. Backstage publishers pair with each other. Offers sealed under `MLS-Exporter("MOQOM direct offer")`. Loopback-tested on both backends |
-| Direct tickets | Not enforced | `DirectTicketFeed` asks the relay; `DirectTicketGuard` presents them and holds the peer to its own |
+| Pausing the relay copy while direct | Same rules in `DualSubscription` (`PathSettings::quiet`, 500 ms); `pauses_relay` turns it off | `FORWARD=0` in `REQUEST_UPDATE` once direct, `FORWARD=1` on fallback or after 500 ms of direct silence |
+| Wired into `Room` | `DirectRoom` beside a `Session`: on by default under `DirectPolicy::AUTOMATIC` with the token's `RoomDirectPolicy`, per-peer `PathState`, relay fallback with backoff, tickets per path, a renewed grant applied mid-room, backstage paired with backstage. No catalog or MLS in the Rust client, so the caller states the roster, opt-ins and offer key (`RoomView`). Loopback-tested against an authenticating, ticketing relay | On by default under `DirectPolicy.automatic` (peers verified against `authorityKeys`), or `.custom(DirectRoomOptions)`; per-participant path state (`directPathChanged`), relay fallback with backoff, tickets per path. Backstage publishers pair with each other. Offers sealed under `MLS-Exporter("MOQOM direct offer")`. Loopback-tested on both backends |
+| Direct tickets | `DirectRoom` asks the relay, presents them and holds the peer to its own (`verify_ticket`, on `moqom-token`'s keys) | `DirectTicketFeed` asks the relay; `DirectTicketGuard` presents them and holds the peer to its own |
 | Metering | Relay session, plus direct seconds from tickets | Same; `DirectUsage` counts direct bytes for the app |
 
 Offers travel on a track under the sender's own stage namespace, which the
@@ -368,8 +368,8 @@ direct path within about two minutes.
 the check, or a modified app talking to a modified peer, can keep a direct path
 with no tickets and pay nothing for it. The relay cannot see a direct path, so
 nothing server-side can close this; what the design guarantees is that one
-honest participant is enough to make the pair pay. The Rust client does not
-enforce tickets yet.
+honest participant is enough to make the pair pay. The Rust client enforces
+them in `DirectRoom`.
 
 **Billing.** `RecordUsage` claims a record's direct seconds against the
 tenant's month (`Store.ClaimDirectSeconds`, keyed by the ledger idempotency
