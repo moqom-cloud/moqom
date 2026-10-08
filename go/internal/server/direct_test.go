@@ -2,6 +2,8 @@ package server_test
 
 import (
 	"context"
+	"encoding/json"
+	"net/http"
 	"testing"
 
 	"google.golang.org/grpc/codes"
@@ -9,6 +11,8 @@ import (
 
 	moqom "github.com/moqom-cloud/moqom-go"
 	adminpb "github.com/moqom-cloud/moqom-go/admin/adminpb"
+	"github.com/moqom-cloud/moqom/go/internal/control"
+	"github.com/moqom-cloud/moqom/go/internal/server"
 )
 
 func (h *harness) mintDirect(t *testing.T, room string) *adminpb.DirectGrant {
@@ -39,6 +43,68 @@ func TestRoomsAllowDirectPathsByDefault(t *testing.T) {
 	}
 	if grant := h.mintDirect(t, ""); grant != nil {
 		t.Errorf("a roomless token states %v, want nothing", grant)
+	}
+	if stun := grant.GetStun(); stun != nil {
+		t.Errorf("a deployment that names no STUN server states %v", stun)
+	}
+}
+
+func newStunHarness(t *testing.T) *harness {
+	t.Helper()
+	return newConfiguredHarness(t, func(config *server.Config) {
+		config.Stun = &control.StunEndpoint{Host: "relay.moqom.test", Port: 3478}
+	})
+}
+
+// A deployment's STUN server is named with every token whose room allows
+// direct paths, so a device behind a NAT can learn the address to offer.
+func TestTokensNameTheRelaysStunServer(t *testing.T) {
+	h := newStunHarness(t)
+	h.createRoom(t, "alice")
+	stun := h.mintDirect(t, roomName).GetStun()
+	if stun.GetHost() != "relay.moqom.test" || stun.GetPort() != 3478 {
+		t.Errorf("the token names %v, want relay.moqom.test:3478", stun)
+	}
+
+	code, response, body := ask(t, h.server.JoinHandler(false), joinKey, server.JoinRequest{
+		Tenant: tenant, Username: "carol", Room: roomName, Key: &deviceKey,
+	})
+	if code != http.StatusOK {
+		t.Fatalf("joining: %d %s", code, body)
+	}
+	if response.Direct == nil || response.Direct.Stun == nil ||
+		*response.Direct.Stun != (server.JoinStun{Host: "relay.moqom.test", Port: 3478}) {
+		t.Errorf("the join response states %+v", response.Direct)
+	}
+
+	// Nothing to learn an address for in a room that keeps media on the relay.
+	if _, err := h.rooms.UpdateRoomPolicy(as(ownerKey), &adminpb.UpdateRoomPolicyRequest{
+		Tenant: tenant, Room: roomName,
+		Policy:     &adminpb.RoomPolicy{DirectPaths: adminpb.DirectPaths_DIRECT_PATHS_RELAY_ONLY},
+		UpdateMask: []string{"direct_paths"},
+	}); err != nil {
+		t.Fatalf("keeping the room on the relay: %v", err)
+	}
+	if stun := h.mintDirect(t, roomName).GetStun(); stun != nil {
+		t.Errorf("a relay-only room's token names %v", stun)
+	}
+}
+
+// The join endpoint's JSON is what MoqomKit parses.
+func TestTheJoinResponseSpellsTheStunServer(t *testing.T) {
+	encoded, err := json.Marshal(server.JoinDirect{
+		Allowed: true, MaxParticipants: 2, Stun: &server.JoinStun{Host: "relay.moqom.test", Port: 3478},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := `{"allowed":true,"maxParticipants":2,"stun":{"host":"relay.moqom.test","port":3478}}`
+	if string(encoded) != want {
+		t.Errorf("rendered as %s, want %s", encoded, want)
+	}
+	encoded, _ = json.Marshal(server.JoinDirect{Allowed: false, MaxParticipants: 4})
+	if string(encoded) != `{"allowed":false,"maxParticipants":4}` {
+		t.Errorf("without a STUN server, rendered as %s", encoded)
 	}
 }
 
@@ -113,6 +179,25 @@ func TestTheSDKCarriesTheDirectPolicy(t *testing.T) {
 		t.Fatalf("minting: %v", err)
 	}
 	if token.Direct == nil || token.Direct.Allowed || token.Direct.MaxParticipants != 2 {
+		t.Errorf("the token states %+v", token.Direct)
+	}
+}
+
+// The Go SDK hands a backend the STUN server with the grant.
+func TestTheSDKCarriesTheStunServer(t *testing.T) {
+	h := newStunHarness(t)
+	client := h.sdk(t, ownerKey)
+	if _, err := client.CreateRoom(context.Background(), moqom.NewRoom{Name: "call"}); err != nil {
+		t.Fatalf("creating a room: %v", err)
+	}
+	token, err := client.MintToken(context.Background(), moqom.TokenRequest{
+		Username: "bob", DeviceThumbprint: "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQ", Room: "call",
+	})
+	if err != nil {
+		t.Fatalf("minting: %v", err)
+	}
+	if token.Direct == nil || token.Direct.Stun == nil ||
+		*token.Direct.Stun != (moqom.StunEndpoint{Host: "relay.moqom.test", Port: 3478}) {
 		t.Errorf("the token states %+v", token.Direct)
 	}
 }

@@ -99,6 +99,9 @@ func (s *tokensService) MintClientToken(
 		}
 		e2ee = room.Policy.WithDefaults().E2EE
 		direct = directGrantToProto(room.Policy.Direct())
+		if direct.GetAllowed() && s.core.stun != nil {
+			direct.Stun = stunToProto(*s.core.stun)
+		}
 		if !room.IsOpen() {
 			return nil, statusFor(fmt.Errorf("%w: %s has ended", control.ErrRoomClosed, room.Room))
 		}

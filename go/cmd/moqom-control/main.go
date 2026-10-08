@@ -138,6 +138,9 @@ func run() error {
 	if config.Overlay, err = overlayConfig(backing); err != nil {
 		return err
 	}
+	if config.Stun, err = stunEndpoint(); err != nil {
+		return err
+	}
 	instance, err := server.New(config)
 	if err != nil {
 		return err
@@ -333,6 +336,25 @@ func run() error {
 		grpcServer.GracefulStop()
 		return nil
 	}
+}
+
+// stunEndpoint reads MOQOM_CONTROL_STUN, the relays' STUN responder as
+// "host" or "host:port" (port 3478 if omitted), which every token whose room
+// allows direct paths names so devices behind NATs can learn their public
+// address. The relays' edge name is the usual value: any relay answers.
+// Unset names none, and devices offer only their own interface addresses.
+func stunEndpoint() (*control.StunEndpoint, error) {
+	value := os.Getenv("MOQOM_CONTROL_STUN")
+	if value == "" {
+		slog.Info("no MOQOM_CONTROL_STUN, so tokens name no STUN server")
+		return nil, nil
+	}
+	endpoint, err := control.ParseStunEndpoint(value)
+	if err != nil {
+		return nil, fmt.Errorf("MOQOM_CONTROL_STUN: %w", err)
+	}
+	slog.Info("tokens name a STUN server", "host", endpoint.Host, "port", endpoint.Port)
+	return &endpoint, nil
 }
 
 func env(name, fallback string) string {

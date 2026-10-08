@@ -3,6 +3,9 @@ package control
 import (
 	"errors"
 	"fmt"
+	"net"
+	"strconv"
+	"strings"
 	"time"
 )
 
@@ -109,6 +112,44 @@ const MaxDirectParticipants = 4
 type DirectGrant struct {
 	Allowed         bool
 	MaxParticipants uint32
+}
+
+// DefaultStunPort is where a relay answers STUN unless configured otherwise,
+// the port RFC 8489 assigns.
+const DefaultStunPort = 3478
+
+// StunEndpoint is a STUN server a device asks for its public address before
+// offering a direct path: in a MOQOM deployment, the relays' own responder.
+type StunEndpoint struct {
+	// Host is a name or an address literal. A name that resolves per
+	// geography, as a relay edge name does, sends each device to a nearby
+	// relay, and any relay's answer is as good as another's.
+	Host string
+	Port uint16
+}
+
+// ParseStunEndpoint reads "host" or "host:port", the port defaulting to
+// DefaultStunPort. An IPv6 literal with a port is bracketed, as in
+// "[2001:db8::1]:3478".
+func ParseStunEndpoint(value string) (StunEndpoint, error) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return StunEndpoint{}, fmt.Errorf("%w: an empty STUN endpoint", ErrInvalid)
+	}
+	host, port := value, DefaultStunPort
+	if split, rawPort, err := net.SplitHostPort(value); err == nil {
+		parsed, err := strconv.ParseUint(rawPort, 10, 16)
+		if err != nil || parsed == 0 {
+			return StunEndpoint{}, fmt.Errorf("%w: STUN port %q", ErrInvalid, rawPort)
+		}
+		host, port = split, int(parsed)
+	} else if strings.HasPrefix(value, "[") && strings.HasSuffix(value, "]") {
+		host = value[1 : len(value)-1]
+	}
+	if host == "" || strings.ContainsAny(host, " /[]") {
+		return StunEndpoint{}, fmt.Errorf("%w: STUN host %q", ErrInvalid, host)
+	}
+	return StunEndpoint{Host: host, Port: uint16(port)}, nil
 }
 
 // Direct is the room's direct-path policy as a client is told it.

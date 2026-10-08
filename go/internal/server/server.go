@@ -85,6 +85,12 @@ type Config struct {
 
 	// Overlay, if set, turns on the OpenZiti management plane. See overlay.go.
 	Overlay *OverlayConfig
+
+	// Stun, if set, is the relays' STUN responder, stated with every token
+	// whose room allows direct paths so a device behind a NAT can learn the
+	// address to offer. Unset, devices offer their own interface addresses
+	// unless an application names a STUN server itself.
+	Stun *control.StunEndpoint
 }
 
 // AudienceFilter decides whether a participant counts towards a room's totals.
@@ -129,6 +135,7 @@ type core struct {
 
 	recording *recordingCore
 	overlay   *OverlayConfig
+	stun      *control.StunEndpoint
 }
 
 // now is the wall-clock estimate, for the many call sites that only need one.
@@ -207,6 +214,7 @@ func New(config Config) (*Server, error) {
 		audience:         config.Audience,
 		recording:        recordings,
 		overlay:          config.Overlay,
+		stun:             config.Stun,
 	}}, nil
 }
 

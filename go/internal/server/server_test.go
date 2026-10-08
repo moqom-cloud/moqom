@@ -83,15 +83,21 @@ type harness struct {
 // laundered time.
 func newHarness(t *testing.T, clocks ...timecode.Clock) *harness {
 	t.Helper()
-
-	current := time.Date(2026, 7, 27, 12, 0, 0, 0, time.UTC)
-	now := func() time.Time { return current }
-	advance := func(d time.Duration) { current = current.Add(d) }
-
 	var clock timecode.Clock
 	if len(clocks) > 0 {
 		clock = clocks[0]
 	}
+	return newConfiguredHarness(t, func(config *server.Config) { config.Clock = clock })
+}
+
+// newConfiguredHarness is newHarness with the server's configuration adjusted
+// by configure before it is built.
+func newConfiguredHarness(t *testing.T, configure func(*server.Config)) *harness {
+	t.Helper()
+
+	current := time.Date(2026, 7, 27, 12, 0, 0, 0, time.UTC)
+	now := func() time.Time { return current }
+	advance := func(d time.Duration) { current = current.Add(d) }
 
 	memoryStore := memory.New(now, nil)
 	signing, err := token.GenerateKey()
@@ -113,15 +119,16 @@ func newHarness(t *testing.T, clocks ...timecode.Clock) *harness {
 		barrenKey: {Name: "operator", Tenant: tenant, Grants: control.Grants{IsOwner: true}},
 	})
 
-	instance, err := server.New(server.Config{
+	config := server.Config{
 		Store:           memoryStore,
 		Accounts:        accounts,
 		Issuer:          issuerFor,
 		Keys:            []token.Key{signing},
 		Now:             now,
-		Clock:           clock,
 		DispatchTimeout: 2 * time.Second,
-	})
+	}
+	configure(&config)
+	instance, err := server.New(config)
 	if err != nil {
 		t.Fatalf("building the control plane: %v", err)
 	}

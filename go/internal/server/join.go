@@ -115,6 +115,17 @@ type JoinResponse struct {
 type JoinDirect struct {
 	Allowed         bool   `json:"allowed"`
 	MaxParticipants uint32 `json:"maxParticipants"`
+
+	// Stun is the relays' STUN responder, which MoqomKit asks for this
+	// device's public address unless the application named its own. Absent
+	// when direct paths are not allowed or the deployment names none.
+	Stun *JoinStun `json:"stun,omitempty"`
+}
+
+// JoinStun is control.StunEndpoint as the join endpoint renders it.
+type JoinStun struct {
+	Host string `json:"host"`
+	Port uint32 `json:"port"`
 }
 
 // JoinPath is the only route this handler serves.
@@ -454,5 +465,9 @@ func joinDirect(grant *adminpb.DirectGrant) *JoinDirect {
 	if grant == nil {
 		return nil
 	}
-	return &JoinDirect{Allowed: grant.GetAllowed(), MaxParticipants: grant.GetMaxParticipants()}
+	direct := &JoinDirect{Allowed: grant.GetAllowed(), MaxParticipants: grant.GetMaxParticipants()}
+	if stun := grant.GetStun(); stun != nil {
+		direct.Stun = &JoinStun{Host: stun.GetHost(), Port: stun.GetPort()}
+	}
+	return direct
 }

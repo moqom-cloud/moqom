@@ -302,6 +302,10 @@ func directGrantToProto(grant control.DirectGrant) *adminpb.DirectGrant {
 	return &adminpb.DirectGrant{Allowed: grant.Allowed, MaxParticipants: grant.MaxParticipants}
 }
 
+func stunToProto(stun control.StunEndpoint) *adminpb.StunEndpoint {
+	return &adminpb.StunEndpoint{Host: stun.Host, Port: uint32(stun.Port)}
+}
+
 func policyToProto(policy control.Policy) *adminpb.RoomPolicy {
 	return &adminpb.RoomPolicy{
 		AgeGate: &adminpb.AgeGate{
