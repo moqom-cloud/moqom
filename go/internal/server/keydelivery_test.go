@@ -19,7 +19,7 @@ func TestKeyDeliveryIsAuthenticatedByTheParticipantToken(t *testing.T) {
 	h := newHarness(t)
 	h.createRoom(t, "alice")
 	code, joined, body := ask(t, h.server.JoinHandler(false), joinKey, server.JoinRequest{
-		Tenant: tenant, Username: "alice", Room: roomName, Device: deviceThumbprint,
+		Tenant: tenant, Username: "alice", Room: roomName, Key: &deviceKey,
 	})
 	if code != http.StatusOK {
 		t.Fatalf("joining: %d %s", code, body)
@@ -57,7 +57,7 @@ func TestKeyDeliveryIsAuthenticatedByTheParticipantToken(t *testing.T) {
 	if err := json.Unmarshal(got.Body.Bytes(), &snapshot); err != nil || snapshot.Group != nil {
 		t.Fatalf("a first sync should find no group: %s", got.Body)
 	}
-	device, err := control.DeviceFromThumbprint(deviceThumbprint)
+	device, err := control.DeviceFromThumbprint(deviceKeyThumbprint)
 	if err != nil {
 		t.Fatal(err)
 	}

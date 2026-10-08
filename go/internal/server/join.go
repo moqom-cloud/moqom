@@ -66,15 +66,13 @@ type JoinRequest struct {
 	Username string `json:"username"`
 	Room     string `json:"room"`
 
-	// Device is the thumbprint the token is bound to by its `cnf` claim.
+	// Device is the thumbprint, or its sixteen-character prefix, that the
+	// caller believes Key has.
 	//
-	// Superseded by Key and kept for the clients that predate it. A thumbprint
-	// on its own is an assertion -- the device saying which key it holds --
-	// and the relay now demands a signature from whatever `cnf.jkt` names, so a
-	// token minted from a bare thumbprint is one whose holder may or may not be
-	// able to use it. That is legal and it is worse than it sounds: the failure
-	// arrives later, at a relay, as an authentication error with nothing there
-	// to explain it.
+	// Optional, and only ever checked against Key. On its own it is refused: a
+	// thumbprint is the device saying which key it holds, every relay demands a
+	// signature from whatever `cnf.jkt` names, and a token minted from an
+	// assertion would fail later, at a relay, with nothing there to explain it.
 	Device string `json:"device"`
 
 	// Key is the device's public signing key, as a JWK.
@@ -274,9 +272,9 @@ func (s *Server) join(
 // Derived from the JWK when there is one, because that is the only version of
 // this that means anything: the relay demands a signature from whatever
 // `cnf.jkt` names, so binding a token to a key the caller can prove it holds is
-// the difference between a credential and a label. A bare thumbprint is still
-// accepted, for the clients that predate proofs, and gets a token that will only
-// work against a relay not requiring one.
+// the difference between a credential and a label. A bare thumbprint is
+// refused: every relay requires a proof, so a token bound to a key nobody has
+// shown they hold could never be used.
 //
 // A request that carries both and disagrees is refused rather than resolved. The
 // two readings -- "this client is confused about its own key" and "this client
@@ -284,10 +282,7 @@ func (s *Server) join(
 // distinguishable from here, and neither is a request worth serving.
 func boundDevice(asked JoinRequest) (string, error) {
 	if asked.Key == nil {
-		if asked.Device == "" {
-			return "", errors.New("device or key is required")
-		}
-		return asked.Device, nil
+		return "", errors.New("key is required: relays demand a proof from the key a token names")
 	}
 
 	thumbprint, err := asked.Key.Thumbprint()

@@ -97,7 +97,7 @@ func TestOnlyARelayAccountCanMintALink(t *testing.T) {
 		"a guess":            "not-a-key",
 	} {
 		code, _, _ := askForLink(t, h, credential, server.RelayLinkRequest{
-			Tenant: tenant, Room: roomName, Device: deviceThumbprint,
+			Tenant: tenant, Room: roomName, Key: &deviceKey,
 		})
 		if code != http.StatusUnauthorized {
 			t.Errorf("%s got %d, want 401", name, code)
@@ -113,7 +113,7 @@ func TestTheBackendPathsNeverMintARelayLink(t *testing.T) {
 	h.createRoom(t, "alice")
 
 	code, response, body := ask(t, h.server.JoinHandler(false), joinKey, server.JoinRequest{
-		Tenant: tenant, Username: "alice", Room: roomName, Device: deviceThumbprint,
+		Tenant: tenant, Username: "alice", Room: roomName, Key: &deviceKey,
 	})
 	if code != http.StatusOK {
 		t.Fatalf("joining: %d %s", code, body)
@@ -124,7 +124,7 @@ func TestTheBackendPathsNeverMintARelayLink(t *testing.T) {
 
 	// Nor can a backend mint somebody who looks like one on a roster.
 	code, _, _ = ask(t, h.server.JoinHandler(false), joinKey, server.JoinRequest{
-		Tenant: tenant, Username: server.RelaySubject, Room: roomName, Device: deviceThumbprint,
+		Tenant: tenant, Username: server.RelaySubject, Room: roomName, Key: &deviceKey,
 	})
 	if code != http.StatusBadRequest {
 		t.Errorf("a device named %s got %d, want 400", server.RelaySubject, code)
