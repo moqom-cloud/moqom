@@ -20,8 +20,8 @@ Status: **done** · **in progress** · **to do** · **blocked** (needs a person)
 | Proof: same certificate-less behaviour in all three languages | done | a71c89d; opt-in `requireCertificate` |
 | Proof: Go error class for signing failures | done | 11f8fc0, `ErrSigning` |
 | Token: duplicate JSON member names refused in all three languages | done | 9321820; Rust and Go product suites pass against it; Swift checked by the direct-mode run |
-| Rust X-Wing HPKE (suite 0xF0A1, legacy groups only) | to do | not used for new groups |
-| Review the unsafe ML-KEM seed load through aws-lc-sys | to do | before going public |
+| Rust X-Wing HPKE (suite 0xF0A1, legacy groups only) | in progress | X-Wing agent |
+| Review the unsafe ML-KEM seed load through aws-lc-sys | in progress | X-Wing agent |
 | Licence check on copied vectors (RFC 9605, mlswg) | blocked | counsel; fallback is fetch-at-test-time |
 
 ## Products
@@ -31,9 +31,9 @@ Status: **done** · **in progress** · **to do** · **blocked** (needs a person)
 | Control plane, relay, client, loadgen, recorder, Swift SDK on the libraries | done | one commit per worktree |
 | /join refuses a bare thumbprint (every relay now requires a proof) | done | ea277b2; join-endpoint doc updated |
 | Loadgen refuses runs its 15-minute tokens can't outlast | done | engine 616026f |
-| Loadgen renews tokens mid-run, for soak tests past 15 minutes | to do | `Watching::renew` exists in moqom-client |
+| Loadgen renews tokens mid-run, for soak tests past 15 minutes | done | engine 7c751fb; adds `Subscription::renew` and `Announcement::renew` to moqom-client, with a test |
 | Relay, control plane, director, ingest, recorder, congestion controller: proprietary, binary only | done | moqom 4ad2e6a, engine cdb82fc; `LICENSES/LicenseRef-MOQOM-Proprietary.txt`; sites updated (notices, self-hosting, open-source). Counsel to review the text; `legal@moqom.cloud` must exist |
-| Direct paths wired into `Room` (Swift) and the Rust client | in progress | direct-mode agent (restarted after a dropped session) |
+| Direct paths wired into `Room` (Swift) and the Rust client | in progress | direct-mode agent, second attempt (the first stalled without code) |
 | `directPolicy` with `.relayOnly`; 1:1 calls point to point by default | in progress | direct-mode agent |
 | Small private rooms point to point (mesh up to a limit) | in progress | direct-mode agent |
 | Swift dependency on moqom-security by URL and tag, not path | to do | at publication: needs the repo public and tagged |
@@ -51,7 +51,7 @@ Status: **done** · **in progress** · **to do** · **blocked** (needs a person)
 
 | Item | Status | Notes |
 | --- | --- | --- |
-| Security, DPoP, 1:1 point to point, Cloudflare, libraries, footers, studio cards | done | all four sites build |
+| Security, DPoP, 1:1 point to point, Cloudflare, libraries, footers, studio cards, licensing, changelog | done | all four sites build |
 | Publish | blocked | after: Hover CAA and DNSSEC, repo public, direct mode shipped, proofs merged |
 | six10nine.elliottwave.studio | blocked | doesn't resolve; the studio work page links to it |
 
