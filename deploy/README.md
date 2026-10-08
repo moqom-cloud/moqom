@@ -708,6 +708,7 @@ moqom/deploy/tools/sync-secrets.sh
 # 3. The image, built for the nodes' architecture.
 cd moqom-engine
 docker buildx build --platform linux/amd64 -f Dockerfile.recorder \
+  --build-context security=../moqom-security \
   -t us-docker.pkg.dev/moqom-503700/moqom-dev/moqom-recorder:dev --push .
 gcloud artifacts docker images describe \
   us-docker.pkg.dev/moqom-503700/moqom-dev/moqom-recorder:dev \
