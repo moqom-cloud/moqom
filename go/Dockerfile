@@ -19,6 +19,8 @@ WORKDIR /src
 # module cache again and one that does not.
 COPY moqom/go/go.mod moqom/go/go.sum ./moqom/go/
 COPY moqom-go/go.mod moqom-go/go.sum ./moqom-go/
+# The security libraries, whole: small, and the module's `replace` points beside it.
+COPY moqom-security/go ./moqom-security/go
 RUN cd moqom/go && GOWORK=off go mod download
 
 COPY moqom-go ./moqom-go
