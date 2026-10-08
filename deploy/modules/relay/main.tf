@@ -440,6 +440,26 @@ resource "google_compute_forwarding_rule" "quic" {
   network_tier          = "PREMIUM"
 }
 
+# STUN, on the same address and the same backends. A rule of its own rather
+# than a second port on the one above, because a forwarding rule's ports cannot
+# change in place and replacing the QUIC rule would drop every live session.
+# The relay replies from the address the request was sent to, which is this
+# one, so the device accepts the answer.
+resource "google_compute_forwarding_rule" "stun" {
+  count = var.stun_port == null ? 0 : 1
+
+  name    = "${local.name}-stun"
+  project = var.project_id
+  region  = var.region
+
+  load_balancing_scheme = "EXTERNAL"
+  ip_protocol           = "UDP"
+  ports                 = [tostring(var.stun_port)]
+  ip_address            = google_compute_address.relay.id
+  backend_service       = google_compute_region_backend_service.relay.id
+  network_tier          = "PREMIUM"
+}
+
 # WebTransport and raw MoQ share this one rule: both are HTTP/3 or QUIC on the
 # same UDP socket, distinguished by ALPN inside the connection, which is above
 # the layer a passthrough LB looks at. No separate ingress is needed for browser

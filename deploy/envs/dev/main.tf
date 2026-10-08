@@ -46,6 +46,11 @@ locals {
   control_host = var.dns_domain == null ? "" : "api.${trimsuffix(var.dns_domain, ".")}"
   edge_host    = var.dns_domain == null ? "" : "edge.${var.dns_domain}"
 
+  # The relays answer STUN on this port, at the same addresses phones reach
+  # them on. One value for the firewall, the relays and the grant the control
+  # plane hands out, so the three cannot disagree.
+  relay_stun_port = 3478
+
   secrets = {
     "${local.name_prefix}-cat-signing-key" = []
     "${local.name_prefix}-relay-tls-cert"  = []
@@ -226,6 +231,8 @@ module "network" {
   create_dns_zone = var.dns_domain != null
   dns_zone_name   = "${local.name_prefix}-edge"
   dns_domain      = var.dns_domain == null ? "" : var.dns_domain
+
+  relay_stun_port = local.relay_stun_port
 
   labels = local.labels
 
@@ -421,7 +428,7 @@ module "control" {
     # with paying tenants in it, this stays off and rooms are made through the
     # admin API by something that knows why.
     MOQOM_CONTROL_JOIN_CREATES_ROOMS = "1"
-  }, local.control_overlay_env, local.control_recording_env)
+  }, local.control_overlay_env, local.control_recording_env, local.control_stun_env)
 
   secret_env = {
     MOQOM_CONTROL_SIGNING_KEYS = {
@@ -546,6 +553,14 @@ locals {
 
   relay_enroll_audience = "${local.name_prefix}-relay-enroll"
 
+  # The STUN server named in every direct grant, which the SDKs ask by default
+  # for the public address they offer a peer. The steered edge name when there
+  # is one, since every relay answers; otherwise the cluster region's relay.
+  # Only the address output is read, which depends on nothing here.
+  control_stun_env = {
+    MOQOM_CONTROL_STUN = "${local.edge_host != "" ? trimsuffix(local.edge_host, ".") : module.relay[var.region].external_ip}:${local.relay_stun_port}"
+  }
+
   # Dev recordings are test artefacts. They go straight to Nearline and are
   # deleted after a week; nothing here is worth archiving.
   recording_lifecycle = {
@@ -615,6 +630,7 @@ module "relay" {
   network      = module.network.network_id
   subnetwork   = module.network.relay_subnets[each.key]
   network_tags = [module.network.relay_target_tag]
+  stun_port    = local.relay_stun_port
 
   image         = var.relay_image
   registry_host = module.registry.registry_host

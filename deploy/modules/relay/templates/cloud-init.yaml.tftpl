@@ -143,6 +143,11 @@ write_files:
 
       # Media, from anywhere. Who may reach it is the VPC firewall's decision.
       open udp ${udp_port}
+%{ if stun_port != "" ~}
+
+      # STUN, from anywhere, for the same reason.
+      open udp ${stun_port}
+%{ endif ~}
 
       # The probe port. Left open at the host and narrowed to Google's prober
       # ranges by the VPC rule, so there is one place that decides who may ask a
@@ -381,6 +386,11 @@ write_files:
         --env MOQOM_RELAY_ADDR=0.0.0.0:${udp_port} \
         --env MOQOM_RELAY_ADMIN_ADDR=0.0.0.0:${health_check_port} \
         --env MOQOM_RELAY_ADMIN_AUTH=probes-only \
+%{ if stun_port != "" ~}
+        --env MOQOM_RELAY_STUN_ADDR=0.0.0.0:${stun_port} \
+%{ else ~}
+        --env MOQOM_RELAY_STUN_ADDR=off \
+%{ endif ~}
 %{ if ziti_enabled ~}
         --env MOQOM_RELAY_ADMIN_LOCAL_ADDR=127.0.0.1:8082 \
 %{ endif ~}

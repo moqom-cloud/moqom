@@ -55,6 +55,13 @@ variable "relay_udp_port" {
   default     = 443
 }
 
+variable "relay_stun_port" {
+  type        = number
+  description = "UDP port the relay answers STUN Binding requests on, which is how a device behind NAT learns the public address it offers for a direct path. Must match the relay module's `stun_port`. Null closes it."
+  default     = 3478
+  nullable    = true
+}
+
 variable "relay_health_check_port" {
   type        = number
   description = "TCP port the relay serves its load-balancer health probe on. Cannot be the QUIC port: GCP health checks cannot speak UDP."

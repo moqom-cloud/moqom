@@ -159,6 +159,35 @@ resource "google_compute_firewall" "relay_quic" {
   }
 }
 
+# The relay's STUN responder, from anywhere: a device behind NAT asks it which
+# public address and port its socket appears as, and offers that to a peer for
+# a direct path. Its own rule rather than a second port on the one above, so the
+# two can be logged, narrowed or switched off apart.
+resource "google_compute_firewall" "relay_stun" {
+  count = var.relay_stun_port == null ? 0 : 1
+
+  name    = "${var.name_prefix}-allow-relay-stun"
+  project = var.project_id
+  network = google_compute_network.this.name
+
+  direction     = "INGRESS"
+  priority      = 1000
+  source_ranges = ["0.0.0.0/0"]
+  target_tags   = [var.relay_target_tag]
+
+  allow {
+    protocol = "udp"
+    ports    = [tostring(var.relay_stun_port)]
+  }
+
+  dynamic "log_config" {
+    for_each = local.log_config
+    content {
+      metadata = log_config.value.metadata
+    }
+  }
+}
+
 resource "google_compute_firewall" "relay_tcp_fallback" {
   count = var.enable_relay_tcp_fallback ? 1 : 0
 

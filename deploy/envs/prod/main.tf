@@ -18,6 +18,11 @@ locals {
   control_host = "api.${trimsuffix(var.dns_domain, ".")}"
   edge_host    = "edge.${var.dns_domain}"
 
+  # The relays answer STUN on this port, at the same addresses phones reach
+  # them on. One value for the firewall, the relays and the grant the control
+  # plane hands out, so the three cannot disagree.
+  relay_stun_port = 3478
+
   relay_endpoints = { for region, relay in module.relay : region => relay.external_ip }
 
   secrets = {
@@ -64,6 +69,8 @@ module "network" {
   create_dns_zone = true
   dns_zone_name   = "${local.name_prefix}-edge"
   dns_domain      = var.dns_domain
+
+  relay_stun_port = local.relay_stun_port
 
   labels = local.labels
 
@@ -189,6 +196,7 @@ module "relay" {
   network      = module.network.network_id
   subnetwork   = module.network.relay_subnets[each.key]
   network_tags = [module.network.relay_target_tag]
+  stun_port    = local.relay_stun_port
 
   image         = var.relay_image
   registry_host = module.registry.registry_host
@@ -257,6 +265,11 @@ module "control" {
     PGDATABASE                    = "moqom"
     PGSSLMODE                     = "verify-full"
     PGIAMAUTH                     = "true"
+
+    # The STUN server named in every direct grant, which the SDKs ask by
+    # default for the public address they offer a peer. The steered edge name,
+    # since every relay answers.
+    MOQOM_CONTROL_STUN = "${trimsuffix(local.edge_host, ".")}:${local.relay_stun_port}"
   }
 
   secret_env = {

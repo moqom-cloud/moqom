@@ -37,3 +37,8 @@ output "instance_template_id" {
   value       = google_compute_instance_template.relay.id
   description = "Current instance template. Changes on every image or configuration change and triggers a rolling update."
 }
+
+output "stun_port" {
+  value       = var.stun_port
+  description = "UDP port the relays answer STUN on at `external_ip`, or null when the responder is off. The control plane advertises it in direct grants."
+}

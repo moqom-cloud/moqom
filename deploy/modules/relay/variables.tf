@@ -116,6 +116,13 @@ variable "udp_port" {
   default     = 443
 }
 
+variable "stun_port" {
+  type        = number
+  description = "Port the relay answers STUN Binding requests on, so a device behind NAT can learn the public address it offers a peer for a direct path. 3478 is the registered port and the one the control plane advertises by default. Null turns the responder off. Must match the network module's `relay_stun_port`."
+  default     = 3478
+  nullable    = true
+}
+
 variable "health_check_port" {
   type        = number
   description = "TCP port for the load-balancer health probe. See the comment in main.tf for why this cannot be the serving port."

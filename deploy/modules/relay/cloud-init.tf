@@ -11,6 +11,7 @@ locals {
     container_env     = var.container_env
     health_check_port = var.health_check_port
     udp_port          = var.udp_port
+    stun_port         = var.stun_port == null ? "" : tostring(var.stun_port)
 
     # The relay fetches these itself at boot, from the metadata server's token.
     # Empty strings rather than null because the template tests them, and a null
