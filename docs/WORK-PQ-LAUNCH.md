@@ -37,7 +37,7 @@ Status: **done** · **in progress** · **to do** · **blocked** (needs a person)
 | Relay, control plane, director, ingest, recorder, congestion controller: proprietary, binary only | done | moqom 4ad2e6a, engine cdb82fc; `LICENSES/LicenseRef-MOQOM-Proprietary.txt`; sites updated (notices, self-hosting, open-source). Counsel to review the text; `legal@moqom.cloud` must exist |
 | Direct paths by default in Swift rooms: `DirectPolicy`, room policy, relay ticket refusal, backstage | done | swift 55f9ae6, pq 1a69af7, engine 3149af4, go 031894e, rust 7e08b34; Swift 1021 and Rust 521 tests pass |
 | Relays answer STUN and SDKs use it by default, so direct paths cross NATs | done, not deployed | relay responder on UDP 3478, `DirectGrant.stun` from `MOQOM_CONTROL_STUN`, Swift and Rust ask it by default; deploy config opens 3478 but has not been applied. Symmetric NATs still fall back to the relay (no TURN) |
-| Rust client: direct paths wired into a room | queued | starts when the STUN agent finishes, since both edit `moqom-client`'s direct code |
+| Rust client: direct paths wired into a room, relay copy paused once direct, Swift `.custom` uses the grant's STUN | in progress | Rust room agent |
 | Backstage moves tested against a relay that enforces the backstage grant | in progress | backstage agent |
 | Postgres test for `direct_paths` and `max_direct_participants` | done | pq 5acbad5; conformance case and a migration test, run on a local Postgres 17 with every other Go test |
 | `directPolicy` with `.relayOnly`; 1:1 calls point to point by default | in progress | direct-mode agent |
@@ -75,6 +75,12 @@ Status: **done** · **in progress** · **to do** · **blocked** (needs a person)
 - Direct paths that hole-punching can't open (symmetric NATs, some cellular carriers) fall back to
   the relay. Is that enough, or should MOQOM offer TURN?
 - Should relays answer STUN on the QUIC port instead of 3478, so one firewall rule covers both?
+- The relay load balancer is IPv4 only, so devices learn no public IPv6 address from STUN. Add
+  an IPv6 forwarding rule?
+- Hole-punching success hasn't been measured on real home and cellular NATs. Run a field test
+  before the site quotes a rate.
+- Run `terraform validate` and `plan` for the STUN firewall and forwarding rules (needs provider
+  downloads, so more free disk); the prod env file may also be stale elsewhere.
 - The IP-address notice before a direct call is the app's job today. Should MoqomKit ship a
   default notice or require the app to confirm it showed one?
 - Backends that mint through the admin API must pass `MintClientTokenResponse.direct` on. Should
