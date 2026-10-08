@@ -97,3 +97,9 @@ Status: **done** · **in progress** · **to do** · **blocked** (needs a person)
   the token itself carry the grant, so nothing can drop it?
 - `deploy/tools/conformance.sh` resets the dev Cloud SQL `postgres` password on every run. Keep
   that, or document running it against a local Postgres as done here?
+- The Rust `DirectRoom` still lacks parts of MoqomKit's: MLS and the catalog (the caller supplies
+  the roster, opt-ins and offer key), streaming direct groups (only whole subgroups), reacting to
+  network changes, per-path byte counters, and a test of the 500 ms quiet resume. The room must
+  also be created before the participant's slot is announced. Which of these matter before the
+  Rust SDK is documented on moqom.dev?
+- Backstage go-live is untested with automatic reconnection and with audio only.
