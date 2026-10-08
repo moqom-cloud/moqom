@@ -37,9 +37,9 @@ Status: **done** · **in progress** · **to do** · **blocked** (needs a person)
 | Relay, control plane, director, ingest, recorder, congestion controller: proprietary, binary only | done | moqom 4ad2e6a, engine cdb82fc; `LICENSES/LicenseRef-MOQOM-Proprietary.txt`; sites updated (notices, self-hosting, open-source). Counsel to review the text; `legal@moqom.cloud` must exist |
 | Direct paths by default in Swift rooms: `DirectPolicy`, room policy, relay ticket refusal, backstage | done | swift 55f9ae6, pq 1a69af7, engine 3149af4, go 031894e, rust 7e08b34; Swift 1021 and Rust 521 tests pass |
 | Relays answer STUN and SDKs use it by default, so direct paths cross NATs | done, not deployed | relay responder on UDP 3478, `DirectGrant.stun` from `MOQOM_CONTROL_STUN`, Swift and Rust ask it by default; deploy config opens 3478 but has not been applied. Symmetric NATs still fall back to the relay (no TURN) |
-| Rust client: direct paths wired into a room | to do | it has `DirectPolicy` and the room limit only |
-| Backstage moves tested against a relay that enforces the backstage grant | to do | tested on the loopback relay only |
-| Postgres test for `direct_paths` and `max_direct_participants` | to do | the memory store is covered |
+| Rust client: direct paths wired into a room | queued | starts when the STUN agent finishes, since both edit `moqom-client`'s direct code |
+| Backstage moves tested against a relay that enforces the backstage grant | in progress | backstage agent |
+| Postgres test for `direct_paths` and `max_direct_participants` | done | pq 5acbad5; conformance case and a migration test, run on a local Postgres 17 with every other Go test |
 | `directPolicy` with `.relayOnly`; 1:1 calls point to point by default | in progress | direct-mode agent |
 | Small private rooms point to point (mesh up to a limit) | in progress | direct-mode agent |
 | Swift dependency on moqom-security by URL and tag, not path | to do | at publication: needs the repo public and tagged |
@@ -69,3 +69,15 @@ Status: **done** · **in progress** · **to do** · **blocked** (needs a person)
 - Counsel: patent filings before anything goes public (absolute novelty outside the US), the
   proprietary licence text, IETF IPR disclosure for PR #1970 and the hop-limit draft, the
   vector licences, and the "first and only platform" claim.
+
+## Open questions (after the STUN, backstage and Rust room work)
+
+- Direct paths that hole-punching can't open (symmetric NATs, some cellular carriers) fall back to
+  the relay. Is that enough, or should MOQOM offer TURN?
+- Should relays answer STUN on the QUIC port instead of 3478, so one firewall rule covers both?
+- The IP-address notice before a direct call is the app's job today. Should MoqomKit ship a
+  default notice or require the app to confirm it showed one?
+- Backends that mint through the admin API must pass `MintClientTokenResponse.direct` on. Should
+  the token itself carry the grant, so nothing can drop it?
+- `deploy/tools/conformance.sh` resets the dev Cloud SQL `postgres` password on every run. Keep
+  that, or document running it against a local Postgres as done here?
