@@ -48,3 +48,36 @@ resource "google_dns_record_set" "geo" {
     }
   }
 }
+
+# The same steering for IPv6. A client with both looks up both and races them
+# (Happy Eyeballs), so a region that serves only IPv4 is still reached.
+resource "google_dns_record_set" "single_v6" {
+  count = length(var.endpoints_v6) == 1 ? 1 : 0
+
+  project      = var.project_id
+  managed_zone = var.zone_name
+  name         = var.record_name
+  type         = "AAAA"
+  ttl          = var.ttl
+  rrdatas      = values(var.endpoints_v6)
+}
+
+resource "google_dns_record_set" "geo_v6" {
+  count = length(var.endpoints_v6) > 1 ? 1 : 0
+
+  project      = var.project_id
+  managed_zone = var.zone_name
+  name         = var.record_name
+  type         = "AAAA"
+  ttl          = var.ttl
+
+  routing_policy {
+    dynamic "geo" {
+      for_each = var.endpoints_v6
+      content {
+        location = geo.key
+        rrdatas  = [geo.value]
+      }
+    }
+  }
+}

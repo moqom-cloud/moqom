@@ -143,6 +143,11 @@ write_files:
 
       # Media, from anywhere. Who may reach it is the VPC firewall's decision.
       open udp ${udp_port}
+%{ if stun_port != "" ~}
+
+      # STUN, from anywhere, for the same reason.
+      open udp ${stun_port}
+%{ endif ~}
 
       # The probe port. Left open at the host and narrowed to Google's prober
       # ranges by the VPC rule, so there is one place that decides who may ask a
@@ -219,6 +224,15 @@ write_files:
       chmod 0444 /run/moqom/link/ca.pem /run/moqom/link/cert.pem
       chmod 0400 /run/moqom/link/key.pem
 %{ endif ~}
+%{ if ticket_keys_secret_id != "" ~}
+
+      # The fleet's direct-ticket signing keys. Private halves included, so
+      # tmpfs and owner-only like the TLS key.
+      mkdir -p /run/moqom/tickets
+      fetch "${ticket_keys_secret_id}" > /run/moqom/tickets/keys.json
+      chown -R ${container_uid}:${container_uid} /run/moqom/tickets
+      chmod 0400 /run/moqom/tickets/keys.json
+%{ endif ~}
 
       # An env file rather than `--env` on the command line, because a systemd
       # unit is world-readable and `docker inspect` is not privileged. This is
@@ -231,6 +245,103 @@ write_files:
 %{ endif ~}
       chmod 0600 /run/moqom/relay.env
 
+%{ if ziti_enabled ~}
+  - path: /etc/moqom/ziti-enroll.sh
+    permissions: "0700"
+    owner: root
+    content: |
+      #!/bin/bash
+      # Enrol this machine on the management overlay, once per instance.
+      #
+      # The control plane mints the identity, named after this instance,
+      # against two proofs: the fleet's relay credential, and an identity token
+      # only this VM's metadata server can produce, signed by Google and minted
+      # for the control plane's audience. Neither alone mints anything. The
+      # enrolled file lives on the boot disk so a reboot keeps it; a recreated
+      # instance has a new disk and asks again, and the control plane deletes
+      # the identity of an instance that is gone.
+      set -euo pipefail
+
+      DIR=/var/lib/moqom-ziti
+      WORK=/run/moqom-ziti
+      if [ -s "$DIR/identity.json" ]; then
+          exit 0
+      fi
+      mkdir -p "$DIR" "$WORK"
+      chmod 0700 "$DIR" "$WORK"
+      umask 077
+
+      # Bounded, so a control plane that is down fails this attempt and
+      # systemd tries again later rather than the unit hanging in start.
+      request() { curl -sS --fail --max-time 30 --retry 3 --retry-connrefused "$@"; }
+      metadata() {
+          request -H "Metadata-Flavor: Google" "http://metadata.google.internal/computeMetadata/v1/$1"
+      }
+      ACCESS="$(metadata instance/service-accounts/default/token | sed -n 's/.*"access_token":"\([^"]*\)".*/\1/p')"
+      printf 'Authorization: Bearer %s\n' "$ACCESS" > "$WORK/gcp.hdr"
+      fetch() {
+          request -H @"$WORK/gcp.hdr" \
+              "https://secretmanager.googleapis.com/v1/projects/${project_id}/secrets/$1/versions/latest:access" \
+              | sed -n 's/.*"data": "\([^"]*\)".*/\1/p' \
+              | base64 -d
+      }
+      fetch "${link_ca_secret_id}" > "$WORK/link-ca.pem"
+      printf 'Authorization: Bearer %s\n' "$(fetch "${credential_secret_id}")" > "$WORK/relay.hdr"
+
+      INSTANCE_TOKEN="$(metadata "instance/service-accounts/default/identity?audience=${ziti_enroll_audience}&format=full")"
+      printf '{"instance_token":"%s"}' "$INSTANCE_TOKEN" \
+          | request --cacert "$WORK/link-ca.pem" -H @"$WORK/relay.hdr" \
+              -H 'Content-Type: application/json' --data-binary @- \
+              "${ziti_enroll_url}" > "$WORK/enrolment.json"
+      sed -n 's/.*"enrollment_token":"\([^"]*\)".*/\1/p' "$WORK/enrolment.json" > "$WORK/enroll.jwt"
+      rm -f "$WORK/gcp.hdr" "$WORK/relay.hdr" "$WORK/enrolment.json"
+      if [ ! -s "$WORK/enroll.jwt" ]; then
+          echo "the control plane returned no enrolment token" >&2
+          exit 1
+      fi
+
+      chown 2171:2171 "$WORK" "$WORK/enroll.jwt"
+      /usr/bin/docker run --rm --network host --user 2171:2171 \
+          --volume "$WORK:/work" --entrypoint ziti ${ziti_cli_image} \
+          edge enroll --jwt /work/enroll.jwt --out /work/identity.json
+      install -o 2171 -g 2171 -m 0400 "$WORK/identity.json" "$DIR/identity.json"
+      chown 2171:2171 "$DIR"
+      rm -rf "$WORK"
+      echo "enrolled on the overlay"
+
+  - path: /etc/systemd/system/moqom-ziti.service
+    permissions: "0644"
+    owner: root
+    content: |
+      [Unit]
+      Description=MOQOM overlay tunneler
+      Wants=gcr-online.target docker.service
+      After=gcr-online.target docker.service
+
+      [Service]
+      Type=simple
+      Restart=always
+      RestartSec=15
+      TimeoutStartSec=10min
+      # Enrolment runs before the container has a log driver, so its output
+      # would otherwise be only in a journal nobody can read without SSH.
+      StandardOutput=journal+console
+      StandardError=journal+console
+      Environment=HOME=/home/chronos
+      ExecStartPre=/usr/bin/docker-credential-gcr configure-docker --registries=${registry_host}
+      ExecStartPre=-/usr/bin/docker rm -f moqom-ziti
+      ExecStartPre=/usr/bin/docker pull ${ziti_cli_image}
+      ExecStartPre=/bin/bash /etc/moqom/ziti-enroll.sh
+      # Proxy mode: a loopback listener for each service this identity may dial
+      # (the control plane's), and a host for each it may bind (this relay's
+      # admin port and SSH, for operators). Nothing listens beyond loopback.
+      ExecStart=/usr/bin/docker run --rm --name moqom-ziti --network host --user 2171:2171 --log-driver=gcplogs --volume /var/lib/moqom-ziti:/ziti:ro --entrypoint ziti ${ziti_cli_image} tunnel proxy --identity /ziti/identity.json --svcPollRate ${ziti_poll_seconds} --cli-agent=false
+      ExecStop=/usr/bin/docker stop --time=10 moqom-ziti
+
+      [Install]
+      WantedBy=multi-user.target
+
+%{ endif ~}
   - path: /etc/systemd/system/moqom-relay.service
     permissions: "0644"
     owner: root
@@ -272,8 +383,17 @@ write_files:
         --log-opt gcp-log-cmd=true \
         --volume /run/moqom/tls:/etc/moqom/tls:ro \
         --env-file /run/moqom/relay.env \
-        --env MOQOM_RELAY_ADDR=0.0.0.0:${udp_port} \
-        --env MOQOM_RELAY_ADMIN_ADDR=0.0.0.0:${health_check_port} \
+        --env MOQOM_RELAY_ADDR=${listen_host}:${udp_port} \
+        --env MOQOM_RELAY_ADMIN_ADDR=${listen_host}:${health_check_port} \
+        --env MOQOM_RELAY_ADMIN_AUTH=probes-only \
+%{ if stun_port != "" ~}
+        --env MOQOM_RELAY_STUN_ADDR=${listen_host}:${stun_port} \
+%{ else ~}
+        --env MOQOM_RELAY_STUN_ADDR=off \
+%{ endif ~}
+%{ if ziti_enabled ~}
+        --env MOQOM_RELAY_ADMIN_LOCAL_ADDR=127.0.0.1:8082 \
+%{ endif ~}
 %{ if tls_certificate_secret_id != "" ~}
         --env MOQOM_RELAY_CERT=/etc/moqom/tls/cert.pem \
         --env MOQOM_RELAY_KEY=/etc/moqom/tls/key.pem \
@@ -283,6 +403,10 @@ write_files:
         --env MOQOM_CONTROL_CA=/etc/moqom/link/ca.pem \
         --env MOQOM_CONTROL_CLIENT_CERT=/etc/moqom/link/cert.pem \
         --env MOQOM_CONTROL_CLIENT_KEY=/etc/moqom/link/key.pem \
+%{ endif ~}
+%{ if ticket_keys_secret_id != "" ~}
+        --volume /run/moqom/tickets:/etc/moqom/tickets:ro \
+        --env MOQOM_RELAY_TICKET_KEYS=/etc/moqom/tickets/keys.json \
 %{ endif ~}
 %{ for key, value in container_env ~}
         --env ${key}=${value} \
@@ -309,3 +433,8 @@ runcmd:
   - chronyc waitsync 12 0.1 || echo "chrony did not reach time.cloudflare.com; timecodes will fall back to local time"
   - systemctl daemon-reload
   - systemctl enable --now moqom-relay.service
+%{ if ziti_enabled ~}
+  # Not waited for: the relay serves without the overlay, and boot should not
+  # stall on it.
+  - systemctl enable --now --no-block moqom-ziti.service
+%{ endif ~}

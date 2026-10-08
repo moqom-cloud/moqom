@@ -1,0 +1,126 @@
+// The control plane's link to its hosted recorders.
+//
+// Internal, like the relay link: nothing outside the deployment speaks it, and
+// its Go output lands under `internal/` so nothing outside the control plane can
+// import it. Pull rather than push, so the control plane needs no way to start a
+// process: a pool of recorder workers asks for work, renews the credential it
+// joined with, and reports what it stored. A worker that stops renewing loses
+// its lease, and the recording is handed to another worker, which resumes it
+// under the same storage prefix.
+//
+// The credential a worker is handed is a client token bound to the recorder's
+// own device key. It is worth nothing without that key, which never leaves the
+// recorder, so carrying it here does not make this link a way to join rooms.
+
+syntax = "proto3";
+
+package moqom.recorder.v1;
+
+import "google/protobuf/timestamp.proto";
+
+option go_package = "github.com/moqom-cloud/moqom/go/internal/recorderpb;recorderpb";
+
+service RecorderLink {
+  // Take the oldest recording that has no live worker. An empty response means
+  // nothing is waiting.
+  rpc Claim(ClaimRequest) returns (ClaimResponse);
+
+  // Heartbeat: report progress, extend the lease, collect a fresh token, and
+  // learn whether to stop.
+  rpc Renew(RenewRequest) returns (RenewResponse);
+
+  // The recording is finalised, or failed, and these are its artefacts.
+  rpc Finish(FinishRequest) returns (FinishResponse);
+}
+
+message ClaimRequest {
+  // Stable for the life of the worker process. Leases are held by it.
+  string worker = 1;
+}
+
+message ClaimResponse {
+  Assignment assignment = 1;
+}
+
+message Assignment {
+  string recording_id = 1;
+  string tenant = 2;
+  string room = 3;
+
+  // Where artefacts go. The prefix already includes the tenant, so a worker
+  // cannot be pointed at another tenant's objects by a room name.
+  string storage_bucket = 4;
+  string storage_prefix = 5;
+
+  // The room requires end-to-end encryption: write only the archive.
+  bool e2ee_required = 6;
+
+  // The caller asked for CMAF where the room permits it.
+  bool remux = 7;
+
+  Credential credential = 8;
+
+  // Stop at this instant if not stopped sooner. Absent for no limit.
+  google.protobuf.Timestamp deadline = 9;
+
+  // How many times this recording has been claimed, starting at 1. Part of
+  // every file name, so a resumed recording never overwrites what an earlier
+  // worker wrote.
+  uint32 attempt = 10;
+
+  // How long a lease lasts without a renewal.
+  uint32 lease_seconds = 11;
+}
+
+message Credential {
+  string token = 1;
+  google.protobuf.Timestamp expires_at = 2;
+}
+
+message Progress {
+  uint64 objects = 1;
+  // Payload bytes received from the relay.
+  uint64 bytes_received = 2;
+  // Bytes durably written to the object store by this attempt. The control
+  // plane keeps the total across attempts.
+  uint64 bytes_stored = 3;
+  uint32 tracks = 4;
+  uint32 reconnects = 5;
+}
+
+message RenewRequest {
+  string recording_id = 1;
+  string worker = 2;
+  Progress progress = 3;
+}
+
+message RenewResponse {
+  Credential credential = 1;
+  // Finalise and call Finish.
+  bool stop = 2;
+}
+
+message Artifact {
+  // Relative to the assignment's storage prefix.
+  string name = 1;
+  string kind = 2;
+  string track = 3;
+  uint64 bytes = 4;
+  // Base64 CRC32C, as the object store reports it.
+  string crc32c = 5;
+}
+
+message FinishRequest {
+  string recording_id = 1;
+  string worker = 2;
+  Progress progress = 3;
+  string manifest = 4;
+  repeated Artifact artifacts = 5;
+  // Empty on success.
+  string error = 6;
+  // The worker is going away, not the recording: keep what this attempt
+  // stored and hand the recording to the next worker that claims.
+  bool requeue = 7;
+}
+
+message FinishResponse {}

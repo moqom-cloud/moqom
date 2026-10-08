@@ -199,8 +199,26 @@ Each track that uses this format documents its own tags alongside its types.
 | Track | Layout | Status |
 |---|---|---|
 | `.space` | `MoqomKit/Space/SpaceState+Wire.swift` | implemented |
-| `.control` | room control log | JSON, to be moved |
-| catalog | per-publisher track list | JSON, to be moved |
+| `.control` | room control log | JSON, to be moved; every entry signed (below) |
+| catalog | per-publisher track list | JSON, to be moved; sealed end to end (below) |
+
+**The catalog is sealed** with the publisher's SFrame key, like the media it
+describes. Its disclosure travels beside it as object property `0x7D`, JSON in
+the catalog's own shape holding only the version, the SFrame key ID, the locale,
+and each track's name, kind and video geometry: what the relay tiers usage on
+and a recorder files tracks by. SFrame authenticates the property with the
+ciphertext, so a relay can read it and cannot change it. Codecs, bitrates,
+decoder configurations, mutes, invitations and everything added later are
+inside the ciphertext.
+
+**Every control entry is signed** by the control plane with ML-DSA-65, as
+object property `0x7F`: one byte of key ID length, the key ID, then the
+signature over `"moqom room log v1" ‖ 0 ‖ tenant ‖ 0 ‖ room ‖ 0 ‖ entry`.
+Clients apply only entries that verify against the control plane's published
+keys, so a relay can drop an entry — which the sequence numbers surface — but
+cannot write, alter or transplant one. `go/internal/token/roomlog.go` signs;
+MoqomKit's `RoomLogSignature` verifies, against a committed cross-language
+fixture.
 
 ### The space track, in outline
 

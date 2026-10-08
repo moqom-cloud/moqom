@@ -488,6 +488,24 @@ func (s *moderationService) SetGrants(ctx context.Context, request *adminpb.SetG
 	if err := s.core.store.PutGrantOverride(ctx, request.GetTenant(), request.GetRoom(), target, requested); err != nil {
 		return nil, statusFor(err)
 	}
+	// Every override that names somebody applies at once, so a person-wide
+	// change has to replace the device-specific ones too: otherwise promoting
+	// somebody demoted on their phone would leave the phone demoted, which the
+	// relay does the same way when the directive reaches it.
+	if target.Device == "" {
+		overrides, err := s.core.store.ListGrantOverrides(ctx, request.GetTenant(), request.GetRoom())
+		if err != nil {
+			return nil, statusFor(err)
+		}
+		for id := range overrides {
+			if id.Username != target.Username || id.Device == "" {
+				continue
+			}
+			if err := s.core.store.PutGrantOverride(ctx, request.GetTenant(), request.GetRoom(), id, requested); err != nil {
+				return nil, statusFor(err)
+			}
+		}
+	}
 
 	previous := s.core.targetGrants(ctx, request.GetTenant(), request.GetRoom(), target)
 

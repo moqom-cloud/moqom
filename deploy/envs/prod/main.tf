@@ -18,6 +18,17 @@ locals {
   control_host = "api.${trimsuffix(var.dns_domain, ".")}"
   edge_host    = "edge.${var.dns_domain}"
 
+  # The relays answer STUN on this port, at the same addresses phones reach
+  # them on. One value for the firewall, the relays and the grant the control
+  # plane hands out, so the three cannot disagree.
+  relay_stun_port = 3478
+
+  # Relays on IPv6 too, behind the same backends, so a device on an IPv6-only
+  # or dual-stack network reaches one natively and STUN reports its public
+  # IPv6 address for a direct path. One switch for the subnet, the firewall,
+  # the relays and the AAAA record.
+  relay_ipv6 = true
+
   relay_endpoints = { for region, relay in module.relay : region => relay.external_ip }
 
   secrets = {
@@ -64,6 +75,9 @@ module "network" {
   create_dns_zone = true
   dns_zone_name   = "${local.name_prefix}-edge"
   dns_domain      = var.dns_domain
+
+  relay_stun_port = local.relay_stun_port
+  enable_ipv6     = local.relay_ipv6
 
   labels = local.labels
 
@@ -189,6 +203,8 @@ module "relay" {
   network      = module.network.network_id
   subnetwork   = module.network.relay_subnets[each.key]
   network_tags = [module.network.relay_target_tag]
+  stun_port    = local.relay_stun_port
+  enable_ipv6  = local.relay_ipv6
 
   image         = var.relay_image
   registry_host = module.registry.registry_host
@@ -250,10 +266,18 @@ module "control" {
   env = {
     MOQOM_ENV       = local.env
     MOQOM_LOG_LEVEL = "info"
-    PGHOST          = module.data.private_ip
-    PGDATABASE      = "moqom"
-    PGSSLMODE       = "verify-full"
-    PGIAMAUTH       = "true"
+    # Cloud Run terminates TLS in front of the container, so the process itself
+    # serves plaintext. The binary refuses that unless it is said here.
+    MOQOM_CONTROL_ALLOW_PLAINTEXT = "true"
+    PGHOST                        = module.data.private_ip
+    PGDATABASE                    = "moqom"
+    PGSSLMODE                     = "verify-full"
+    PGIAMAUTH                     = "true"
+
+    # The STUN server named in every direct grant, which the SDKs ask by
+    # default for the public address they offer a peer. The steered edge name,
+    # since every relay answers.
+    MOQOM_CONTROL_STUN = "${trimsuffix(local.edge_host, ".")}:${local.relay_stun_port}"
   }
 
   secret_env = {
@@ -329,6 +353,9 @@ module "edge_dns" {
   zone_name   = module.network.dns_zone_name
   record_name = local.edge_host
   endpoints   = local.relay_endpoints
+  endpoints_v6 = {
+    for region, relay in module.relay : region => relay.external_ipv6 if relay.external_ipv6 != null
+  }
 
   # Short, because this TTL is the failover time for a region going dark and
   # there is no health checking behind a geolocation policy.

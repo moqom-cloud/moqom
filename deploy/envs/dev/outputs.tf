@@ -3,6 +3,11 @@ output "relay_endpoints" {
   description = "Address to dial on UDP/443, per region."
 }
 
+output "relay_endpoints_v6" {
+  value       = { for region, relay in module.relay : region => relay.external_ipv6 if relay.external_ipv6 != null }
+  description = "IPv6 address to dial on UDP/443 and ask STUN on UDP/3478, per region."
+}
+
 output "control_endpoint" {
   value       = module.control.endpoint
   description = "What a relay in this VPC puts in MOQOM_CONTROL_ENDPOINT. Internal, so nothing outside the VPC can reach it."
@@ -56,4 +61,19 @@ output "recording_writer_service_account" {
 output "secrets_awaiting_population" {
   value       = keys(module.data.secret_ids)
   description = "Secret containers created empty. Nothing that reads them will start until they have a version."
+}
+
+output "ziti" {
+  value = {
+    controller = module.ziti.controller_url
+    management = module.ziti.management_url
+    router     = module.ziti.router_name
+    instance   = module.ziti.instance_name
+  }
+  description = "The management overlay. The management API is reached from the cluster, or from a laptop through `gcloud compute start-iap-tunnel`; tools/ziti-provision.sh does the latter."
+}
+
+output "recorder_signer_account" {
+  value       = module.recorder.signer_account
+  description = "The account recording download links are signed as; the control plane's MOQOM_RECORDING_SIGNER_ACCOUNT when recorder_thumbprint is set."
 }

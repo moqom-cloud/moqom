@@ -66,23 +66,21 @@ type JoinRequest struct {
 	Username string `json:"username"`
 	Room     string `json:"room"`
 
-	// Device is the thumbprint the token is bound to by its `cnf` claim.
+	// Device is the thumbprint, or its sixteen-character prefix, that the
+	// caller believes Key has.
 	//
-	// Superseded by Key and kept for the clients that predate it. A thumbprint
-	// on its own is an assertion -- the device saying which key it holds --
-	// and the relay now demands a signature from whatever `cnf.jkt` names, so a
-	// token minted from a bare thumbprint is one whose holder may or may not be
-	// able to use it. That is legal and it is worse than it sounds: the failure
-	// arrives later, at a relay, as an authentication error with nothing there
-	// to explain it.
+	// Optional, and only ever checked against Key. On its own it is refused: a
+	// thumbprint is the device saying which key it holds, every relay demands a
+	// signature from whatever `cnf.jkt` names, and a token minted from an
+	// assertion would fail later, at a relay, with nothing there to explain it.
 	Device string `json:"device"`
 
 	// Key is the device's public signing key, as a JWK.
 	//
 	// The thumbprint is derived from this rather than taken from Device, which
 	// is the whole difference between binding a token to a key and labelling it
-	// with a name. Sending it costs a client four short strings it already has;
-	// see internal/token.PublicKey.
+	// with a name. An ML-DSA-65 key (kty "AKP") is the default and an EC P-256
+	// key is accepted while devices roll over; see internal/token.PublicKey.
 	Key *token.PublicKey `json:"key,omitempty"`
 }
 
@@ -106,6 +104,28 @@ type JoinResponse struct {
 	// refused by the relay: the alternative is a session that fails to
 	// authenticate with the reason buried in a credential nobody reads.
 	Device string `json:"device"`
+
+	// Direct is what the room allows of direct (device-to-device) paths,
+	// which MoqomKit reads as the room's limit on its own direct policy.
+	// Absent for a token that names no room.
+	Direct *JoinDirect `json:"direct,omitempty"`
+}
+
+// JoinDirect is control.DirectGrant as the join endpoint renders it.
+type JoinDirect struct {
+	Allowed         bool   `json:"allowed"`
+	MaxParticipants uint32 `json:"maxParticipants"`
+
+	// Stun is the relays' STUN responder, which MoqomKit asks for this
+	// device's public address unless the application named its own. Absent
+	// when direct paths are not allowed or the deployment names none.
+	Stun *JoinStun `json:"stun,omitempty"`
+}
+
+// JoinStun is control.StunEndpoint as the join endpoint renders it.
+type JoinStun struct {
+	Host string `json:"host"`
+	Port uint32 `json:"port"`
 }
 
 // JoinPath is the only route this handler serves.
@@ -123,10 +143,11 @@ const howManyJoinsPerMinute = 30
 
 // howBigAJoinRequestMayBe caps the body.
 //
-// Four fields of a few dozen characters. Anything larger is either a mistake or
-// somebody seeing what happens, and reading it into memory to find out which is
-// the mistake.
-const howBigAJoinRequestMayBe = 4 << 10
+// Three names and a device key. An ML-DSA-65 JWK is about 2.7 KB on its own,
+// and each name may be up to control.MaxFieldBytes, so this leaves room for
+// both. Anything larger is either a mistake or somebody seeing what happens,
+// and reading it into memory to find out which is the mistake.
+const howBigAJoinRequestMayBe = 16 << 10
 
 // JoinHandler serves “JoinPath“, minting participant tokens for devices.
 //
@@ -187,6 +208,9 @@ func (s *Server) JoinHandler(createsRooms bool) http.Handler {
 		w.Header().Set("Cache-Control", "no-store")
 		_ = json.NewEncoder(w).Encode(response)
 	})
+	mux.HandleFunc(RelayLinkPath, s.relayLink(
+		&joinLimiter{per: howManyLinksPerMinute, window: time.Minute, now: s.core.now}))
+	mux.HandleFunc(RelayEnrollPath, s.relayEnroll(limiter))
 
 	return mux
 }
@@ -201,6 +225,13 @@ func (s *Server) join(
 	device, err := boundDevice(asked)
 	if err != nil {
 		return JoinResponse{}, http.StatusBadRequest, err
+	}
+	// Asked here as well as at minting so a device hears 402, which says what
+	// to do about it, rather than the 409 the gRPC refusal would map to.
+	if s.core.credits != nil {
+		if err := s.core.credits.Allow(ctx, asked.Tenant); err != nil {
+			return JoinResponse{}, http.StatusPaymentRequired, err
+		}
 	}
 
 	if asked.Room != "" && createsRooms {
@@ -255,6 +286,7 @@ func (s *Server) join(
 		Username:  minted.GetIdentity().GetUsername(),
 		KeyID:     minted.GetKeyId(),
 		Device:    device,
+		Direct:    joinDirect(minted.GetDirect()),
 	}, http.StatusOK, nil
 }
 
@@ -263,9 +295,9 @@ func (s *Server) join(
 // Derived from the JWK when there is one, because that is the only version of
 // this that means anything: the relay demands a signature from whatever
 // `cnf.jkt` names, so binding a token to a key the caller can prove it holds is
-// the difference between a credential and a label. A bare thumbprint is still
-// accepted, for the clients that predate proofs, and gets a token that will only
-// work against a relay not requiring one.
+// the difference between a credential and a label. A bare thumbprint is
+// refused: every relay requires a proof, so a token bound to a key nobody has
+// shown they hold could never be used.
 //
 // A request that carries both and disagrees is refused rather than resolved. The
 // two readings -- "this client is confused about its own key" and "this client
@@ -273,10 +305,7 @@ func (s *Server) join(
 // distinguishable from here, and neither is a request worth serving.
 func boundDevice(asked JoinRequest) (string, error) {
 	if asked.Key == nil {
-		if asked.Device == "" {
-			return "", errors.New("device or key is required")
-		}
-		return asked.Device, nil
+		return "", errors.New("key is required: relays demand a proof from the key a token names")
 	}
 
 	thumbprint, err := asked.Key.Thumbprint()
@@ -364,7 +393,7 @@ func (s *Server) accountFor(r *http.Request) (ServiceAccount, error) {
 	// A relay's credential is not a device's. Refused here as well as in
 	// `requireTenant`, so the refusal does not depend on a later check
 	// happening to run.
-	if account.IsRelay {
+	if account.IsRelay || account.IsRecorder {
 		return ServiceAccount{}, ErrNoSuchAccount
 	}
 	return account, nil
@@ -430,4 +459,15 @@ func (l *joinLimiter) permit(name string) bool {
 	}
 	l.seen[name]++
 	return l.seen[name] <= l.per
+}
+
+func joinDirect(grant *adminpb.DirectGrant) *JoinDirect {
+	if grant == nil {
+		return nil
+	}
+	direct := &JoinDirect{Allowed: grant.GetAllowed(), MaxParticipants: grant.GetMaxParticipants()}
+	if stun := grant.GetStun(); stun != nil {
+		direct.Stun = &JoinStun{Host: stun.GetHost(), Port: stun.GetPort()}
+	}
+	return direct
 }

@@ -11,6 +11,11 @@ locals {
     container_env     = var.container_env
     health_check_port = var.health_check_port
     udp_port          = var.udp_port
+    stun_port         = var.stun_port == null ? "" : tostring(var.stun_port)
+
+    # The wildcard the relay binds. `[::]` takes IPv4 as well, as mapped
+    # addresses, so a dual-stack relay needs one socket per port, not two.
+    listen_host = var.enable_ipv6 ? "[::]" : "0.0.0.0"
 
     # The relay fetches these itself at boot, from the metadata server's token.
     # Empty strings rather than null because the template tests them, and a null
@@ -27,6 +32,15 @@ locals {
     link_ca_secret_id          = coalesce(var.link_ca_secret_id, "")
     link_client_cert_secret_id = coalesce(var.link_client_cert_secret_id, "")
     link_client_key_secret_id  = coalesce(var.link_client_key_secret_id, "")
+
+    ticket_keys_secret_id = coalesce(var.ticket_keys_secret_id, "")
+
+    # The overlay tunneler, or nothing. See var.ziti.
+    ziti_enabled         = var.ziti != null
+    ziti_cli_image       = var.ziti == null ? "" : var.ziti.cli_image
+    ziti_enroll_url      = var.ziti == null ? "" : var.ziti.enroll_url
+    ziti_enroll_audience = var.ziti == null ? "" : var.ziti.enroll_audience
+    ziti_poll_seconds    = var.ziti == null ? 60 : var.ziti.service_poll_seconds
 
     # GCE allows roughly 90 seconds between the delete call and the machine
     # going away, and a live stream is longer than that. This timeout governs

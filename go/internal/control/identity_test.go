@@ -10,7 +10,7 @@ import (
 // value and a session is identified by it. Two derivations means a ban that
 // silently fails to match the thing it was aimed at.
 func TestDeviceIsTheThumbprintPrefix(t *testing.T) {
-	thumbprint := "MpXqvQAmv7Y3Kk9dHnJpLwRtUvXyZaBcDeFgHiJkLmN"
+	thumbprint := "MpXqvQAmv7Y3Kk9dHnJpLwRtUvXyZaBcDeFgHiJkLmM"
 
 	device, err := DeviceFromThumbprint(thumbprint)
 	if err != nil {
@@ -271,5 +271,16 @@ func TestPolicyDefaultsAreTheDocumentedLimits(t *testing.T) {
 	}
 	if policy.Recording != RecordingAllowed {
 		t.Errorf("recording defaults to %q", policy.Recording)
+	}
+	if grant := (Policy{}).Direct(); !grant.Allowed || grant.MaxParticipants != MaxDirectParticipants {
+		t.Errorf("direct paths default to %+v", grant)
+	}
+	if grant := (Policy{DirectPaths: DirectRelayOnly, MaxDirectParticipants: 2}).Direct(); grant.Allowed {
+		t.Errorf("a relay-only room grants %+v", grant)
+	}
+	for _, bad := range []Policy{{MaxDirectParticipants: 1}, {MaxDirectParticipants: 5}, {DirectPaths: "sometimes"}} {
+		if bad.ValidateDirect() == nil {
+			t.Errorf("%+v validated", bad)
+		}
 	}
 }

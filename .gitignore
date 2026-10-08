@@ -7,6 +7,8 @@ target/
 
 # Go
 go/bin/
+/go/moqom-*
+!/go/moqom-*/
 *.test
 *.out
 
@@ -38,6 +40,8 @@ Pods/
 *.tfstate.*
 crash.log
 crash.*.log
+# Saved plans embed every variable value in plain text, secrets included.
+*.tfplan
 *.tfvars
 !*.tfvars.example
 !*.tfvars.json.example

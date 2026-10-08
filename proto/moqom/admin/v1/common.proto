@@ -275,3 +275,27 @@ message ActorContext {
   // within the retention window returns the original result unchanged.
   string idempotency_key = 3;
 }
+
+// What a room allows of direct (device-to-device) paths, as stated to a client
+// with its token. See `RoomPolicy.direct_paths`.
+message DirectGrant {
+  bool allowed = 1;
+
+  // The most participants the room may have and still use direct paths.
+  uint32 max_participants = 2;
+
+  // Where a device asks for its public address (a STUN Binding request, RFC
+  // 8489) before offering a direct path: a MOQOM relay's STUN responder. Unset
+  // when direct paths are not allowed or the deployment names none, in which
+  // case a device offers only its own interface addresses unless it was given a
+  // STUN server of its own.
+  StunEndpoint stun = 3;
+}
+
+// A STUN server, as a host name or address literal and a UDP port.
+message StunEndpoint {
+  string host = 1;
+
+  // Usually 3478.
+  uint32 port = 2;
+}

@@ -169,7 +169,7 @@ func TestTheSDKRunsARoom(t *testing.T) {
 	// reimplementing the derivation.
 	minted, err := client.MintToken(ctx, moqom.TokenRequest{
 		Username:         "bob",
-		DeviceThumbprint: "thumbprint-of-bobs-phone",
+		DeviceThumbprint: "thumbprint-of-bobs-phonethumbprint-of-bobsA",
 		Room:             "sdk-room",
 		Publish:          moqom.PublishCamera,
 		Preset:           moqom.PresetModerator,
@@ -197,8 +197,8 @@ func TestTheSDKRunsARoom(t *testing.T) {
 	if len(keys.Keys) != 1 || keys.Keys[0].KeyID != minted.KeyID {
 		t.Fatalf("the signing key is not published: %+v", keys)
 	}
-	if keys.Binding != moqom.BindingBearer {
-		t.Fatalf("expected bearer binding today, got %q", keys.Binding)
+	if keys.Binding != moqom.BindingDPoP {
+		t.Fatalf("expected the dpop binding, got %q", keys.Binding)
 	}
 
 	// Moderation, and the entry that records it.
@@ -255,7 +255,7 @@ func TestTheSDKRunsARoom(t *testing.T) {
 	// branch on without importing gRPC.
 	_, err = client.MintToken(ctx, moqom.TokenRequest{
 		Username:         "dave",
-		DeviceThumbprint: "thumbprint-of-daves-phone",
+		DeviceThumbprint: "thumbprint-of-daves-phonethumbprint-of-davA",
 		Room:             "sdk-room",
 	})
 	if !errors.Is(err, moqom.ErrClosed) {
@@ -274,7 +274,7 @@ func TestTheSDKCannotExceedItsAccountsCeiling(t *testing.T) {
 	// The join-only account can mint a plain viewer.
 	if _, err := client.MintToken(ctx, moqom.TokenRequest{
 		Username:         "bob",
-		DeviceThumbprint: "thumb",
+		DeviceThumbprint: "thumbthumbthumbthumbthumbthumbthumbthumbthA",
 		Publish:          moqom.PublishAudio,
 	}); err != nil {
 		t.Fatalf("minting within the ceiling failed: %v", err)
@@ -283,7 +283,7 @@ func TestTheSDKCannotExceedItsAccountsCeiling(t *testing.T) {
 	// It cannot mint a moderator.
 	_, err := client.MintToken(ctx, moqom.TokenRequest{
 		Username:         "bob",
-		DeviceThumbprint: "thumb",
+		DeviceThumbprint: "thumbthumbthumbthumbthumbthumbthumbthumbthA",
 		Moderation:       moqom.CapKick,
 	})
 	if !errors.Is(err, moqom.ErrDenied) {
@@ -293,7 +293,7 @@ func TestTheSDKCannotExceedItsAccountsCeiling(t *testing.T) {
 	// Nor an owner.
 	_, err = client.MintToken(ctx, moqom.TokenRequest{
 		Username:         "bob",
-		DeviceThumbprint: "thumb",
+		DeviceThumbprint: "thumbthumbthumbthumbthumbthumbthumbthumbthA",
 		Owner:            true,
 	})
 	if !errors.Is(err, moqom.ErrDenied) {

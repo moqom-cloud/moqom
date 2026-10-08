@@ -55,6 +55,19 @@ variable "relay_udp_port" {
   default     = 443
 }
 
+variable "relay_stun_port" {
+  type        = number
+  description = "UDP port the relay answers STUN Binding requests on, which is how a device behind NAT learns the public address it offers for a direct path. Must match the relay module's `stun_port`. Null closes it."
+  default     = 3478
+  nullable    = true
+}
+
+variable "enable_ipv6" {
+  type        = bool
+  description = "Give the relay subnets an external IPv6 range and open the relay's ports to IPv6 as well. Must match the relay module's `enable_ipv6`."
+  default     = false
+}
+
 variable "relay_health_check_port" {
   type        = number
   description = "TCP port the relay serves its load-balancer health probe on. Cannot be the QUIC port: GCP health checks cannot speak UDP."
@@ -131,4 +144,34 @@ variable "control_plane_port" {
   type        = number
   description = "Port the control plane's gRPC surface answers on."
   default     = 8443
+}
+
+variable "overlay_cidrs" {
+  type        = list(string)
+  description = "Addresses of the OpenZiti controller and edge routers the relays dial out to. Empty creates no rule."
+  default     = []
+}
+
+variable "overlay_ports" {
+  type        = list(number)
+  description = "TCP ports on var.overlay_cidrs: the controller's client API and the routers' edge listeners."
+  default     = [1280, 3022]
+}
+
+variable "dnssec" {
+  type        = bool
+  description = "Sign the zone. Takes effect once the parent holds the DS record from `dns_ds_records`."
+  default     = true
+}
+
+variable "caa_issuers" {
+  type        = list(string)
+  description = "Certificate authorities CAA permits at the zone apex. Empty publishes no CAA record."
+  default     = ["pki.goog", "letsencrypt.org"]
+}
+
+variable "caa_iodef" {
+  type        = string
+  description = "Where authorities report refused requests, e.g. mailto:security@moqom.cloud. Null omits it."
+  default     = "mailto:security@moqom.cloud"
 }

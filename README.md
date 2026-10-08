@@ -20,8 +20,23 @@ the SDKs each live in a repository of their own.
 | [`moqom-swift`](https://github.com/moqom-cloud/moqom-swift) | Apache-2.0 | `MoqomKit`, the Apple-platform client SDK, and the `MoqomRoom` sample |
 | [`moqom-go`](https://github.com/moqom-cloud/moqom-go) | Apache-2.0 | Server-side SDK for backends |
 | [`moqom-rust`](https://github.com/moqom-cloud/moqom-rust) | Apache-2.0 | Server-side SDK for backends |
-| `moqom-android`, `moqom-web`, `moqom-desktop` | Apache-2.0 | Client SDKs, not yet started |
-| `moqom-obs` | GPL-2.0-or-later | The OBS output plugin, not yet started |
+| `moqom-android` | Apache-2.0 | Android client SDK — scoped, work ongoing, release planned October 2026 |
+| `moqom-desktop` | Apache-2.0 | Windows, macOS and Linux client SDK — scoped, work ongoing, release planned October 2026 |
+| `moqom-obs` | GPL-2.0-or-later | The OBS output plugin — scoped, work ongoing, release planned October 2026 |
+
+## Where it runs, and who we are talking to
+
+MOQOM runs on Google Cloud today: relays on Premium Tier VMs behind UDP load
+balancers, the control plane on GKE, Postgres on Cloud SQL, tenants isolated
+per account. We are pursuing partnerships with **Cloudflare, Google Cloud, AWS**
+and other CDNs and content providers, for edge capacity, negotiated delivery
+cost and distribution.
+
+We don't wait on them to ship. Nothing in the relay assumes one provider's
+edge: the forwarding rule and DNS steering are the only pieces that move, so a
+partner's network can be added beside GCP rather than in place of it, and
+customers can self-host relays anywhere today. No partnership is signed yet;
+this section changes when one is.
 
 Most tooling here assumes those are **sibling checkouts** — cloned into the same
 directory as this one, which is where they land if you clone them side by side.
@@ -70,12 +85,11 @@ Postgres store is written and reachable with `MOQOM_CONTROL_STORE=postgres`,
 against Cloud SQL as the runtime's own Google identity, so there is no password
 to configure, store, or rotate — but it is the choice rather than the default,
 and a default that loses the moderation log is the one that will be running
-somewhere. Tokens are Ed25519 over JSON rather than CAT/CWT's CBOR and COSE,
+somewhere. Tokens are ML-DSA-65 over JSON rather than CAT/CWT's CBOR and COSE,
 which is an encoding away from the target and no longer a binding away from it:
 `cnf.jkt` is derived from a key the device sends at join, held in its Secure
-Enclave, and a relay set to `MOQOM_RELAY_POSSESSION=required` makes every session
-sign for it — so a stolen token works from nowhere. That is not yet the default,
-because a fleet upgrades one build at a time. And
+Enclave, the control plane mints no token without one, and every relay makes every
+session sign for it — so a stolen token works from nowhere. And
 the relay registry is per-replica and in memory, which means a directive reaches
 the relays one replica happens to know about — enough for a single control plane,
 not for two.
@@ -91,8 +105,8 @@ who happens to be publishing. It reports on itself through a single
 `RoomStatistics` snapshot read at one instant, and it hands the media out: raw
 frames and samples are tappable at four points, after decryption, so an
 application can run its own detection or transcription instead of ours. The
-capture and encode path is written and compiles but has never executed, because
-that needs a device.
+capture and encode path has run end to end on two iPhones through a relay, but
+the test suite doesn't cover it, because that needs a device.
 
 [`docs/PLAN.md`](docs/PLAN.md) is the full design and build order — what is
 built, what is next, and the reasoning behind the decisions that are hard to
@@ -100,6 +114,21 @@ reverse. It is checked against every repository on every push, so an item marked
 done has files on disk to show for it and an item marked pending does not.
 [`docs/PLAN-CHECK.md`](docs/PLAN-CHECK.md) explains how that works and what to
 do when it fails.
+
+## Design documents
+
+| Document | What it covers |
+| --- | --- |
+| [`API-TOKEN-FLOW.md`](docs/API-TOKEN-FLOW.md) | API keys and join tokens: how they're issued, bound to a device and checked |
+| [`E2EE-KEY-MANAGEMENT.md`](docs/E2EE-KEY-MANAGEMENT.md) | MLS-managed end-to-end encryption keys, and the room `e2ee` policy |
+| [`OPENZITI-AND-P2P.md`](docs/OPENZITI-AND-P2P.md) | The OpenZiti management overlay (live in dev), BYOC relay enrolment, and direct peer-to-peer calls with their tickets and billing |
+| [`USAGE-METERING.md`](docs/USAGE-METERING.md) | What relays meter, how records reach billing, and direct seconds |
+| [`RECORDING.md`](docs/RECORDING.md) | Hosted recording |
+| [`OPERATOR-CONSOLE.md`](docs/OPERATOR-CONSOLE.md) | The operator console at admin.moqom.cloud |
+| [`OPEN-CORE.md`](docs/OPEN-CORE.md) | What is public, what stays private, and how the player is tied to the network |
+| [`BENCHMARKS-AND-SPECS.md`](docs/BENCHMARKS-AND-SPECS.md) | Measured performance and specifications |
+| [`compliance/`](docs/compliance/README.md) | The compliance programme: policies, GDPR, CCPA, SOC 2 and ISO 27001 mappings, incident response |
+| [`deploy/README.md`](deploy/README.md) | Deploying: environments, secrets, the management overlay, viewer licensing |
 
 ## Layout
 
@@ -151,7 +180,7 @@ contract in `proto/` and one token fixture, and both are checked in CI.
 
 **OBS, by the GPL.** A plugin links `libobs` and is a combined work, so its
 source must be public and GPL-licensed — which this repository, private and half
-BUSL-1.1, cannot be. Only Apache-2.0 code may cross that boundary; see
+proprietary, cannot be. Only Apache-2.0 code may cross that boundary; see
 [LICENSING.md](LICENSING.md#the-gpl-boundary-plugins-for-hosts-we-do-not-own)
 for what that costs. Treat the next host integration as a new repository by
 default.
@@ -227,11 +256,11 @@ written from the draft by different people. Interop against `moq-rs` and
 
 ## Licence
 
-Dual-licensed. Protocol, client core, SDKs, schemas, and samples are
-Apache-2.0; the relay, control plane, and `moqom-cc` are BUSL-1.1, converting to
-Apache-2.0 four years after each release. The Business Source License permits
-self-hosting for your own applications and users, including commercially, and
-prohibits only offering MOQOM to third parties as a competing hosted service.
+Split by role. Protocol, client core, SDKs, schemas, and samples are
+Apache-2.0; the relay, control plane, recorder and `moqom-cc` are proprietary and
+ship only as binaries. Self-hosting (BYOC) customers get them under a written
+licence that permits self-hosting for their own applications and users and
+prohibits offering MOQOM to third parties as a hosted service.
 
 The split is by role rather than by repository, so both this repository and
 `moqom-engine` contain each half. See [LICENSING.md](LICENSING.md) for the full
@@ -239,6 +268,9 @@ map and the reasoning.
 
 ## Contributing
 
-Contributions require signing the [CLA](.github/CLA.md). MOQOM is dual-licensed
-and the CLA permits relicensing — Section 4 spells out exactly what that means,
-because it is the term most worth reading before you agree to it.
+Elliott Wave LLC, founded and solely owned by Elliott, owns all of MOQOM's
+intellectual property — the open-source parts included. An open-source licence
+lets you use the code; it does not transfer ownership. Contributions therefore
+require signing the [Copyright Assignment Agreement](.github/CLA.md), which
+assigns your contribution's copyright to Elliott Wave LLC and licenses it back
+to you for any use. We have contacted legal counsel to review it.

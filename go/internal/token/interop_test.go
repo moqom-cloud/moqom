@@ -13,7 +13,6 @@ package token
 // package that would silently break every relay.
 
 import (
-	"crypto/ed25519"
 	"encoding/json"
 	"errors"
 	"io/fs"
@@ -77,7 +76,7 @@ type tcase struct {
 func buildFixture(t *testing.T) fixture {
 	t.Helper()
 
-	key, err := KeyFrom(ed25519.NewKeyFromSeed(interopSeed))
+	key, err := KeyFromSeed(interopSeed)
 	if err != nil {
 		t.Fatalf("deriving the signing key: %v", err)
 	}
@@ -89,7 +88,7 @@ func buildFixture(t *testing.T) fixture {
 	// A thumbprint longer than DeviceIDLength, so the fixture actually exercises
 	// the truncation. A short one would pass on both sides no matter what either
 	// of them did with the length.
-	const thumbprint = "MpXqvQAmv7Y3Kk9dHnJpLwRtUvXyZaBcDeFgHiJkLmN"
+	const thumbprint = "MpXqvQAmv7Y3Kk9dHnJpLwRtUvXyZaBcDeFgHiJkLmM"
 
 	built := fixture{
 		Issuer: "https://api.moqom.cloud",
@@ -127,14 +126,14 @@ func buildFixture(t *testing.T) fixture {
 		signed, _, err := Mint(key, Claims{
 			Issuer:       built.Issuer,
 			Subject:      spec.username,
-			Audience:     "acme",
+			Tenant:       "acme",
 			ID:           spec.id,
 			Confirmation: Confirmation{Thumbprint: thumbprint},
-			MOQT: ScopeFrom(
+			Grant: ScopeFrom(
 				control.Grants{Publish: control.PublishCamera},
 				spec.room, false, false,
 			),
-			ArrivedVia: spec.via,
+			Via: spec.via,
 		}, 10*time.Minute, interopNow)
 		if err != nil {
 			t.Fatalf("minting %s: %v", spec.name, err)
@@ -192,30 +191,26 @@ func TestInteropFixture(t *testing.T) {
 		t.Fatalf("parsing the fixture: %v", err)
 	}
 
-	// Byte-for-byte, because the whole value of a fixture is that the far side
-	// is checking the same bytes this side produced. Minting is deterministic
-	// here only because every input is pinned -- including the token ID, which
-	// Mint would otherwise randomise.
+	// The committed tokens are what the far side checks, so they are what this
+	// side has to verify. ML-DSA signing is hedged, so regenerating the fixture
+	// changes the signatures and nothing else: every claim is pinned, including
+	// the token ID, which Mint would otherwise randomise.
 	if len(committed.Cases) != len(built.Cases) {
 		t.Fatalf("fixture has %d cases, minting produced %d", len(committed.Cases), len(built.Cases))
 	}
 
-	public, ok := ed25519.NewKeyFromSeed(interopSeed).Public().(ed25519.PublicKey)
-	if !ok {
-		t.Fatal("seed did not produce an Ed25519 key")
-	}
-	key, err := KeyFrom(ed25519.NewKeyFromSeed(interopSeed))
+	key, err := KeyFromSeed(interopSeed)
 	if err != nil {
 		t.Fatalf("deriving the key: %v", err)
 	}
-	verifier := NewVerifier(committed.Issuer, map[string]ed25519.PublicKey{key.ID: public})
+	verifier := NewVerifier(committed.Issuer, []Key{key})
 
 	for _, c := range committed.Cases {
 		claims, err := verifier.Verify(c.Token, time.Unix(committed.Now, 0))
 		if err != nil {
 			t.Fatalf("%s: the committed token no longer verifies here: %v", c.Name, err)
 		}
-		identity, err := claims.Identity()
+		identity, err := Identity(claims)
 		if err != nil {
 			t.Fatalf("%s: deriving the identity: %v", c.Name, err)
 		}
@@ -223,12 +218,12 @@ func TestInteropFixture(t *testing.T) {
 			t.Errorf("%s: fixture says %s/%s, this build reads %s/%s",
 				c.Name, c.Username, c.Device, identity.Username, identity.Device)
 		}
-		if claims.Audience != c.Tenant {
-			t.Errorf("%s: fixture says tenant %s, token carries %s", c.Name, c.Tenant, claims.Audience)
+		if claims.Tenant != c.Tenant {
+			t.Errorf("%s: fixture says tenant %s, token carries %s", c.Name, c.Tenant, claims.Tenant)
 		}
-		if claims.ArrivedVia != c.ArrivedVia {
+		if claims.Via != c.ArrivedVia {
 			t.Errorf("%s: fixture says brought by %q, token carries %q",
-				c.Name, c.ArrivedVia, claims.ArrivedVia)
+				c.Name, c.ArrivedVia, claims.Via)
 		}
 	}
 }

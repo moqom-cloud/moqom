@@ -262,6 +262,12 @@ message ModerationEntry {
   // Set when this entry came from a classifier rather than a person, naming the
   // model and version that decided.
   string decided_by_model = 18;
+
+  // For `UPDATE_ROOM_POLICY`, the security-relevant fields that changed, as
+  // `field: from -> to`. Empty when nothing of that kind moved. Recorded as
+  // text rather than as a copy of the policy because the reader is a person
+  // working out when a room stopped being end-to-end encrypted, and who said so.
+  string policy_change = 19;
 }
 
 enum ModerationVerb {

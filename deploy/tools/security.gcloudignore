@@ -1,0 +1,23 @@
+# Upload set for cloudbuild-security.yaml: every repository whose code ships,
+# and nothing that could carry a credential. Pass with --ignore-file.
+/*
+!/moqom/
+!/moqom-go/
+!/moqom-engine/
+!/moqom-rust/
+!/moqom-mcp/
+
+**/.git/
+**/target/
+**/node_modules/
+**/.terraform/
+**/terraform.tfstate*
+**/*.tfvars
+!**/*.tfvars.example
+**/.env
+**/.env.*
+**/*-key.json
+**/*credentials*.json
+**/*.pem
+**/*.p12
+**/*.key

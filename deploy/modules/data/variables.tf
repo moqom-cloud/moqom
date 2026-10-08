@@ -102,6 +102,12 @@ variable "iam_service_accounts" {
   default     = []
 }
 
+variable "iam_users" {
+  type        = list(string)
+  description = "People, by Google account email, who log in to Postgres as themselves with an access token as the password. Creates the login only; what it may read is granted in the database, not here, and the project-level cloudsql roles are the caller's to hold."
+  default     = []
+}
+
 variable "database_flags" {
   type        = map(string)
   description = "Extra Postgres flags. `cloudsql.iam_authentication` is set unconditionally and cannot be overridden here."

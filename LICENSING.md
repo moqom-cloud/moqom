@@ -1,30 +1,30 @@
 # Licensing
 
-MOQOM is dual-licensed. The split follows what each part is *for*: the pieces
-developers integrate against are permissive, and the server that constitutes the
-product is source-available.
+MOQOM is split in two. The split follows what each part is *for*: the pieces
+developers integrate against are permissive open source, and the service that
+constitutes the product is proprietary and ships only as binaries.
 
 | Component | License |
 |---|---|
 | Protocol, client core, SDKs, schemas, samples, agent protocol | Apache-2.0 |
-| Relay, control plane, director, ingest, `moqom-cc` | BUSL-1.1 → Apache-2.0 |
+| Relay, control plane, director, ingest, recorder, `moqom-cc` | Proprietary ([`LicenseRef-MOQOM-Proprietary`](LICENSES/LicenseRef-MOQOM-Proprietary.txt)), binary only |
 | Host plugins that link a GPL host (OBS) | GPL, in their own repos |
 
 Full texts are in [`LICENSES/`](LICENSES/). The split is by role rather than by
 repository, so knowing where a file lives does not tell you which half it is in:
 [`moqom-engine`](https://github.com/moqom-cloud/moqom-engine) holds the
-Apache-2.0 protocol and transport beside the BUSL-1.1 relay, and this repository
-holds the Apache-2.0 contract in `proto/` beside the BUSL-1.1 control plane in
+Apache-2.0 protocol and transport beside the proprietary relay, and this repository
+holds the Apache-2.0 contract in `proto/` beside the proprietary control plane in
 `go/`. Every crate declares its own `license` field; **a crate without one is a
 bug**, since there is no safe default to fall back on. The engine's own
 [LICENSING.md](https://github.com/moqom-cloud/moqom-engine/blob/main/LICENSING.md)
 maps its crates and explains why both halves share a workspace.
 
 "SDKs" includes the server-side ones. `moqom-go` and `moqom-rust` are Apache-2.0
-even though the control plane they call is BUSL-1.1, and the line between them
+even though the control plane they call is proprietary, and the line between them
 is the gRPC contract in `proto/`: an SDK holds generated stubs and the wire
 vocabulary, never any part of the server. That is what keeps a customer's
-backend free of a source-available dependency for doing something as ordinary as
+backend free of a proprietary dependency for doing something as ordinary as
 kicking somebody out of a room — and it is why neither SDK may grow a shortcut
 that imports from `go/internal` or links the relay.
 
@@ -44,20 +44,38 @@ over MIT specifically for its patent provisions, which MIT lacks entirely:
 
 Neither provision stops anyone from *filing* a patent — no copyright license
 can. What blocks that is prior art, which we get from publishing at all.
-Publishing design documents alongside the code extends the same protection to
-ideas we have not yet shipped, and costs nothing.
 
-## BUSL-1.1 on the relay
+Publishing is not free once we hold patent applications of our own, which
+Elliott Wave LLC now does. Two consequences, both in
+[`docs/PATENT-ASSESSMENT.md`](docs/PATENT-ASSESSMENT.md):
 
-Source-available rather than closed, because asking security-conscious BYOC
-customers to run an opaque binary while claiming auditability is a
-contradiction. The [Additional Use Grant](LICENSES/BUSL-1.1.txt) permits
-self-hosting for your own applications and end users, including commercially,
-and prohibits only offering it to third parties as a competing hosted service.
-Each version converts to Apache-2.0 four years after release.
+- **Section 3 licenses our own patents too.** Every claim necessarily infringed
+  by Apache-2.0 code we publish is licensed royalty-free to everyone who uses
+  that code. A patent reading on an SDK is defensive; one reading on the relay
+  or control plane is not.
+- **Publication before filing forfeits most of the world.** The US allows a
+  one-year grace period after our own disclosure; Europe, China and most
+  others do not. Nothing describing an invention goes public — code, design
+  document, or IETF draft — until an application covering it is on file.
 
-BUSL is not an OSI-approved open source license, and we should not describe it
-as one.
+## Proprietary on the service
+
+The relay, control plane, director, ingest, recorder and `moqom-cc` are
+proprietary, under [`LicenseRef-MOQOM-Proprietary`](LICENSES/LicenseRef-MOQOM-Proprietary.txt).
+Their source is a trade secret: it is not published, not distributed to
+customers, and never converts to an open licence. MOQOM Cloud runs them for
+customers; self-hosting (BYOC) customers receive signed binaries under a written
+licence that permits self-hosting for their own applications and end users and
+prohibits offering the service to third parties.
+
+This replaces BUSL-1.1, which was chosen so BYOC customers could audit the
+relay's source. Two things changed. Every BUSL release would have become
+Apache-2.0 four years later, publishing the design we most want to keep. And
+auditability no longer needs the relay's source: media is end-to-end encrypted
+before it reaches a relay, and the cryptography that protects it is open source
+in [`moqom-security`](https://github.com/moqom-cloud/moqom-security), so a
+customer can verify what protects their media without seeing how the service
+works.
 
 ## `moqom-cc` is the awkward case
 
@@ -65,7 +83,7 @@ Congestion control runs on the sender, so `moqom-cc` ships inside the client
 SDK — the Apache-2.0 half — while being the component whose tuning is most
 worth protecting and least reverse-engineerable from observed traffic.
 
-**Resolution: `moqom-cc` is BUSL-licensed and distributed to SDK consumers as a
+**Resolution: `moqom-cc` is proprietary and distributed to SDK consumers as a
 prebuilt binary**, not source. The Apache-licensed client links it. This
 preserves it as a trade secret, which a patent could not do, since patents
 publish.
@@ -92,11 +110,11 @@ preferences:
 
 1. **The plugin lives in its own public repository.** GPL source availability is
    an obligation to everyone who receives a binary, which a private monorepo
-   cannot satisfy — and this repository's other half is BUSL-1.1, which is not a
-   free license and must never end up inside a GPL work.
+   cannot satisfy — and this repository's other half is proprietary, which is
+   not a free license and must never end up inside a GPL work.
 2. **Only Apache-2.0 MOQOM code may cross the boundary.** The plugin links the
    C ABI of `moqom-client`, which is Apache-2.0. It must *not* link `moqom-cc`,
-   whose whole point is being a BUSL prebuilt binary. This is exactly the case
+   whose whole point is being a proprietary prebuilt binary. This is exactly the case
    that consequence 1 above was written for: the plugin is the Apache-2.0-only
    build with a stock controller substituted behind `quinn`'s `Controller`
    trait. The substitutability requirement stops being hypothetical here.
@@ -122,10 +140,14 @@ A CLA, not a DCO. Both relicensing and acquisition require the ability to change
 terms, and retrofitting a CLA means tracking down every past contributor — a
 cost that grows with every merged pull request.
 
-[`.github/CLA.md`](.github/CLA.md) is adapted from the Apache ICLA v2.2, with
-one substantive addition: Section 4 states plainly that contributions may be
-relicensed and offered commercially. Foundation CLAs do not need that clause;
-commercial ones do, and burying it would be a bad way to treat contributors.
+Elliott Wave LLC owns all intellectual property in MOQOM, including the
+open-source components; the open-source licences grant use, not ownership. To
+keep ownership in one place, [`.github/CLA.md`](.github/CLA.md) is a copyright
+assignment: contributors assign the copyright in their contributions to
+Elliott Wave LLC and receive a perpetual licence back to use their own work for
+any purpose. Section 5 states plainly that contributions may be relicensed,
+sold and offered commercially — burying that would be a bad way to treat
+contributors. We have contacted legal counsel to review the agreement.
 
 Enforcement runs through `contributor-assistant/github-action` on every pull
 request.
@@ -134,14 +156,19 @@ request.
 
 Blocking public distribution:
 
-- [ ] **Legal entity.** `LICENSES/BUSL-1.1.txt` and `.github/CLA.md` both carry
-      a `[LEGAL ENTITY]` placeholder. A BSL naming a nonexistent licensor is
-      defective, so this blocks any public release.
-- [ ] **Counsel review** of the Additional Use Grant and the CLA. The Additional
-      Use Grant is the single most commercially consequential sentence in the
-      repository — it defines what a competitor may do.
-- [ ] **`legal@moqom.com`** must exist; the BSL names it as the contact for
-      alternative licensing.
+- [x] **Legal entity.** Elliott Wave LLC is the licensor in both
+      `LICENSES/LicenseRef-MOQOM-Proprietary.txt` files and the Maintainer in
+      `.github/CLA.md`.
+- [ ] **IP assignment to the LLC.** Copyright and inventions vest in the person
+      who wrote them unless assigned in writing. A signed assignment from
+      Elliott to Elliott Wave LLC, covering work since the first commit, is
+      what makes the copyright lines and the patent applications the LLC's.
+- [ ] **Counsel review** (counsel contacted) of the proprietary licence text,
+      the BYOC licence agreement and the copyright assignment CLA, including
+      whether a PR-comment signature satisfies 17 U.S.C. § 204(a) for a
+      transfer of copyright.
+- [ ] **`legal@moqom.cloud`** must exist; the proprietary licence names it as
+      the contact for licensing.
 - [ ] **`CLA_SIGNATURES_TOKEN`** repository secret — a PAT with `repo` scope,
       required before the CLA workflow can record signatures.
 
@@ -150,8 +177,6 @@ Before the first external release:
 - [ ] Per-crate `LICENSE` files and SPDX headers across both halves.
 - [ ] Decide whether Apache-half crates publish to crates.io, and reserve the
       `moqom-*` names if so.
-- [ ] Trademark: "Business Source License" is MariaDB's mark and its use is
-      conditioned on the covenants in the license text. Do not modify that text.
 
 ## Unrelated, but frequently confused with this
 

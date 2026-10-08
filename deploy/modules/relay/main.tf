@@ -62,6 +62,7 @@ locals {
     var.link_ca_secret_id,
     var.link_client_cert_secret_id,
     var.link_client_key_secret_id,
+    var.ticket_keys_secret_id,
   ])
 }
 
@@ -147,6 +148,20 @@ resource "google_compute_instance_template" "relay" {
     # a high rate, which is precisely where the virtio driver's per-packet cost
     # becomes the bottleneck before bandwidth does.
     nic_type = "GVNIC"
+
+    # An external IPv6 range on the NIC is what a passthrough load balancer's
+    # IPv6 forwarding rule delivers to; there is no internal-only equivalent.
+    # The VPC firewall still decides what reaches it, with the same rules as
+    # IPv4, and the IPv6 egress deny keeps the relay from originating to the
+    # internet over it.
+    stack_type = var.enable_ipv6 ? "IPV4_IPV6" : "IPV4_ONLY"
+
+    dynamic "ipv6_access_config" {
+      for_each = var.enable_ipv6 ? [1] : []
+      content {
+        network_tier = "PREMIUM"
+      }
+    }
   }
 
   metadata = {
@@ -435,6 +450,79 @@ resource "google_compute_forwarding_rule" "quic" {
   ip_protocol           = "UDP"
   ports                 = [tostring(var.udp_port)]
   ip_address            = google_compute_address.relay.id
+  backend_service       = google_compute_region_backend_service.relay.id
+  network_tier          = "PREMIUM"
+}
+
+# STUN, on the same address and the same backends. A rule of its own rather
+# than a second port on the one above, because a forwarding rule's ports cannot
+# change in place and replacing the QUIC rule would drop every live session.
+# The relay replies from the address the request was sent to, which is this
+# one, so the device accepts the answer.
+resource "google_compute_forwarding_rule" "stun" {
+  count = var.stun_port == null ? 0 : 1
+
+  name    = "${local.name}-stun"
+  project = var.project_id
+  region  = var.region
+
+  load_balancing_scheme = "EXTERNAL"
+  ip_protocol           = "UDP"
+  ports                 = [tostring(var.stun_port)]
+  ip_address            = google_compute_address.relay.id
+  backend_service       = google_compute_region_backend_service.relay.id
+  network_tier          = "PREMIUM"
+}
+
+# IPv6: one address, and the QUIC and STUN rules again on it, delivering to the
+# same backend service. A passthrough IPv6 forwarding rule must name the subnet
+# its backends' IPv6 ranges come from.
+resource "google_compute_address" "relay_v6" {
+  count = var.enable_ipv6 ? 1 : 0
+
+  name    = "${local.name}-v6"
+  project = var.project_id
+  region  = var.region
+
+  address_type       = "EXTERNAL"
+  ip_version         = "IPV6"
+  ipv6_endpoint_type = "NETLB"
+  subnetwork         = var.subnetwork
+  network_tier       = "PREMIUM"
+
+  labels = var.labels
+}
+
+resource "google_compute_forwarding_rule" "quic_v6" {
+  count = var.enable_ipv6 ? 1 : 0
+
+  name    = "${local.name}-quic-v6"
+  project = var.project_id
+  region  = var.region
+
+  load_balancing_scheme = "EXTERNAL"
+  ip_protocol           = "UDP"
+  ip_version            = "IPV6"
+  ports                 = [tostring(var.udp_port)]
+  ip_address            = google_compute_address.relay_v6[0].id
+  subnetwork            = var.subnetwork
+  backend_service       = google_compute_region_backend_service.relay.id
+  network_tier          = "PREMIUM"
+}
+
+resource "google_compute_forwarding_rule" "stun_v6" {
+  count = var.enable_ipv6 && var.stun_port != null ? 1 : 0
+
+  name    = "${local.name}-stun-v6"
+  project = var.project_id
+  region  = var.region
+
+  load_balancing_scheme = "EXTERNAL"
+  ip_protocol           = "UDP"
+  ip_version            = "IPV6"
+  ports                 = [tostring(var.stun_port)]
+  ip_address            = google_compute_address.relay_v6[0].id
+  subnetwork            = var.subnetwork
   backend_service       = google_compute_region_backend_service.relay.id
   network_tier          = "PREMIUM"
 }

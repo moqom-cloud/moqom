@@ -110,6 +110,10 @@ message MintClientTokenResponse {
 
   // Which key signed it, matching a `VerificationKey.key_id`.
   string key_id = 4;
+
+  // What the token's room allows of direct paths, for the backend to hand to
+  // the client with the token. Unset for a token that names no room.
+  DirectGrant direct = 5;
 }
 
 // How a token is tied to the holder.

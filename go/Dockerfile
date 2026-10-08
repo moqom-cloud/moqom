@@ -10,7 +10,7 @@
 # The context is therefore the parent of both repositories. That is unusual and
 # it is the same reason go.work exists; both go away at the SDK's first release.
 
-FROM golang:1.23.1-bookworm AS build
+FROM golang:1.27-bookworm AS build
 
 WORKDIR /src
 
@@ -19,6 +19,8 @@ WORKDIR /src
 # module cache again and one that does not.
 COPY moqom/go/go.mod moqom/go/go.sum ./moqom/go/
 COPY moqom-go/go.mod moqom-go/go.sum ./moqom-go/
+# The security libraries, whole: small, and the module's `replace` points beside it.
+COPY moqom-security/go ./moqom-security/go
 RUN cd moqom/go && GOWORK=off go mod download
 
 COPY moqom-go ./moqom-go
@@ -48,7 +50,11 @@ RUN cd moqom/go && \
 # claiming to be the first.
 RUN cd moqom/go && \
     GOWORK=off CGO_ENABLED=0 GOOS=linux \
-    go test -trimpath -c -o /out/moqom-conformance ./internal/store/postgres
+    go test -trimpath -c -o /out/moqom-conformance ./internal/store/postgres && \
+    GOWORK=off CGO_ENABLED=0 GOOS=linux \
+    go test -trimpath -c -o /out/moqom-billing-conformance ./internal/billing/postgres && \
+    GOWORK=off CGO_ENABLED=0 GOOS=linux \
+    go test -trimpath -c -o /out/moqom-byoc-conformance ./internal/byoc/postgres
 
 # Distroless, and nonroot: there is no shell to exec into, which is a real
 # limitation during an incident and a real reduction in what a remote code
@@ -65,6 +71,8 @@ COPY --from=build /out/moqom-dbadmin /moqom-dbadmin
 # So does the store's conformance suite, for the same reason: it has to run
 # beside a database that only this network can reach.
 COPY --from=build /out/moqom-conformance /moqom-conformance
+COPY --from=build /out/moqom-billing-conformance /moqom-billing-conformance
+COPY --from=build /out/moqom-byoc-conformance /moqom-byoc-conformance
 
 # 8443 is gRPC, 8080 is the probes. Documentation rather than enforcement --
 # EXPOSE opens nothing -- but the deployment reads these numbers back.

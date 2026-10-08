@@ -249,3 +249,18 @@ CREATE TABLE IF NOT EXISTS events (
 -- Locale arrived after the table existed. CREATE TABLE IF NOT EXISTS above
 -- will not reshape a table that is already there; this will.
 ALTER TABLE participants ADD COLUMN IF NOT EXISTS locale text NOT NULL DEFAULT '';
+
+-- End-to-end encryption arrived the same way, and its default is the point: every
+-- room that existed before the column did becomes a room that requires it. A
+-- room is unencrypted only because an UpdateRoomPolicy said so, with a reason,
+-- in the moderation log below.
+ALTER TABLE rooms ADD COLUMN IF NOT EXISTS e2ee text NOT NULL DEFAULT 'required';
+
+-- What a policy update did to a room's security settings. See
+-- control.ModerationEntry.PolicyChange.
+ALTER TABLE moderation_log ADD COLUMN IF NOT EXISTS policy_change text NOT NULL DEFAULT '';
+
+-- Direct paths. An empty value and a zero limit read as allowed and four, so
+-- rooms from before the columns follow MoqomKit's default.
+ALTER TABLE rooms ADD COLUMN IF NOT EXISTS direct_paths text NOT NULL DEFAULT '';
+ALTER TABLE rooms ADD COLUMN IF NOT EXISTS max_direct_participants bigint NOT NULL DEFAULT 0;

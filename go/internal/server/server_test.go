@@ -3,10 +3,12 @@ package server_test
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -81,15 +83,21 @@ type harness struct {
 // laundered time.
 func newHarness(t *testing.T, clocks ...timecode.Clock) *harness {
 	t.Helper()
-
-	current := time.Date(2026, 7, 27, 12, 0, 0, 0, time.UTC)
-	now := func() time.Time { return current }
-	advance := func(d time.Duration) { current = current.Add(d) }
-
 	var clock timecode.Clock
 	if len(clocks) > 0 {
 		clock = clocks[0]
 	}
+	return newConfiguredHarness(t, func(config *server.Config) { config.Clock = clock })
+}
+
+// newConfiguredHarness is newHarness with the server's configuration adjusted
+// by configure before it is built.
+func newConfiguredHarness(t *testing.T, configure func(*server.Config)) *harness {
+	t.Helper()
+
+	current := time.Date(2026, 7, 27, 12, 0, 0, 0, time.UTC)
+	now := func() time.Time { return current }
+	advance := func(d time.Duration) { current = current.Add(d) }
 
 	memoryStore := memory.New(now, nil)
 	signing, err := token.GenerateKey()
@@ -111,15 +119,16 @@ func newHarness(t *testing.T, clocks ...timecode.Clock) *harness {
 		barrenKey: {Name: "operator", Tenant: tenant, Grants: control.Grants{IsOwner: true}},
 	})
 
-	instance, err := server.New(server.Config{
+	config := server.Config{
 		Store:           memoryStore,
 		Accounts:        accounts,
 		Issuer:          issuerFor,
 		Keys:            []token.Key{signing},
 		Now:             now,
-		Clock:           clock,
 		DispatchTimeout: 2 * time.Second,
-	})
+	}
+	configure(&config)
+	instance, err := server.New(config)
 	if err != nil {
 		t.Fatalf("building the control plane: %v", err)
 	}
@@ -310,7 +319,7 @@ func TestMintingIsBoundedByTheAccountCeiling(t *testing.T) {
 	minted, err := h.tokens.MintClientToken(as(joinKey), &adminpb.MintClientTokenRequest{
 		Tenant:           tenant,
 		Username:         "bob",
-		DeviceThumbprint: "MpXqvQAmv7Y3Kk9dHnJpLwRtUvXyZaBcDeFgHiJkLmN",
+		DeviceThumbprint: "MpXqvQAmv7Y3Kk9dHnJpLwRtUvXyZaBcDeFgHiJkLmM",
 		Room:             roomName,
 		Grants: &adminpb.Grants{
 			Publish: []adminpb.PublishScope{adminpb.PublishScope_PUBLISH_SCOPE_AUDIO},
@@ -330,15 +339,15 @@ func TestMintingIsBoundedByTheAccountCeiling(t *testing.T) {
 	// And cannot mint a moderator, however the request is phrased.
 	for _, attempt := range []*adminpb.MintClientTokenRequest{
 		{
-			Tenant: tenant, Username: "bob", DeviceThumbprint: "abcdefghijklmnopqrst", Room: roomName,
+			Tenant: tenant, Username: "bob", DeviceThumbprint: "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQ", Room: roomName,
 			Grants: &adminpb.Grants{Moderation: []adminpb.Capability{adminpb.Capability_CAPABILITY_KICK}},
 		},
 		{
-			Tenant: tenant, Username: "bob", DeviceThumbprint: "abcdefghijklmnopqrst", Room: roomName,
+			Tenant: tenant, Username: "bob", DeviceThumbprint: "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQ", Room: roomName,
 			Preset: adminpb.CapabilityPreset_CAPABILITY_PRESET_SUPER_MODERATOR,
 		},
 		{
-			Tenant: tenant, Username: "bob", DeviceThumbprint: "abcdefghijklmnopqrst", Room: roomName,
+			Tenant: tenant, Username: "bob", DeviceThumbprint: "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQ", Room: roomName,
 			Grants: &adminpb.Grants{IsOwner: true},
 		},
 	} {
@@ -355,7 +364,7 @@ func TestMintedTokensVerifyAndCarryTheirScope(t *testing.T) {
 	response, err := h.tokens.MintClientToken(as(ownerKey), &adminpb.MintClientTokenRequest{
 		Tenant:           tenant,
 		Username:         "alice",
-		DeviceThumbprint: "MpXqvQAmv7Y3Kk9dHnJpLwRtUvXyZaBcDeFgHiJkLmN",
+		DeviceThumbprint: "MpXqvQAmv7Y3Kk9dHnJpLwRtUvXyZaBcDeFgHiJkLmM",
 		Room:             roomName,
 		Preset:           adminpb.CapabilityPreset_CAPABILITY_PRESET_SUPER_MODERATOR,
 		Grants: &adminpb.Grants{
@@ -377,10 +386,10 @@ func TestMintedTokensVerifyAndCarryTheirScope(t *testing.T) {
 	if keys.GetKeys()[0].GetKeyId() != response.GetKeyId() {
 		t.Error("the token names a key that is not published")
 	}
-	// Honest about what it is. When proof-of-possession lands this says DPOP, and
-	// until then a client that wants to refuse bearer tokens can tell.
-	if keys.GetBinding() != adminpb.TokenBinding_TOKEN_BINDING_BEARER {
-		t.Errorf("binding is %v, want BEARER while that is the truth", keys.GetBinding())
+	// Every relay requires proof of possession, so a client can refuse a
+	// deployment that says otherwise.
+	if keys.GetBinding() != adminpb.TokenBinding_TOKEN_BINDING_DPOP {
+		t.Errorf("binding is %v, want DPOP", keys.GetBinding())
 	}
 }
 
@@ -393,7 +402,7 @@ func TestMintingRefusesAClosedRoom(t *testing.T) {
 	}
 
 	_, err := h.tokens.MintClientToken(as(ownerKey), &adminpb.MintClientTokenRequest{
-		Tenant: tenant, Username: "bob", DeviceThumbprint: "abcdefghijklmnopqrst", Room: roomName,
+		Tenant: tenant, Username: "bob", DeviceThumbprint: "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQ", Room: roomName,
 	})
 	if status.Code(err) != codes.FailedPrecondition {
 		t.Errorf("minting into a closed room gave %v, want FailedPrecondition", status.Code(err))
@@ -411,14 +420,14 @@ func TestAgeGatedRoomsRequireAnAssertion(t *testing.T) {
 	}
 
 	_, err := h.tokens.MintClientToken(as(ownerKey), &adminpb.MintClientTokenRequest{
-		Tenant: tenant, Username: "bob", DeviceThumbprint: "abcdefghijklmnopqrst", Room: roomName,
+		Tenant: tenant, Username: "bob", DeviceThumbprint: "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQ", Room: roomName,
 	})
 	if status.Code(err) != codes.FailedPrecondition {
 		t.Errorf("minting without an age assertion gave %v, want FailedPrecondition", status.Code(err))
 	}
 
 	if _, err := h.tokens.MintClientToken(as(ownerKey), &adminpb.MintClientTokenRequest{
-		Tenant: tenant, Username: "bob", DeviceThumbprint: "abcdefghijklmnopqrst",
+		Tenant: tenant, Username: "bob", DeviceThumbprint: "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQ",
 		Room: roomName, AgeVerified: true,
 	}); err != nil {
 		t.Errorf("minting with an age assertion failed: %v", err)
@@ -1488,4 +1497,65 @@ func waitFor(t *testing.T, what string, condition func() bool) {
 		time.Sleep(5 * time.Millisecond)
 	}
 	t.Fatalf("timed out waiting for %s", what)
+}
+
+func TestAnAgentTokenIsMintedOnlyForAnAttachedWatchdogAndOnlyWatches(t *testing.T) {
+	h := newHarness(t)
+	h.createRoom(t, "alice")
+	mint := func(username string) (*adminpb.MintClientTokenResponse, error) {
+		return h.tokens.MintClientToken(as(ownerKey), &adminpb.MintClientTokenRequest{
+			Tenant: tenant, Username: username, Room: roomName,
+			DeviceThumbprint: "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQ",
+			Preset:           adminpb.CapabilityPreset_CAPABILITY_PRESET_SUPER_MODERATOR,
+			Grants: &adminpb.Grants{
+				Publish: []adminpb.PublishScope{adminpb.PublishScope_PUBLISH_SCOPE_VIDEO},
+			},
+		})
+	}
+
+	if _, err := mint("watchdog.rec-1"); status.Code(err) != codes.FailedPrecondition {
+		t.Fatalf("an agent for a watchdog nobody attached gave %v, want FailedPrecondition", status.Code(err))
+	}
+
+	attached, err := h.rooms.AttachWatchdog(as(ownerKey), &adminpb.AttachWatchdogRequest{
+		Tenant: tenant, Room: roomName,
+		Kind:        adminpb.WatchdogKind_WATCHDOG_KIND_RECORDING,
+		OperatedBy:  adminpb.WatchdogOperator_WATCHDOG_OPERATOR_TENANT,
+		Descriptor_: "Recording for compliance",
+	})
+	if err != nil {
+		t.Fatalf("attaching: %v", err)
+	}
+	response, err := mint("watchdog." + attached.GetId())
+	if err != nil {
+		t.Fatalf("minting for an attached watchdog: %v", err)
+	}
+
+	// Whatever the request asked for, an agent watches.
+	parts := strings.Split(response.GetToken(), ".")
+	payload, err := base64.RawURLEncoding.DecodeString(parts[1])
+	if err != nil {
+		t.Fatal(err)
+	}
+	var claims struct {
+		MOQT struct {
+			Publish      uint8  `json:"pub"`
+			Capabilities uint32 `json:"cap"`
+			Owner        bool   `json:"own"`
+		} `json:"moqt"`
+	}
+	if err := json.Unmarshal(payload, &claims); err != nil {
+		t.Fatal(err)
+	}
+	if claims.MOQT.Publish != 0 || claims.MOQT.Capabilities != 0 || claims.MOQT.Owner {
+		t.Errorf("an agent token grants %+v, want nothing but watching", claims.MOQT)
+	}
+
+	// And an agent token is always for one room.
+	if _, err := h.tokens.MintClientToken(as(ownerKey), &adminpb.MintClientTokenRequest{
+		Tenant: tenant, Username: "watchdog." + attached.GetId(),
+		DeviceThumbprint: "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQ",
+	}); status.Code(err) != codes.InvalidArgument {
+		t.Errorf("an agent token with no room gave %v, want InvalidArgument", status.Code(err))
+	}
 }

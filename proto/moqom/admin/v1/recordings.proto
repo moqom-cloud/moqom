@@ -1,0 +1,174 @@
+// Recording a room.
+//
+// A recording is a hosted recorder attached to a room as a recording watchdog:
+// a subscriber with no publish rights that receives what any viewer would and
+// writes it to storage. It is disclosed to the room the way every watchdog is,
+// and it is billed the way every viewer is -- for the bytes it receives -- plus
+// storage at cost. There is no recording fee.
+//
+// What is written depends on the room's encryption policy, and the API says
+// which rather than leaving a customer to discover it from the files:
+//
+// - Always, a lossless archive of every object as it arrived, with its group,
+//   object ID and timing. In a room that requires end-to-end encryption this
+//   is ciphertext, and only the customer's keys open it.
+// - Additionally, in a room whose media travels in the clear, a CMAF (fMP4)
+//   rendition per track where the codec can be remuxed without transcoding.
+
+syntax = "proto3";
+
+package moqom.admin.v1;
+
+import "google/protobuf/duration.proto";
+import "google/protobuf/timestamp.proto";
+import "moqom/admin/v1/common.proto";
+
+option go_package = "github.com/moqom-cloud/moqom-go/admin/adminpb;adminpb";
+
+service Recordings {
+  // Start recording a room.
+  //
+  // Refused with FAILED_PRECONDITION when the room's policy prohibits
+  // recording or the room has ended. Attaches a recording watchdog, so the
+  // room is told before the first byte is written.
+  rpc StartRecording(StartRecordingRequest) returns (Recording);
+
+  // Stop a recording and finalise its files. Idempotent: stopping a stopped
+  // recording returns it unchanged. A room whose policy requires recording
+  // refuses this while the room is open.
+  rpc StopRecording(StopRecordingRequest) returns (Recording);
+
+  rpc ListRecordings(ListRecordingsRequest) returns (ListRecordingsResponse);
+
+  // One recording, with short-lived download links for what it produced.
+  rpc GetRecording(GetRecordingRequest) returns (Recording);
+}
+
+enum RecordingState {
+  RECORDING_STATE_UNSPECIFIED = 0;
+  // Accepted, waiting for a recorder to pick it up.
+  RECORDING_STATE_PENDING = 1;
+  // A recorder is in the room and writing.
+  RECORDING_STATE_RECORDING = 2;
+  // Asked to stop; the recorder is finalising files.
+  RECORDING_STATE_STOPPING = 3;
+  // Finalised. Every artefact listed is complete.
+  RECORDING_STATE_COMPLETED = 4;
+  // Ended with an error. Artefacts written before the failure are kept and
+  // listed, and each is independently readable.
+  RECORDING_STATE_FAILED = 5;
+}
+
+enum RecordingFormat {
+  // The default: the archive, plus CMAF wherever the room permits it.
+  RECORDING_FORMAT_UNSPECIFIED = 0;
+  // The lossless object archive only.
+  RECORDING_FORMAT_ARCHIVE = 1;
+  // The archive, plus CMAF where the room's media is in the clear and the
+  // codec can be remuxed. Identical to UNSPECIFIED; named for callers that
+  // prefer to say so.
+  RECORDING_FORMAT_ARCHIVE_AND_CMAF = 2;
+}
+
+message RecordingOptions {
+  RecordingFormat format = 1;
+
+  // Stop automatically after this long. Zero means until stopped or until the
+  // room ends.
+  google.protobuf.Duration max_duration = 2;
+}
+
+message RecordingArtifact {
+  // Path relative to the recording's storage location.
+  string name = 1;
+
+  // `archive`; `cmaf`, an initialisation segment followed by its fragments,
+  // playable on its own; or `manifest`.
+  string kind = 2;
+
+  // The participant and track this belongs to, as `user/device/track`. Empty
+  // for the manifest.
+  string track = 3;
+
+  uint64 bytes = 4;
+
+  // A signed link, valid until `Recording.urls_expire_at`. Only set by
+  // GetRecording.
+  string download_url = 5;
+}
+
+message Recording {
+  string id = 1;
+  string tenant = 2;
+  string room = 3;
+  RecordingState state = 4;
+  RecordingOptions options = 5;
+
+  // Whether media was recorded as ciphertext, because the room requires
+  // end-to-end encryption. When true there is no CMAF rendition.
+  bool encrypted = 6;
+
+  // Where the artefacts live, as a `gs://` URI under the tenant's prefix.
+  string storage_uri = 7;
+
+  // The recording watchdog that discloses this recording to the room.
+  string watchdog_id = 8;
+
+  // Started because the room's policy requires recording, not by a call.
+  bool automatic = 9;
+
+  google.protobuf.Timestamp created_at = 10;
+  google.protobuf.Timestamp started_at = 11;
+  google.protobuf.Timestamp ended_at = 12;
+
+  // Bytes durably stored, which is what storage is billed on.
+  uint64 bytes_stored = 13;
+  uint64 objects = 14;
+
+  // Why a FAILED recording failed.
+  string error = 15;
+
+  // What it produced. Complete once COMPLETED or FAILED.
+  repeated RecordingArtifact artifacts = 16;
+
+  // A signed link to the manifest, which describes every track and artefact.
+  string manifest_url = 17;
+  google.protobuf.Timestamp urls_expire_at = 18;
+
+  // True when `artifacts` was cut short; the manifest lists everything.
+  bool artifacts_truncated = 19;
+}
+
+message StartRecordingRequest {
+  string tenant = 1;
+  string room = 2;
+  RecordingOptions options = 3;
+  ActorContext actor = 4;
+}
+
+message StopRecordingRequest {
+  string tenant = 1;
+  string recording_id = 2;
+  ActorContext actor = 3;
+}
+
+message ListRecordingsRequest {
+  string tenant = 1;
+  // Empty for every room in the tenant.
+  string room = 2;
+  uint32 page_size = 3;
+  string page_token = 4;
+}
+
+message ListRecordingsResponse {
+  repeated Recording recordings = 1;
+  string next_page_token = 2;
+}
+
+message GetRecordingRequest {
+  string tenant = 1;
+  string recording_id = 2;
+  // How long the download links stay valid. Defaults to fifteen minutes,
+  // capped at seven days.
+  google.protobuf.Duration url_lifetime = 3;
+}

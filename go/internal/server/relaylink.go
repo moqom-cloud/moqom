@@ -6,14 +6,20 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"strings"
 	"sync"
+	"time"
 
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/types/known/durationpb"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
 	adminpb "github.com/moqom-cloud/moqom-go/admin/adminpb"
+	"github.com/moqom-cloud/moqom/go/internal/byoc"
 	"github.com/moqom-cloud/moqom/go/internal/control"
+	"github.com/moqom-cloud/moqom/go/internal/listen"
 	relaypb "github.com/moqom-cloud/moqom/go/internal/relaypb"
 	"github.com/moqom-cloud/moqom/go/internal/store"
 )
@@ -55,6 +61,15 @@ type relayConn struct {
 	id     string
 	region string
 
+	// tenant, if set, is the only tenant this relay may serve: a customer's
+	// relay. Sessions and snapshot requests for any other are ignored.
+	tenant string
+
+	// revoked is closed to cut the stream, when the enrolment it came from is
+	// revoked.
+	revoked    chan struct{}
+	revokeOnce sync.Once
+
 	// Buffered, because a slow relay must not block a moderation call. When it
 	// fills, the send fails and the action is reported unenforced -- which is
 	// true, and better than a moderator's request hanging on somebody else's
@@ -64,6 +79,12 @@ type relayConn struct {
 	mu       sync.Mutex
 	sessions map[string]*relaypb.SessionState
 	pending  map[string]chan *relaypb.DirectiveResult
+
+	// census is the relay's latest count of its sessions by coarse place, for
+	// the live map. Replaced by each report and gone when the relay detaches,
+	// so nothing about where people were outlives the connection. See livemap.go.
+	census   *relaypb.Census
+	censusAt time.Time
 }
 
 const relaySendQueue = 64
@@ -75,7 +96,7 @@ func newRelayRegistry() *relayRegistry {
 	}
 }
 
-func (r *relayRegistry) attach(id, region string) *relayConn {
+func (r *relayRegistry) attach(id, region, tenant string) *relayConn {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
@@ -88,12 +109,34 @@ func (r *relayRegistry) attach(id, region string) *relayConn {
 	connection := &relayConn{
 		id:       id,
 		region:   region,
+		tenant:   tenant,
+		revoked:  make(chan struct{}),
 		send:     make(chan *relaypb.ControlMessage, relaySendQueue),
 		sessions: map[string]*relaypb.SessionState{},
 		pending:  map[string]chan *relaypb.DirectiveResult{},
 	}
 	r.relays[id] = connection
 	return connection
+}
+
+// cut ends the stream of the relay attached as id, if there is one here.
+func (r *relayRegistry) cut(id string) bool {
+	r.mu.Lock()
+	connection, ok := r.relays[id]
+	r.mu.Unlock()
+	if ok {
+		connection.cut()
+	}
+	return ok
+}
+
+func (c *relayConn) cut() {
+	c.revokeOnce.Do(func() { close(c.revoked) })
+}
+
+// serves reports whether this relay may serve a tenant's rooms.
+func (c *relayConn) serves(tenant string) bool {
+	return c.tenant == "" || c.tenant == tenant
 }
 
 func (r *relayRegistry) detach(connection *relayConn) {
@@ -190,8 +233,14 @@ func (c *relayConn) resolve(result *relaypb.DirectiveResult) {
 
 // Attach is the long-lived stream. One goroutine writes, this one reads.
 func (s *relayLinkService) Attach(stream relaypb.RelayLink_AttachServer) error {
-	if _, err := requireRelay(stream.Context()); err != nil {
+	account, err := requireRelay(stream.Context())
+	if err != nil {
 		return err
+	}
+	if s.core.overlay != nil && s.core.overlay.RelaysOverlayOnly {
+		if _, overlaid := listen.PeerOf(stream.Context()); !overlaid {
+			return status.Error(codes.PermissionDenied, "this deployment takes relays over the overlay only")
+		}
 	}
 
 	first, err := stream.Recv()
@@ -199,12 +248,25 @@ func (s *relayLinkService) Attach(stream relaypb.RelayLink_AttachServer) error {
 		return err
 	}
 	hello := first.GetHello()
-	if hello == nil || hello.GetRelayId() == "" {
+	if hello == nil || (hello.GetRelayId() == "" && account.RelayID == "") {
 		return statusFor(fmt.Errorf("%w: the first message must be a Hello naming the relay", control.ErrInvalid))
 	}
 
-	connection := s.core.relays.attach(hello.GetRelayId(), hello.GetRegion())
+	// A customer's relay is whoever its enrolment says, not whoever its Hello
+	// says, and nobody else may take a name shaped like one of theirs.
+	id := hello.GetRelayId()
+	switch {
+	case account.RelayID != "":
+		id = account.RelayID
+	case strings.HasPrefix(id, customerRelayIDTag):
+		return statusFor(fmt.Errorf("%w: relay IDs beginning %q are reserved", control.ErrInvalid, customerRelayIDTag))
+	}
+
+	connection := s.core.relays.attach(id, hello.GetRegion(), account.Tenant)
 	defer s.core.relays.detach(connection)
+	if account.Enrollment != "" {
+		go s.watchEnrollment(stream.Context(), connection, account)
+	}
 
 	writing, stopWriting := context.WithCancel(stream.Context())
 	defer stopWriting()
@@ -230,6 +292,20 @@ func (s *relayLinkService) Attach(stream relaypb.RelayLink_AttachServer) error {
 		}})
 	}
 
+	// Read on another goroutine, so a revoke can end the stream while a Recv
+	// is waiting; returning cancels the stream, which ends the Recv.
+	received := make(chan error, 1)
+	go func() { received <- s.receive(stream, connection) }()
+	select {
+	case err := <-received:
+		return err
+	case <-connection.revoked:
+		slog.InfoContext(stream.Context(), "relay stream cut", "relay", connection.id, "reason", "enrolment revoked")
+		return status.Error(codes.PermissionDenied, "this relay's enrolment has been revoked")
+	}
+}
+
+func (s *relayLinkService) receive(stream relaypb.RelayLink_AttachServer, connection *relayConn) error {
 	for {
 		message, err := stream.Recv()
 		if errors.Is(err, io.EOF) {
@@ -243,6 +319,27 @@ func (s *relayLinkService) Attach(stream relaypb.RelayLink_AttachServer) error {
 			// a relay that is serving a room full of people.
 			slog.WarnContext(stream.Context(), "relay report rejected",
 				"relay", connection.id, "error", err)
+		}
+	}
+}
+
+// watchEnrollment cuts a customer relay's stream once its enrolment is
+// revoked, on whichever replica it is attached to.
+func (s *relayLinkService) watchEnrollment(ctx context.Context, connection *relayConn, account ServiceAccount) {
+	ticker := time.NewTicker(customerRelayCheck)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-connection.revoked:
+			return
+		case <-ticker.C:
+		}
+		enrollment, err := s.core.overlay.Enrollments.Get(ctx, account.Enrollment)
+		if errors.Is(err, byoc.ErrNotFound) || (err == nil && !enrollment.Active()) {
+			connection.cut()
+			return
 		}
 	}
 }
@@ -295,11 +392,17 @@ func (s *relayLinkService) handle(
 		connection.resolve(body.DirectiveResult)
 		return nil
 	case *relaypb.RelayMessage_SnapshotRequest:
+		if !connection.serves(body.SnapshotRequest.GetTenant()) {
+			return fmt.Errorf("%w: a snapshot of another tenant's room", control.ErrInvalid)
+		}
 		return s.sendSnapshot(ctx, connection, roomRef{
 			tenant: body.SnapshotRequest.GetTenant(),
 			room:   body.SnapshotRequest.GetRoom(),
 		})
 	case *relaypb.RelayMessage_Heartbeat:
+		return nil
+	case *relaypb.RelayMessage_Census:
+		connection.recordCensus(body.Census, s.core.now())
 		return nil
 	case *relaypb.RelayMessage_Hello:
 		return fmt.Errorf("%w: a second Hello on one stream", control.ErrInvalid)
@@ -317,6 +420,11 @@ func (s *relayLinkService) adoptSession(
 	if session == nil || session.GetSessionId() == "" {
 		return
 	}
+	if !connection.serves(session.GetTenant()) {
+		slog.WarnContext(ctx, "relay reported a session for another tenant",
+			"relay", connection.id, "tenant", session.GetTenant())
+		return
+	}
 	connection.trackSession(session)
 	ref := roomRef{tenant: session.GetTenant(), room: session.GetRoom()}
 	if ref.room == "" {
@@ -330,6 +438,12 @@ func (s *relayLinkService) adoptSession(
 			slog.WarnContext(ctx, "could not send a room snapshot",
 				"relay", connection.id, "room", ref.room, "error", err)
 		}
+	}
+
+	// A hosted recorder is disclosed as the room's recording watchdog, not as
+	// somebody in it.
+	if s.core.isRecorder(relayIdentity(session.GetIdentity())) {
+		return
 	}
 
 	participant := control.Participant{
@@ -388,6 +502,9 @@ func (s *relayLinkService) closeSession(
 	}
 	tenant, room := session.GetTenant(), session.GetRoom()
 	identity := relayIdentity(session.GetIdentity())
+	if s.core.isRecorder(identity) {
+		return nil
+	}
 
 	presence := control.PresenceLeft
 	if closed.GetCause() == relaypb.SessionClosed_CAUSE_TRANSPORT_LOST {
@@ -437,6 +554,9 @@ func (s *relayLinkService) changeSession(
 	}
 	tenant, room := session.GetTenant(), session.GetRoom()
 	identity := relayIdentity(session.GetIdentity())
+	if s.core.isRecorder(identity) {
+		return nil
+	}
 
 	if changed.GetTrack() != "" {
 		s.core.publish(ctx, tenant, room, store.EventPublishChanged, &adminpb.RoomEvent{
@@ -493,6 +613,7 @@ func (c *core) snapshot(ctx context.Context, ref roomRef) (*relaypb.RoomSnapshot
 	case err == nil:
 		snapshot.Closed = !room.IsOpen()
 		snapshot.MaxParticipants = room.Policy.MaxParticipants
+		snapshot.Direct = directGrantToProto(room.Policy.Direct())
 	case errors.Is(err, control.ErrNotFound):
 		// A room nobody created, holding a session. Reported as closed rather than
 		// permissive: a relay serving a room the control plane has never heard of
@@ -541,7 +662,7 @@ func (s *relayLinkService) verificationKeys() *relaypb.VerificationKeys {
 		}
 		keys.Keys = append(keys.Keys, &adminpb.VerificationKey{
 			KeyId:     key.ID,
-			Algorithm: "EdDSA",
+			Algorithm: key.Algorithm,
 			Jwk:       jwk,
 		})
 	}

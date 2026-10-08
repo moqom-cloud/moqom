@@ -1,9 +1,12 @@
 package token
 
 import (
+	"encoding/json"
 	"errors"
 	"strings"
 	"testing"
+
+	"github.com/moqom-cloud/moqom-security/go/proof"
 )
 
 // Pinned against RFC 7638, which is the only way to know this agrees with the
@@ -44,10 +47,42 @@ func TestThumbprintRejectsANonCanonicalSpelling(t *testing.T) {
 	}
 }
 
+// The key every SDK now sends. The thumbprint is over alg, kty and pub, per
+// draft-ietf-cose-dilithium, so a key reaching the control plane as JSON names
+// the device its own prover says it is.
+func TestThumbprintOfAnMLDSAKey(t *testing.T) {
+	device, err := proof.GenerateProver(proof.MLDSA65)
+	if err != nil {
+		t.Fatal(err)
+	}
+	encoded, err := json.Marshal(device.JWK())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var sent PublicKey
+	if err := json.Unmarshal(encoded, &sent); err != nil {
+		t.Fatal(err)
+	}
+	got, err := sent.Thumbprint()
+	if err != nil {
+		t.Fatalf("Thumbprint() = %v", err)
+	}
+	if got != device.Thumbprint() {
+		t.Errorf("Thumbprint() = %q, want %q", got, device.Thumbprint())
+	}
+
+	short := sent
+	short.Pub = short.Pub[:len(short.Pub)-4]
+	if _, err := short.Thumbprint(); !errors.Is(err, ErrMalformedKey) {
+		t.Errorf("a truncated pub: Thumbprint() error = %v, want ErrMalformedKey", err)
+	}
+}
+
 func TestThumbprintRejectsWhatItCannotBind(t *testing.T) {
 	for name, key := range map[string]PublicKey{
 		"another curve": {Kty: "EC", Crv: "P-384", X: coord32, Y: coord32},
 		"another kind":  {Kty: "OKP", Crv: "P-256", X: coord32, Y: coord32},
+		"ml-dsa-44":     {Kty: "AKP", Alg: "ML-DSA-44", Pub: coord32},
 		"short":         {Kty: "EC", Crv: "P-256", X: strings.Repeat("A", 42), Y: coord32},
 		"absent":        {},
 	} {

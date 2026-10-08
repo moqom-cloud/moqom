@@ -3,6 +3,9 @@ package control
 import (
 	"errors"
 	"fmt"
+	"net"
+	"strconv"
+	"strings"
 	"time"
 )
 
@@ -40,6 +43,21 @@ const (
 	RecordingProhibited RecordingPolicy = "prohibited"
 )
 
+// E2EEPolicy is whether a room's media must be end-to-end encrypted. It must:
+// E2EERequired is the only value, and there is no way to turn encryption off.
+// A recorder or classifier that needs the media joins the room's group as a
+// disclosed member and decrypts on the tenant's side.
+//
+// The strings are protocol: they are the values of the `e2ee` token claim, and
+// MoqomKit compares against them byte for byte. "optional", which earlier
+// versions allowed, is refused wherever it arrives and read as required
+// wherever it was stored.
+type E2EEPolicy string
+
+// E2EERequired is every room's policy. A client with no key refuses to publish
+// into the room and drops what it cannot open.
+const E2EERequired E2EEPolicy = "required"
+
 // Defaults chosen to be defensible rather than generous. Both limits are real
 // costs -- a stage slot is a decode on every client, a watchdog is a fan-out on
 // the relay -- so the default is what a room can carry, not what it can imagine.
@@ -60,18 +78,121 @@ type Policy struct {
 	MaxParticipants uint32
 	StageSlots      uint32
 	WatchdogLimit   uint32
+
+	// E2EE is always E2EERequired once WithDefaults has run.
+	E2EE E2EEPolicy
+
+	// DirectPaths is whether participants may carry media device to device,
+	// and MaxDirectParticipants how many a room may have while they do.
+	DirectPaths           DirectPaths
+	MaxDirectParticipants uint32
+}
+
+// DirectPaths is whether a room's participants may carry media device to
+// device. A direct path tells each participant the others' IP addresses, which
+// is what DirectRelayOnly exists to prevent.
+//
+// The strings are protocol: they are stored, and a client reads the result
+// through DirectGrant.
+type DirectPaths string
+
+const (
+	DirectAllowed   DirectPaths = "allowed"
+	DirectRelayOnly DirectPaths = "relay_only"
+)
+
+// MaxDirectParticipants is the most participants any room may have and still
+// use direct paths, and every room's limit unless it sets a lower one. Each
+// extra peer costs every publisher a full upload; MoqomKit refuses above it
+// whatever the policy says.
+const MaxDirectParticipants = 4
+
+// DirectGrant is what a room allows of direct paths, as stated to a client
+// with its token.
+type DirectGrant struct {
+	Allowed         bool
+	MaxParticipants uint32
+}
+
+// DefaultStunPort is where a relay answers STUN unless configured otherwise,
+// the port RFC 8489 assigns.
+const DefaultStunPort = 3478
+
+// StunEndpoint is a STUN server a device asks for its public address before
+// offering a direct path: in a MOQOM deployment, the relays' own responder.
+type StunEndpoint struct {
+	// Host is a name or an address literal. A name that resolves per
+	// geography, as a relay edge name does, sends each device to a nearby
+	// relay, and any relay's answer is as good as another's.
+	Host string
+	Port uint16
+}
+
+// ParseStunEndpoint reads "host" or "host:port", the port defaulting to
+// DefaultStunPort. An IPv6 literal with a port is bracketed, as in
+// "[2001:db8::1]:3478".
+func ParseStunEndpoint(value string) (StunEndpoint, error) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return StunEndpoint{}, fmt.Errorf("%w: an empty STUN endpoint", ErrInvalid)
+	}
+	host, port := value, DefaultStunPort
+	if split, rawPort, err := net.SplitHostPort(value); err == nil {
+		parsed, err := strconv.ParseUint(rawPort, 10, 16)
+		if err != nil || parsed == 0 {
+			return StunEndpoint{}, fmt.Errorf("%w: STUN port %q", ErrInvalid, rawPort)
+		}
+		host, port = split, int(parsed)
+	} else if strings.HasPrefix(value, "[") && strings.HasSuffix(value, "]") {
+		host = value[1 : len(value)-1]
+	}
+	if host == "" || strings.ContainsAny(host, " /[]") {
+		return StunEndpoint{}, fmt.Errorf("%w: STUN host %q", ErrInvalid, host)
+	}
+	return StunEndpoint{Host: host, Port: uint16(port)}, nil
+}
+
+// Direct is the room's direct-path policy as a client is told it.
+func (p Policy) Direct() DirectGrant {
+	p = p.WithDefaults()
+	return DirectGrant{Allowed: p.DirectPaths == DirectAllowed, MaxParticipants: p.MaxDirectParticipants}
+}
+
+// ValidateDirect refuses a direct-path policy MoqomKit could not honour.
+func (p Policy) ValidateDirect() error {
+	switch p.DirectPaths {
+	case "", DirectAllowed, DirectRelayOnly:
+	default:
+		return fmt.Errorf("%w: direct_paths %q", ErrInvalid, p.DirectPaths)
+	}
+	if p.MaxDirectParticipants == 1 || p.MaxDirectParticipants > MaxDirectParticipants {
+		return fmt.Errorf("%w: max_direct_participants %d: between 2 and %d, or 0 for %d",
+			ErrInvalid, p.MaxDirectParticipants, MaxDirectParticipants, MaxDirectParticipants)
+	}
+	return nil
 }
 
 // WithDefaults fills the zero values that have sensible answers.
+//
+// For security settings the only answer is the strict one: E2EE is required
+// whatever was stored, so a row written when "optional" was allowed reads as
+// an encrypted room.
 func (p Policy) WithDefaults() Policy {
 	if p.Recording == "" {
 		p.Recording = RecordingAllowed
 	}
+	p.E2EE = E2EERequired
 	if p.StageSlots == 0 {
 		p.StageSlots = DefaultStageSlots
 	}
 	if p.WatchdogLimit == 0 {
 		p.WatchdogLimit = DefaultWatchdogLimit
+	}
+	if p.DirectPaths == "" {
+		p.DirectPaths = DirectAllowed
+	}
+	if p.MaxDirectParticipants == 0 {
+		p.MaxDirectParticipants = MaxDirectParticipants
 	}
 	return p
 }
@@ -86,7 +207,20 @@ func (p Policy) ValidateChange(next Policy) error {
 	if p.ResidencyZone != next.ResidencyZone {
 		return fmt.Errorf("%w: residency_zone, %q to %q", ErrImmutablePolicy, p.ResidencyZone, next.ResidencyZone)
 	}
-	return nil
+	if err := next.ValidateDirect(); err != nil {
+		return err
+	}
+	return next.ValidateE2EE()
+}
+
+// ValidateE2EE refuses any E2EE policy but required.
+func (p Policy) ValidateE2EE() error {
+	switch p.E2EE {
+	case "", E2EERequired:
+		return nil
+	default:
+		return fmt.Errorf("%w: e2ee policy %q: end-to-end encryption is always required", ErrInvalid, p.E2EE)
+	}
 }
 
 // Presence is where someone is, as published to the room.
@@ -379,6 +513,10 @@ type ModerationEntry struct {
 	Enforced         bool
 	DecidedByModel   string
 	IdempotencyKey   string
+
+	// PolicyChange is what a policy update did to the room's security settings,
+	// as Policy.SecurityChange renders it. Empty for every other verb.
+	PolicyChange string
 }
 
 // Authorise reports whether an actor with these grants may use verb on target.

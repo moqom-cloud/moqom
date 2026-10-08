@@ -22,6 +22,7 @@ modules/
   gke/                     Autopilot cluster and the workload identity bindings on it.
   workload/                One Deployment and its services. What dev runs the control plane as.
   data/                    Cloud SQL Postgres, recording bucket, secret containers.
+  recorder/                Hosted recorder workers and the accounts that write and read recordings.
   federation/              Workload identity for CI and for non-GCP relays.
   observability/           Log routing, log-based metrics, alerts, uptime check.
   dns-steering/            Geolocation routing across relay regions.
@@ -265,7 +266,34 @@ down.
 `MOQOM_RELAY_ISSUER` is set, and pins whose tokens count. Without it a relay
 accepts a token minted by any deployment that happens to share a key identifier,
 which is a real hazard when identifiers are derived from the key and two
-environments restore the same secret.
+environments restore the same secret. So a relay with a control plane or a key
+file refuses to start without it, unless `MOQOM_RELAY_ALLOW_ANY_ISSUER=true`
+says that was meant.
+
+The control plane is strict in the same way: it will not start without
+`MOQOM_CONTROL_TLS_CERT`, `MOQOM_CONTROL_TLS_KEY` and `MOQOM_CONTROL_CLIENT_CA`.
+`MOQOM_CONTROL_ALLOW_PLAINTEXT=true` (TLS terminated in front of it, as on Cloud
+Run, or a laptop) and `MOQOM_CONTROL_ALLOW_NO_CLIENT_CERT=true` are the explicit
+ways out, and each logs a warning at startup.
+
+`MOQOM_CONTROL_STUN` names the STUN server put in every direct grant
+(`direct.stun` in a minted token and in `/join`), as `host` or `host:port`;
+the port defaults to 3478. The SDKs ask it for the public address they offer a
+peer, so direct paths can cross NATs. Every relay answers STUN on UDP 3478
+(`MOQOM_RELAY_STUN_ADDR`, `off` to disable). The relay and network modules
+open it (`stun_port` and `relay_stun_port`, null to close), and the
+environments point `MOQOM_CONTROL_STUN` at the steered edge name. Unset means
+grants name no server, and the SDKs offer only local addresses.
+
+`MOQOM_CONTROL_ZITI_IDENTITY` (an enrolled OpenZiti identity file) and
+`MOQOM_CONTROL_ZITI_SERVICE` (the service to bind) serve the same gRPC port —
+admin API and RelayLink — on an OpenZiti overlay as well, where only identities
+the overlay's policy allows can reach it. Both or neither; one alone refuses to
+start. The TLS settings above still apply on top of the overlay. The TCP
+listener stays up beside it, so a deployment moves callers onto the overlay
+before closing the TCP port to them. The rest of the overlay — a second service
+for BYOC relays, relay identities, operator access — is in
+[The management overlay](#the-management-overlay).
 
 Until the keys land — the first few milliseconds of a relay's life, or forever
 for one that cannot reach a control plane — every session is anonymous and
@@ -407,6 +435,145 @@ Leave `-on-behalf-of` unset for an action the service account takes on its own.
 Naming a moderator asks the control plane to check that they hold moderation in
 that room, and an operator at a terminal usually holds nothing in it.
 
+### Relay tiers: an edge's link to its parent
+
+RelayLink is a relay's link to the control plane. A relay's link to a parent relay is a
+separate thing: an ordinary MoQ session, opened per room, on a credential the edge mints for
+itself. `relay_parent` (empty by default, and empty in dev) turns every relay in an environment
+into an edge of the relay at that `HOST:PORT`. The relay then sets `MOQOM_RELAY_UPSTREAM`, plus
+`MOQOM_RELAY_LINK_URL` pointing at the control plane's `/relay/link` on the join port.
+
+For each room it is asked for and doesn't publish, the edge does the following:
+
+- It POSTs `{tenant, room, key}` with its relay account's credential. `key` is the public half
+  of a P-256 key that the edge generates at boot and keeps in memory.
+- It gets back a five-minute `rly` token for that room alone, bound to the key.
+- It opens a session to the parent, proving the key with a signature over the token and the
+  parent's certificate.
+- It renews the token over that session once a third of its life is left.
+
+The parent refuses the session if the proof is missing, reused, or made for another relay's
+certificate. A link can read only its room and announce nothing. When minting is refused, the
+room is refused at the edge for 30 seconds, and a link that is already up ends when its
+credential lapses.
+
+Before `relay_parent` is worth setting:
+
+- The parent's certificate must verify from the edge. `MOQOM_RELAY_UPSTREAM_CA` is not wired
+  here.
+- The parent must not be one of the relays it applies to. The hop limit (3 by default,
+  `MOQOM_RELAY_MAX_HOP_LIMIT`) ends a cycle, but only after it has been walked.
+- The relay account in `MOQOM_CONTROL_ACCOUNTS` must be `is_relay`.
+
+The design is in `docs/USAGE-METERING.md` under "Relay-to-relay links".
+
+## The management overlay
+
+Everything that is management rather than media can also travel over a
+self-hosted [OpenZiti](https://openziti.io) network: the control plane's gRPC,
+each relay's link to it, each relay's admin port, Postgres for operators, and
+the link a customer's BYOC relay dials. A service on the overlay has no
+listening port anyone can scan; to reach it a caller needs an enrolled identity
+that a policy allows to dial it. Media is not on it and is not going to be —
+[docs/OPENZITI-AND-P2P.md](../docs/OPENZITI-AND-P2P.md) says why — and viewers
+never hold an identity.
+
+`modules/ziti` is one `e2-small` VM in the control plane's region running the
+controller and a public edge router, with the controller's database and PKI on
+a persistent disk that outlives the VM. Its client API (1280) and router
+(3022) are public, because a BYOC relay has to reach them from anywhere; its
+management API is on a port of its own (1281) open only to the VPC, the
+cluster's pods and IAP. The VM generates the admin password itself and keeps
+it, and the PKI, in Secret Manager. The same VM runs a Cloud SQL proxy (IAM
+authentication, no password) so Postgres can be an overlay service.
+
+`tools/ziti-provision.sh` makes the services, policies and standing identities
+by name, so rerunning it converges. It is a script rather than a Terraform
+provider so that no enrolment token or private key reaches state. Role
+attributes are the contract with the rest of the tree:
+
+| Role | Who | May dial | Binds |
+|---|---|---|---|
+| `#moqom-control` | the control plane | — | `PREFIX-control`, `PREFIX-api` |
+| `#moqom-relay` | a managed relay, identity minted at boot | `PREFIX-control` | `PREFIX-relay-admin`, `PREFIX-relay-ssh` |
+| `#moqom-byoc-relay` | a customer's relay | `PREFIX-api` | — |
+| `#moqom-api-client` | an enterprise backend | `PREFIX-api` | — |
+| `#moqom-operator` | a person | everything above, and `PREFIX-postgres` | — |
+
+There are two control services because they authenticate differently.
+`PREFIX-control` is the same mutual-TLS gRPC server as the internal port, so a
+managed relay presents its link certificate and bearer credential over the
+circuit as it would over the VPC. `PREFIX-api` is a second gRPC server with no
+TLS of its own — the circuit is already encrypted end to end — where the
+dialler's overlay identity is the credential: an identity the control plane
+enrolled for a BYOC relay becomes that relay's service account, pinned to one
+tenant, and anything else falls through to the usual bearer key.
+
+### How a managed relay gets an identity
+
+Nobody hands a relay an enrolment token. With `ziti_relay_enabled`, cloud-init
+fetches the instance's identity token from the metadata server (audience
+`moqom-dev-relay-enroll`, format `full`) and posts it, with the relay's bearer
+credential, to `/relay/enroll` on the control plane's join port. The control
+plane checks Google's signature, the project, the instance-name prefix and the
+service account, deletes any identity of that instance's name and creates a
+fresh one tagged with the instance ID, and returns a one-use token. The VM
+enrols it and runs `ziti tunnel proxy` as `moqom-ziti.service`, which listens on
+loopback for the two control services and hosts the relay's admin port and
+sshd. Every five minutes the control plane lists the project's instances and
+deletes any minted relay identity whose instance is gone; a listing that fails
+or comes back partial deletes nothing.
+
+The relay's full admin surface then binds to `127.0.0.1:8082` and is reached
+only over the overlay, one terminator per relay addressed by name; the network
+admin port keeps serving the health check's probes and nothing else.
+
+### Flags, in the order they are meant to be turned on
+
+| Variable | Effect |
+|---|---|
+| `ziti_control_enabled` | Control plane binds both services, mints relay identities, serves BYOC enrolments |
+| `ziti_relay_enabled` | Relays enrol at boot and run the tunneler; admin surface moves to loopback |
+| `relay_link_via_overlay` | Relays dial the control plane through their tunneler instead of the internal load balancer |
+| `relay_link_overlay_only` | The control plane refuses a RelayLink that did not arrive over the overlay |
+
+Each is additive and each is undone by setting it back. The last is the one
+that makes the internal path dark for relays; turn it on only after every relay
+in every region has logged `attached to the control plane` through
+`127.0.0.1:18443`, because a relay that cannot reach the overlay then has no
+link at all and falls back to the grace period.
+
+### Operator access
+
+`ziti-provision.sh` makes one identity per person in `MOQOM_ZITI_OPERATORS` and
+puts its one-use enrolment token in Secret Manager as
+`PREFIX-ziti-operator-NAME`, reissued when it nears expiry. Enrol it in Ziti
+Desktop Edge (Add Identity, then the JWT) and the intercepts resolve:
+`postgres.moqom-dev.ziti:5432` (log in with your IAM user and
+`gcloud auth print-access-token` as the password), `control.moqom-dev.ziti:8443`
+and `api.moqom-dev.ziti:8443`. Relays are `INSTANCE.relays.moqom-dev.ziti` on
+8082 (admin) and 22 (sshd; OS Login still decides who gets a shell).
+
+Without Desktop Edge, `go run ./cmd/moqom-overlay` forwards one loopback port to
+one service with an identity file, and takes `-terminator` for a relay:
+
+```
+MOQOM_ZITI_IDENTITY=me.json go run ./cmd/moqom-overlay -service moqom-dev-relay-admin \
+    -terminator moqom-dev-relay-us-west1-abcd.relays.moqom-dev.ziti -listen 127.0.0.1:18082
+curl -s http://127.0.0.1:18082/metrics
+```
+
+### BYOC enrolments
+
+`go run ./cmd/moqom-byoc -tenant T create -name "office relay"` prints a one-use
+enrolment token (valid for 24 hours) for a customer's relay;
+`list` and `revoke -id ID` are the rest. It dials `PREFIX-api` with
+`MOQOM_ZITI_IDENTITY` and authenticates with `MOQOM_BYOC_CREDENTIAL`, a platform
+service account or the tenant's owner. Revoking marks the enrolment revoked in
+Postgres, deletes the identity, and cuts that relay's live link on the replica
+holding it; other replicas recheck every 30 seconds. The customer side is in the
+[self-hosting guide](https://moqom.dev/guides/self-hosting/).
+
 ## Proving the store against the database it will use
 
 `deploy/tools/conformance.sh` runs the store's contract — the suite that makes
@@ -495,6 +662,87 @@ it is a per-customer decision with a per-customer blast radius, and encoding it
 in the shared environment root turns every onboarding into a change to
 production infrastructure.
 
+## Hosted recording in dev
+
+`envs/dev` has a `module "recorder"` block (`modules/recorder`) and three
+variables, all off by default:
+
+- `recorder_image` is the recorder image, pinned by digest. While it is null,
+  the module creates the identities, grants and secret containers, and runs no
+  workers.
+- `recorder_thumbprint` is the JWK thumbprint of the recorder's key. While it is
+  null, the control plane has no recording environment. The control plane
+  refuses to start with `MOQOM_RECORDING_BUCKET` and no thumbprint, so the two
+  go on together.
+- `recorder_replicas` is the number of rooms that can be recorded at once.
+
+Once the thumbprint is set, the control plane gets these:
+
+- `MOQOM_RECORDING_BUCKET`
+- `MOQOM_RECORDER_THUMBPRINT`
+- `MOQOM_RECORDING_SIGNER_ACCOUNT`, from the module's `signer_account`
+- `MOQOM_RECORDING_BUCKET_LOCATION` and `MOQOM_RECORDING_LIFECYCLE`, which come
+  from the same values the bucket's lifecycle rules use. Storage is billed at
+  the price of the storage class each object is actually in.
+
+`tools/recorder-secrets.sh` provisions the `is_recorder` account. It also does
+the following:
+
+- generates the recorder's key;
+- issues a link client certificate;
+- adds `{"name": "recorders", "is_recorder": true, …}` to the accounts file;
+- writes the `moqom-dev-recorder` Kubernetes secret that the workers mount;
+- prints the thumbprint.
+
+It is idempotent, like `sync-secrets.sh`, and none of these values pass through
+Terraform state.
+
+The commands, from the workspace root (`moqom-cloud`), in order. Review each
+plan before applying it.
+
+```sh
+# 1. The Secret Manager containers, the two service accounts and their grants.
+#    No workers yet, and recording still off in the control plane.
+cd moqom/deploy/envs/dev
+terraform init -backend-config=backend.hcl
+terraform plan -out=recorder.tfplan
+terraform apply recorder.tfplan
+cd ../../../..
+
+# 2. The key, the account, the certificate and the workers' secret. Then
+#    sync-secrets.sh again, so the control plane mounts the new accounts file.
+moqom/deploy/tools/recorder-secrets.sh        # prints recorder_thumbprint = "…"
+moqom/deploy/tools/sync-secrets.sh
+
+# 3. The image, built for the nodes' architecture.
+cd moqom-engine
+docker buildx build --platform linux/amd64 -f Dockerfile.recorder \
+  --build-context security=../moqom-security \
+  -t us-docker.pkg.dev/moqom-503700/moqom-dev/moqom-recorder:dev --push .
+gcloud artifacts docker images describe \
+  us-docker.pkg.dev/moqom-503700/moqom-dev/moqom-recorder:dev \
+  --project=moqom-503700 --format='value(image_summary.digest)'
+cd ..
+
+# 4. In envs/dev/terraform.tfvars:
+#      recorder_image      = "us-docker.pkg.dev/moqom-503700/moqom-dev/moqom-recorder@sha256:…"
+#      recorder_thumbprint = "…"   # from step 2
+cd moqom/deploy/envs/dev
+terraform plan -out=recorder.tfplan
+terraform apply recorder.tfplan
+
+# 5. Check: one worker running, and the control plane saying recording is on.
+kubectl -n moqom get pods -l app.kubernetes.io/component=recorder
+kubectl -n moqom logs deploy/moqom-dev-control | grep -E 'hosted recording on|recording storage billed'
+```
+
+The workers reach the control plane by its in-cluster service name, which the
+link server certificate carries. They reach the relay in `var.region` on its
+public address, pinned to the certificate the phones pin. If that relay's
+certificate is reissued, run `recorder-secrets.sh` again: it rewrites the secret
+from the current `relay-tls-cert`, and the pods pick the new certificate up when
+they restart.
+
 ## Running the relay tier alone
 
 The relay module takes plain strings — a network, a subnet, an image, a registry
@@ -521,8 +769,8 @@ module "relay" {
 }
 ```
 
-They also need the firewall rules — UDP/443 from anywhere to the relay tag, TCP
-on the health port from the prober ranges, and egress for NTP and for the
+They also need the firewall rules — UDP/443 and UDP/3478 (STUN) from anywhere
+to the relay tag, TCP on the health port from the prober ranges, and egress for NTP and for the
 control plane's port. Those live in `modules/network` and are readable in
 isolation; taking the whole network module is easier than reproducing them, and
 it will not conflict with an existing VPC as long as `name_prefix` differs.
@@ -543,7 +791,7 @@ waiting for connect" against a process that answers the same request locally.
 **Container-Optimized OS has its own firewall.** It boots `-P INPUT DROP` and
 permits loopback, ICMP, established flows and SSH. A VPC rule is necessary and
 not sufficient: the packet is allowed onto the wire and dropped by the machine it
-was addressed to. The relay unit opens UDP/443 and the health port with
+was addressed to. The relay unit opens UDP/443, UDP/3478 and the health port with
 `iptables` on every start, rather than once at first boot, so a reboot cannot
 lose them.
 
@@ -569,8 +817,9 @@ Cloud has no UDP health check, so nothing else does.
 are all nullable, so a relay that pulls from elsewhere and records nowhere is a
 supported configuration.
 
-The relay is BUSL-1.1. Self-hosting for your own applications and users is
-permitted, including commercially; see [LICENSING.md](../LICENSING.md).
+The relay is proprietary and ships as a binary. Self-hosting for your own
+applications and users is permitted under a BYOC licence; see
+[LICENSING.md](../LICENSING.md).
 
 ## Rollouts and draining
 
@@ -634,6 +883,97 @@ be substituted silently. They are locked for `linux_amd64`, `linux_arm64`,
 `darwin_amd64`, and `darwin_arm64`; adding a platform means
 `terraform providers lock -platform=...`, and a lock file missing your CI's
 platform fails in a way that reads like a network error.
+
+## Websites and project subdomains
+
+The static sites are `envs/web`: one bucket (`moqom-sites`) with a prefix per
+site directory under `sites/`, one CDN backend bucket, and one global HTTPS load
+balancer at `34.107.228.246` (`terraform output address`) whose URL map rewrites
+each hostname onto its prefix. Publishing is `tools/publish-sites.sh <site>`; the
+`publishing-sites` skill covers caching and verification.
+
+A lab project's docs at `<project>.elliottwave.studio` is one line in
+`envs/web/main.tf`, hostname to site directory:
+
+```hcl
+project_hosts = {
+  "six10nine.elliottwave.studio" = "six10nine"
+}
+```
+
+Each project hostname gets a Google-managed certificate of its own, attached to
+the HTTPS proxy beside the shared one. The shared certificate
+(`moqom-sites-bb025dc3`, the eight main hostnames) is never edited for a project:
+changing a managed certificate's domains replaces it, and the replacement waits
+on the new name's DNS. A proxy takes 15 certificates, so there is room for 13
+project hosts before this needs Certificate Manager.
+
+### Adding a project host
+
+1. Add the line above and the site under `sites/<project>`.
+2. Plan, from `envs/web`:
+
+   ```sh
+   terraform init -backend-config=backend.hcl
+   terraform plan -out=project.tfplan
+   ```
+
+   The plan should create one `google_compute_managed_ssl_certificate.projects`
+   and update `google_compute_url_map.sites` and
+   `google_compute_target_https_proxy.sites` in place. If it replaces or destroys
+   `google_compute_managed_ssl_certificate.sites` or `.apis`, stop: the live hosts
+   would go without HTTPS while the replacement issues.
+3. `terraform apply project.tfplan`. Nothing changes for the live hosts; the new
+   certificate sits in `PROVISIONING`.
+4. Publish the site so its first visitor finds it: `tools/publish-sites.sh <project>`.
+   Named sites only; running the script with no arguments still publishes the
+   four main sites and nothing else.
+5. Add the DNS record at Hover, in the `elliottwave.studio` zone:
+
+   | Type | Host | Value | TTL |
+   | --- | --- | --- | --- |
+   | A | `six10nine` | `34.107.228.246` | default |
+
+   No AAAA: the address is IPv4 only. Remove any existing record for the same host
+   first.
+6. Wait for the certificate to turn `ACTIVE`, usually 15 to 60 minutes after the
+   record resolves:
+
+   ```sh
+   gcloud compute ssl-certificates list --global --project moqom-503700 \
+     --format="table(name,managed.status,managed.domainStatus)"
+   ```
+
+   Until then the host has no valid certificate. `elliottwave.studio` sends HSTS
+   with `includeSubDomains`, so a browser that has visited it refuses the new
+   host outright rather than offering a warning; that clears once the
+   certificate is active. If a domain sits in `FAILED_NOT_VISIBLE` after DNS was
+   fixed, bump `certificate_epoch`. That re-issues the shared certificate as
+   well (new before old, with `create_before_destroy`), so it is a last resort.
+7. Verify: `curl -sI https://six10nine.elliottwave.studio/ | rg -i '^(HTTP|cache-control)'`.
+
+The hourly Cloud Build publish (`tools/cloudbuild-sites.yaml`) rebuilds only the
+sites in its `_SITES`; add a project there if it shows build-time figures.
+
+## 3D Viewer licence server
+
+`envs/viewer-licensing` (module `modules/viewer-licensing`): the Cloud Run
+service from `services/licensing` in the viewer repo, its Firestore database
+(`viewer-licensing`, us-west1, with TTL on `events.expires` and
+`requests.expires`), a service account limited to that database, secret
+containers (`viewer-licensing-signing-key`, `-stripe-secret-key`,
+`-stripe-webhook-secret`, and `-smtp-password` when SMTP is configured), an
+Artifact Registry repository, and a serverless NEG behind a CDN backend
+service. Not applied. The order is at the top of its `main.tf`.
+
+It is served at `licensing.elliottwave.studio/v1/*` by the sites balancer:
+`envs/web` adds the host to `apis` once `viewer_licensing_backend` is set, with
+`own_certificate = true` so the plan creates one new certificate and leaves
+`.apis` (api.moqom.cloud) alone. If a plan replaces `.apis`, stop. DNS: an A
+record `licensing` -> `34.107.228.246` in the `elliottwave.studio` zone.
+
+Request logging is off for this backend and excluded for the Cloud Run
+service, because token requests carry licence keys in the query string.
 
 ## Cloudflare later
 

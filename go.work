@@ -1,7 +1,7 @@
 // The control plane and the SDK it is developed against, which now live in
 // different repositories.
 //
-// They cannot be one module: the control plane is BUSL-1.1 and the SDK is
+// They cannot be one module: the control plane is proprietary and the SDK is
 // Apache-2.0, and the boundary between them has to be the gRPC contract in
 // proto/ rather than a package import. But they are still written together --
 // the control plane's own tests drive the SDK against a real server over
@@ -13,9 +13,7 @@
 // than convenient: moqom-go has no published tag yet, so there is no version
 // for the network to resolve, and go/go.mod carries a matching `replace` for
 // anyone building with GOWORK=off. Both go away at the first release.
-go 1.23.0
-
-toolchain go1.23.1
+go 1.27.0
 
 use (
 	../moqom-go

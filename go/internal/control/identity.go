@@ -65,6 +65,13 @@ func NormaliseUsername(username string) (string, error) {
 	return normalised, nil
 }
 
+// AgentUsernamePrefix begins the username of a watchdog agent: a recorder or
+// classifier, run by the tenant, that is a member of a room's encrypted group.
+// What follows it is the watchdog's ID. Minted only for a watchdog attached to
+// the room, and recognised by every client, which withholds its media from a
+// group holding an agent the room has not disclosed.
+const AgentUsernamePrefix = "watchdog."
+
 // DeviceFromThumbprint derives the device ID a token holder will present as.
 func DeviceFromThumbprint(thumbprint string) (string, error) {
 	if err := validIdentifier(thumbprint, MaxFieldBytes); err != nil {

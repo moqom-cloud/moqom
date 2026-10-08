@@ -1,0 +1,51 @@
+# Builds the static sites and publishes them to gs://moqom-sites, the same
+# upload publish-sites.sh does from a laptop. Run hourly by Cloud Scheduler so
+# build-time figures (GitHub stars, releases) stay fresh; the signup count is
+# fetched in the browser and needs no rebuild.
+#
+#   gcloud builds submit /path/to/moqom-cloud --project=moqom-503700 \
+#     --config=moqom/deploy/tools/cloudbuild-sites.yaml \
+#     --ignore-file=moqom/deploy/tools/sites.gcloudignore
+#
+# The context is the parent of moqom and sites. The root .gcloudignore keeps
+# only the Go modules for the control-plane image, hence the separate ignore file.
+#
+# The build's service account needs roles/storage.objectAdmin on the bucket.
+# Trigger and scheduler setup: sites/_shared/stats/README.md.
+substitutions:
+  _BUCKET: moqom-sites
+  _SITES: moqom-cloud moqom-dev elliottwave-studio elliottwave-dev
+  _PNPM: 11.17.0
+steps:
+  - id: build
+    name: node:22
+    entrypoint: bash
+    # GITHUB_TOKEN lifts GitHub's anonymous limit of 60 requests an hour. To
+    # use it, uncomment availableSecrets below and add `secretEnv: [GITHUB_TOKEN]`
+    # here. Without it, a rate-limited build hides the GitHub figures rather
+    # than failing.
+    args:
+      - -c
+      - |
+        set -eu
+        npm install --global --silent pnpm@${_PNPM}
+        for site in ${_SITES}; do
+          echo "==> $$site: building"
+          (cd "sites/$$site" && pnpm install --frozen-lockfile && pnpm build)
+        done
+  - id: publish
+    name: gcr.io/google.com/cloudsdktool/cloud-sdk:slim
+    entrypoint: sh
+    env:
+      - MOQOM_PROJECT=${PROJECT_ID}
+      - MOQOM_SITES_BUCKET=${_BUCKET}
+      - MOQOM_SITES_DIR=/workspace/sites
+      - MOQOM_SITES_SKIP_BUILD=1
+    args: ["-c", "sh moqom/deploy/tools/publish-sites.sh ${_SITES}"]
+# availableSecrets:
+#   secretManager:
+#     - versionName: projects/${PROJECT_ID}/secrets/sites-github-token/versions/latest
+#       env: GITHUB_TOKEN
+timeout: 1200s
+options:
+  logging: CLOUD_LOGGING_ONLY

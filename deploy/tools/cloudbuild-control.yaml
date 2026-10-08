@@ -1,0 +1,21 @@
+# Builds and pushes the control plane image in Cloud Build, no local Docker.
+#
+#   gcloud builds submit /path/to/moqom-cloud --project=moqom-503700 \
+#     --config=moqom/deploy/tools/cloudbuild-control.yaml --substitutions=_TAG=dev,_VERSION=$(git -C moqom rev-parse --short HEAD)
+#
+# The context is the parent of moqom and moqom-go; .gcloudignore there keeps the
+# upload to those two modules.
+substitutions:
+  _IMAGE: us-docker.pkg.dev/${PROJECT_ID}/moqom-dev/moqom-control
+  _TAG: dev
+  _VERSION: dev
+steps:
+  - name: gcr.io/cloud-builders/docker
+    args: ["build", "-f", "moqom/go/Dockerfile", "--build-arg", "VERSION=${_VERSION}",
+           "-t", "${_IMAGE}:${_TAG}", "-t", "${_IMAGE}:${_VERSION}", "."]
+images:
+  - ${_IMAGE}:${_TAG}
+  - ${_IMAGE}:${_VERSION}
+options:
+  logging: CLOUD_LOGGING_ONLY
+  dynamicSubstitutions: true

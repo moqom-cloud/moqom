@@ -10,7 +10,6 @@ package server
 
 import (
 	"context"
-	"crypto/ed25519"
 	"errors"
 	"fmt"
 	"sync"
@@ -18,6 +17,7 @@ import (
 
 	adminpb "github.com/moqom-cloud/moqom-go/admin/adminpb"
 	"github.com/moqom-cloud/moqom/go/internal/control"
+	"github.com/moqom-cloud/moqom/go/internal/recorderpb"
 	"github.com/moqom-cloud/moqom/go/internal/store"
 	"github.com/moqom-cloud/moqom/go/internal/timecode"
 	"github.com/moqom-cloud/moqom/go/internal/token"
@@ -35,7 +35,9 @@ type Config struct {
 	// every token it verifies.
 	Issuer string
 
-	// Keys are the signing keys. The first mints; all of them verify.
+	// Keys are the token keys. The first mints and must be ML-DSA-65; all of
+	// them verify, which is how Ed25519 keys stay readable until the last token
+	// they signed has expired.
 	//
 	// Ordered rather than a map so rotation is a deployment that prepends a key:
 	// the new one starts signing, the old one keeps verifying, and it is removed
@@ -69,6 +71,41 @@ type Config struct {
 	Now func() time.Time
 
 	IDs func() string
+
+	// Credits gates token minting on a tenant having paid. Nil admits
+	// everybody, which is a self-hosted control plane or a test.
+	Credits CreditGate
+
+	// Audience, if set, leaves participants out of a room's counts, such as
+	// viewers trust and safety has excluded. Nil counts everybody.
+	Audience AudienceFilter
+
+	// Recording, if set, turns on hosted recording. See RecordingConfig.
+	Recording *RecordingConfig
+
+	// Overlay, if set, turns on the OpenZiti management plane. See overlay.go.
+	Overlay *OverlayConfig
+
+	// Stun, if set, is the relays' STUN responder, stated with every token
+	// whose room allows direct paths so a device behind a NAT can learn the
+	// address to offer. Unset, devices offer their own interface addresses
+	// unless an application names a STUN server itself.
+	Stun *control.StunEndpoint
+}
+
+// AudienceFilter decides whether a participant counts towards a room's totals.
+// It changes the numbers only; the participant stays in the room.
+type AudienceFilter interface {
+	Countable(tenant, room string, participant control.Participant) bool
+}
+
+// CreditGate decides whether a tenant may start consuming media. It is asked
+// before a client token is minted and at nothing else: moderation, room
+// administration and the event stream keep working for a tenant with no credit,
+// because the moment a customer runs out is not a moment they should lose the
+// ability to remove somebody from a room.
+type CreditGate interface {
+	Allow(ctx context.Context, tenant string) error
 }
 
 const (
@@ -91,8 +128,14 @@ type core struct {
 	relayGrace       time.Duration
 	snapshotInterval time.Duration
 
-	clock timecode.Clock
-	ids   func() string
+	clock    timecode.Clock
+	ids      func() string
+	credits  CreditGate
+	audience AudienceFilter
+
+	recording *recordingCore
+	overlay   *OverlayConfig
+	stun      *control.StunEndpoint
 }
 
 // now is the wall-clock estimate, for the many call sites that only need one.
@@ -143,13 +186,15 @@ func New(config Config) (*Server, error) {
 		config.SnapshotInterval = defaultSnapshotInterval
 	}
 
-	public := map[string]ed25519.PublicKey{}
-	for _, key := range config.Keys {
-		encoded, ok := key.Private.Public().(ed25519.PublicKey)
-		if !ok {
-			return nil, fmt.Errorf("key %s is not Ed25519", key.ID)
-		}
-		public[key.ID] = encoded
+	if len(config.Keys) == 0 || !config.Keys[0].CanSign() {
+		return nil, fmt.Errorf("the first token key must be an %s key that signs", token.AlgorithmMLDSA65)
+	}
+	if config.Overlay != nil && config.Overlay.Identities == nil {
+		return nil, errors.New("the overlay needs its management API")
+	}
+	recordings, err := newRecordingCore(config.Recording)
+	if err != nil {
+		return nil, err
 	}
 
 	return &Server{core: &core{
@@ -157,7 +202,7 @@ func New(config Config) (*Server, error) {
 		accounts:         config.Accounts,
 		issuer:           config.Issuer,
 		keys:             config.Keys,
-		verifier:         token.NewVerifier(config.Issuer, public),
+		verifier:         token.NewVerifier(config.Issuer, config.Keys),
 		relays:           newRelayRegistry(),
 		bus:              newEventBus(),
 		dispatchTimeout:  config.DispatchTimeout,
@@ -165,6 +210,11 @@ func New(config Config) (*Server, error) {
 		snapshotInterval: config.SnapshotInterval,
 		clock:            config.Clock,
 		ids:              config.IDs,
+		credits:          config.Credits,
+		audience:         config.Audience,
+		recording:        recordings,
+		overlay:          config.Overlay,
+		stun:             config.Stun,
 	}}, nil
 }
 
@@ -175,6 +225,10 @@ func (s *Server) Register(grpcServer grpc.ServiceRegistrar) {
 	adminpb.RegisterTokensServer(grpcServer, &tokensService{core: s.core})
 	adminpb.RegisterEventsServer(grpcServer, &eventsService{core: s.core})
 	registerRelayLink(grpcServer, s.core)
+	adminpb.RegisterRecordingsServer(grpcServer, &recordingsService{core: s.core})
+	if s.core.recording != nil {
+		recorderpb.RegisterRecorderLinkServer(grpcServer, &recorderLinkService{core: s.core})
+	}
 
 	// The standard health service, for Kubernetes probes that speak gRPC and for
 	// clients that check before dialling. Overall SERVING and nothing per
@@ -285,6 +339,33 @@ func (c *core) grantsOf(ctx context.Context, tenant, room, username string) (con
 	return control.Grants{}, fmt.Errorf("%w: %s holds nothing in %s", control.ErrPermission, username, room)
 }
 
+// grantCeiling is the most a moderator has left one device holding in a room,
+// and whether a moderator has said anything about it at all.
+//
+// Every override that names the person, or names them on this device, applies at
+// once, and the result is what all of them allow. That is how the relay reads the
+// same overrides, and it has to be: a token minted above what the relay will
+// enforce is a client told it may publish and then refused when it tries.
+// Ownership is not part of it, because ownership is a fact about the room rather
+// than something a moderator can hand out or take away.
+func (c *core) grantCeiling(ctx context.Context, tenant, room string, who control.Identity) (control.Grants, bool, error) {
+	overrides, err := c.store.ListGrantOverrides(ctx, tenant, room)
+	if err != nil {
+		return control.Grants{}, false, err
+	}
+	ceiling := control.Grants{Publish: ^control.PublishScope(0), Moderation: ^control.Capability(0)}
+	found := false
+	for id, grants := range overrides {
+		if id.Username != who.Username || (id.Device != "" && id.Device != who.Device) {
+			continue
+		}
+		found = true
+		ceiling.Publish &= grants.Publish
+		ceiling.Moderation &= grants.Moderation
+	}
+	return ceiling, found, nil
+}
+
 // targetGrants is what the person being acted on currently holds.
 //
 // Returns nil when they hold nothing that anyone needs standing over -- an ordinary
@@ -305,6 +386,15 @@ func (c *core) counts(ctx context.Context, tenant, room string) (roomCounts, err
 	})
 	if err != nil {
 		return roomCounts{}, err
+	}
+	if c.audience != nil {
+		counted := page.Participants[:0:0]
+		for _, participant := range page.Participants {
+			if c.audience.Countable(tenant, room, participant) {
+				counted = append(counted, participant)
+			}
+		}
+		page.Participants = counted
 	}
 	people := map[string]struct{}{}
 	for _, participant := range page.Participants {

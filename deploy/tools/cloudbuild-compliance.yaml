@@ -1,0 +1,22 @@
+# Builds and pushes the compliance image (moqom-compliance + moqom-retention).
+#
+#   gcloud builds submit /path/to/moqom-cloud --project=moqom-503700 \
+#     --config=moqom/deploy/tools/cloudbuild-compliance.yaml \
+#     --substitutions=_VERSION=$(git -C moqom rev-parse --short HEAD)
+#
+# Then pin the digest it prints in envs/dev/terraform.tfvars as compliance_image.
+# Same context and .gcloudignore as cloudbuild-control.yaml.
+substitutions:
+  _IMAGE: us-docker.pkg.dev/${PROJECT_ID}/moqom-dev/moqom-compliance
+  _TAG: dev
+  _VERSION: dev
+steps:
+  - name: gcr.io/cloud-builders/docker
+    args: ["build", "-f", "moqom/go/Dockerfile.compliance", "--build-arg", "VERSION=${_VERSION}",
+           "-t", "${_IMAGE}:${_TAG}", "-t", "${_IMAGE}:${_VERSION}", "."]
+images:
+  - ${_IMAGE}:${_TAG}
+  - ${_IMAGE}:${_VERSION}
+options:
+  logging: CLOUD_LOGGING_ONLY
+  dynamicSubstitutions: true

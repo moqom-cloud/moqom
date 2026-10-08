@@ -1,0 +1,80 @@
+// Customer-run relays ("bring your own compute"), enrolled on the overlay.
+//
+// A customer's relay never holds a MOQOM credential. It holds an OpenZiti
+// identity, enrolled once with the one-time token this API hands out, and the
+// control plane maps that identity to one tenant. The relay dials out to the
+// control plane over the overlay, so the customer opens no inbound port, and
+// MOQOM opens no port to the customer either.
+//
+// The enrolment is the licence. Revoking it deletes the overlay identity, which
+// stops the relay reaching the control plane, and cuts the stream it already
+// has: no more directives, no more verification keys, so the client tokens it
+// could check stop being ones it can check once they rotate.
+//
+// Internal for now, beside the relay link, and served only on the overlay API
+// service. Whether it joins the public admin API is an open question in
+// docs/OPENZITI-AND-P2P.md.
+
+syntax = "proto3";
+
+package moqom.byoc.v1;
+
+import "google/protobuf/timestamp.proto";
+
+option go_package = "github.com/moqom-cloud/moqom/go/internal/byocpb;byocpb";
+
+service RelayEnrollments {
+  // Create an enrolment and return its one-time token. The token is shown
+  // once; the control plane does not keep it.
+  rpc Create(CreateRequest) returns (CreateResponse);
+
+  // List a tenant's enrolments, revoked ones included, newest first.
+  rpc List(ListRequest) returns (ListResponse);
+
+  // Revoke one. Idempotent.
+  rpc Revoke(RevokeRequest) returns (RevokeResponse);
+}
+
+message Enrollment {
+  string id = 1;
+  string tenant = 2;
+  // The customer's label for the relay.
+  string name = 3;
+  // The overlay identity's name, which is also the relay's ID on the link
+  // with a "byoc:" prefix.
+  string identity_name = 4;
+  string created_by = 5;
+  google.protobuf.Timestamp created_at = 6;
+  // Unset while the enrolment is in force.
+  google.protobuf.Timestamp revoked_at = 7;
+}
+
+message CreateRequest {
+  string tenant = 1;
+  string name = 2;
+}
+
+message CreateResponse {
+  Enrollment enrollment = 1;
+  // The one-time enrolment token, a JWT. Give it to `ziti edge enroll` on the
+  // relay's host; it is spent by enrolling and worthless after expires_at.
+  string enrollment_token = 2;
+  google.protobuf.Timestamp token_expires_at = 3;
+}
+
+message ListRequest {
+  string tenant = 1;
+}
+
+message ListResponse {
+  repeated Enrollment enrollments = 1;
+}
+
+message RevokeRequest {
+  string tenant = 1;
+  string id = 2;
+}
+
+message RevokeResponse {
+  Enrollment enrollment = 1;
+}

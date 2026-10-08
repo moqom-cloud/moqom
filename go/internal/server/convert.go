@@ -258,6 +258,15 @@ func policyFromProto(wire *adminpb.RoomPolicy) (control.Policy, error) {
 		}
 		recording = mapped
 	}
+	// Unspecified is required, and so is everything else that is accepted:
+	// end-to-end encryption cannot be turned off.
+	e2ee := control.E2EERequired
+	switch wire.GetE2Ee() {
+	case adminpb.E2EEPolicy_E2EE_POLICY_UNSPECIFIED, adminpb.E2EEPolicy_E2EE_POLICY_REQUIRED:
+	default:
+		return control.Policy{}, fmt.Errorf(
+			"%w: e2ee policy %v: end-to-end encryption is always required", control.ErrInvalid, wire.GetE2Ee())
+	}
 	policy := control.Policy{
 		AgeGate: control.AgeGate{
 			MinimumAge:          wire.GetAgeGate().GetMinimumAge(),
@@ -268,8 +277,33 @@ func policyFromProto(wire *adminpb.RoomPolicy) (control.Policy, error) {
 		MaxParticipants: wire.GetMaxParticipants(),
 		StageSlots:      wire.GetStageSlots(),
 		WatchdogLimit:   wire.GetWatchdogLimit(),
+		E2EE:            e2ee,
+
+		DirectPaths:           directByProto[wire.GetDirectPaths()],
+		MaxDirectParticipants: wire.GetMaxDirectParticipants(),
+	}
+	if err := policy.ValidateDirect(); err != nil {
+		return control.Policy{}, err
 	}
 	return policy.WithDefaults(), nil
+}
+
+var directByProto = map[adminpb.DirectPaths]control.DirectPaths{
+	adminpb.DirectPaths_DIRECT_PATHS_ALLOWED:    control.DirectAllowed,
+	adminpb.DirectPaths_DIRECT_PATHS_RELAY_ONLY: control.DirectRelayOnly,
+}
+
+var protoByDirect = map[control.DirectPaths]adminpb.DirectPaths{
+	control.DirectAllowed:   adminpb.DirectPaths_DIRECT_PATHS_ALLOWED,
+	control.DirectRelayOnly: adminpb.DirectPaths_DIRECT_PATHS_RELAY_ONLY,
+}
+
+func directGrantToProto(grant control.DirectGrant) *adminpb.DirectGrant {
+	return &adminpb.DirectGrant{Allowed: grant.Allowed, MaxParticipants: grant.MaxParticipants}
+}
+
+func stunToProto(stun control.StunEndpoint) *adminpb.StunEndpoint {
+	return &adminpb.StunEndpoint{Host: stun.Host, Port: uint32(stun.Port)}
 }
 
 func policyToProto(policy control.Policy) *adminpb.RoomPolicy {
@@ -283,6 +317,10 @@ func policyToProto(policy control.Policy) *adminpb.RoomPolicy {
 		MaxParticipants: policy.MaxParticipants,
 		StageSlots:      policy.StageSlots,
 		WatchdogLimit:   policy.WatchdogLimit,
+		E2Ee:            adminpb.E2EEPolicy_E2EE_POLICY_REQUIRED,
+
+		DirectPaths:           protoByDirect[policy.WithDefaults().DirectPaths],
+		MaxDirectParticipants: policy.WithDefaults().MaxDirectParticipants,
 	}
 }
 
@@ -464,6 +502,7 @@ func entryToProto(entry control.ModerationEntry) *adminpb.ModerationEntry {
 		Media:          mediaToProto(entry.Media),
 		Enforced:       entry.Enforced,
 		DecidedByModel: entry.DecidedByModel,
+		PolicyChange:   entry.PolicyChange,
 	}
 	if entry.Grants != nil {
 		wire.Grants = grantsToProto(*entry.Grants)

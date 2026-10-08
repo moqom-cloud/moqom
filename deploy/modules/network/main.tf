@@ -24,6 +24,17 @@ locals {
     "209.85.204.0/22",
   ]
 
+  # Google's IPv6 prober ranges, for backend services that also serve an IPv6
+  # forwarding rule. Both sets for the same reason as above.
+  health_check_ranges_v6 = [
+    "2600:2d00:1:b029::/64",
+    "2600:1901:8001::/48",
+  ]
+
+  # A firewall rule takes IPv4 or IPv6 source ranges, never both, so every rule
+  # that admits the internet has an IPv6 twin built from this.
+  ipv6_rules = var.enable_ipv6 ? toset(["v6"]) : toset([])
+
   # google_compute_firewall has no count/for_each on log_config, so build it
   # once and splat it into every rule.
   log_config = var.enable_firewall_logging ? [{ metadata = "INCLUDE_ALL_METADATA" }] : []
@@ -53,6 +64,11 @@ resource "google_compute_subnetwork" "relay" {
   # through Cloud NAT, which keeps NAT port pressure for genuinely external
   # traffic such as ACME.
   private_ip_google_access = true
+
+  # Dual stack lets the relays answer on IPv6 behind the same load balancer,
+  # and lets the STUN responder report a device's public IPv6 address.
+  stack_type       = var.enable_ipv6 ? "IPV4_IPV6" : "IPV4_ONLY"
+  ipv6_access_type = var.enable_ipv6 ? "EXTERNAL" : null
 
   log_config {
     aggregation_interval = "INTERVAL_10_MIN"
@@ -149,6 +165,35 @@ resource "google_compute_firewall" "relay_quic" {
   allow {
     protocol = "udp"
     ports    = [tostring(var.relay_udp_port)]
+  }
+
+  dynamic "log_config" {
+    for_each = local.log_config
+    content {
+      metadata = log_config.value.metadata
+    }
+  }
+}
+
+# The relay's STUN responder, from anywhere: a device behind NAT asks it which
+# public address and port its socket appears as, and offers that to a peer for
+# a direct path. Its own rule rather than a second port on the one above, so the
+# two can be logged, narrowed or switched off apart.
+resource "google_compute_firewall" "relay_stun" {
+  count = var.relay_stun_port == null ? 0 : 1
+
+  name    = "${var.name_prefix}-allow-relay-stun"
+  project = var.project_id
+  network = google_compute_network.this.name
+
+  direction     = "INGRESS"
+  priority      = 1000
+  source_ranges = ["0.0.0.0/0"]
+  target_tags   = [var.relay_target_tag]
+
+  allow {
+    protocol = "udp"
+    ports    = [tostring(var.relay_stun_port)]
   }
 
   dynamic "log_config" {
@@ -336,6 +381,27 @@ resource "google_compute_firewall" "relay_egress_control" {
   }
 }
 
+# The relay's tunneler, out to the OpenZiti controller and router. Outbound
+# only: whatever the relay offers over the overlay, it offers by dialling here,
+# so nothing about it needs an inbound rule.
+resource "google_compute_firewall" "relay_egress_overlay" {
+  count = length(var.overlay_cidrs) == 0 ? 0 : 1
+
+  name    = "${var.name_prefix}-allow-relay-egress-overlay"
+  project = var.project_id
+  network = google_compute_network.this.name
+
+  direction          = "EGRESS"
+  priority           = 1000
+  destination_ranges = var.overlay_cidrs
+  target_tags        = [var.relay_target_tag]
+
+  allow {
+    protocol = "tcp"
+    ports    = [for port in var.overlay_ports : tostring(port)]
+  }
+}
+
 # Relay-to-relay QUIC for upstream subscription, restricted to the VPC. A relay
 # that needs to fetch a track it does not hold pulls it from a sibling, not
 # from an arbitrary internet host.
@@ -367,5 +433,129 @@ resource "google_dns_managed_zone" "edge" {
 
   visibility = "public"
 
+  # Signing is on by default. It protects nothing until the parent zone holds
+  # the DS record in the `dns_ds_records` output, which is a registrar change.
+  dnssec_config {
+    state = var.dnssec ? "on" : "off"
+  }
+
   labels = var.labels
+}
+
+data "google_dns_keys" "edge" {
+  count        = var.create_dns_zone && var.dnssec ? 1 : 0
+  managed_zone = google_dns_managed_zone.edge[0].id
+}
+
+# Only these authorities may issue for the zone, and nobody may issue a
+# wildcard. The two are the ones Google-managed certificates come from; the
+# relays' certificate is self-signed and pinned, so it needs no authority.
+resource "google_dns_record_set" "caa" {
+  count = var.create_dns_zone && length(var.caa_issuers) > 0 ? 1 : 0
+
+  project      = var.project_id
+  managed_zone = google_dns_managed_zone.edge[0].name
+  name         = var.dns_domain
+  type         = "CAA"
+  ttl          = 3600
+  rrdatas = concat(
+    [for issuer in var.caa_issuers : "0 issue \"${issuer}\""],
+    ["0 issuewild \";\""],
+    var.caa_iodef == null ? [] : ["0 iodef \"${var.caa_iodef}\""],
+  )
+}
+
+# The IPv6 twins of the rules that admit the internet, and of the egress deny,
+# so turning IPv6 on opens exactly what IPv4 opens and nothing more. A relay
+# with an external IPv6 address and no IPv6 egress deny could reach anywhere.
+resource "google_compute_firewall" "relay_quic_v6" {
+  for_each = local.ipv6_rules
+
+  name    = "${var.name_prefix}-allow-relay-quic-v6"
+  project = var.project_id
+  network = google_compute_network.this.name
+
+  direction     = "INGRESS"
+  priority      = 1000
+  source_ranges = ["::/0"]
+  target_tags   = [var.relay_target_tag]
+
+  allow {
+    protocol = "udp"
+    ports    = [tostring(var.relay_udp_port)]
+  }
+
+  dynamic "log_config" {
+    for_each = local.log_config
+    content {
+      metadata = log_config.value.metadata
+    }
+  }
+}
+
+resource "google_compute_firewall" "relay_stun_v6" {
+  for_each = var.relay_stun_port == null ? toset([]) : local.ipv6_rules
+
+  name    = "${var.name_prefix}-allow-relay-stun-v6"
+  project = var.project_id
+  network = google_compute_network.this.name
+
+  direction     = "INGRESS"
+  priority      = 1000
+  source_ranges = ["::/0"]
+  target_tags   = [var.relay_target_tag]
+
+  allow {
+    protocol = "udp"
+    ports    = [tostring(var.relay_stun_port)]
+  }
+
+  dynamic "log_config" {
+    for_each = local.log_config
+    content {
+      metadata = log_config.value.metadata
+    }
+  }
+}
+
+resource "google_compute_firewall" "health_checks_v6" {
+  for_each = local.ipv6_rules
+
+  name    = "${var.name_prefix}-allow-health-checks-v6"
+  project = var.project_id
+  network = google_compute_network.this.name
+
+  direction     = "INGRESS"
+  priority      = 900
+  source_ranges = local.health_check_ranges_v6
+  target_tags   = [var.relay_target_tag]
+
+  allow {
+    protocol = "tcp"
+    ports    = [tostring(var.relay_health_check_port)]
+  }
+}
+
+resource "google_compute_firewall" "relay_deny_egress_v6" {
+  for_each = local.ipv6_rules
+
+  name    = "${var.name_prefix}-deny-relay-egress-v6"
+  project = var.project_id
+  network = google_compute_network.this.name
+
+  direction          = "EGRESS"
+  priority           = 65000
+  destination_ranges = ["::/0"]
+  target_tags        = [var.relay_target_tag]
+
+  deny {
+    protocol = "all"
+  }
+
+  dynamic "log_config" {
+    for_each = local.log_config
+    content {
+      metadata = log_config.value.metadata
+    }
+  }
 }

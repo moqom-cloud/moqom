@@ -3,6 +3,11 @@ output "relay_endpoints" {
   description = "Relay addresses by region, all serving QUIC and WebTransport on UDP/443."
 }
 
+output "relay_endpoints_v6" {
+  value       = { for region, relay in module.relay : region => relay.external_ipv6 if relay.external_ipv6 != null }
+  description = "Relay IPv6 addresses by region, serving QUIC on UDP/443 and STUN on UDP/3478."
+}
+
 output "edge_hostname" {
   value       = module.edge_dns.record_name
   description = "Name clients dial. Resolves per geography; see the dns-steering module for what that does and does not guarantee."

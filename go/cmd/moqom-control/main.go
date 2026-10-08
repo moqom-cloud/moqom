@@ -23,6 +23,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -31,7 +32,16 @@ import (
 	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/keepalive"
 
+	"golang.org/x/oauth2/google"
+
+	"github.com/moqom-cloud/moqom/go/internal/billing"
+	billingpg "github.com/moqom-cloud/moqom/go/internal/billing/postgres"
 	"github.com/moqom-cloud/moqom/go/internal/control"
+	"github.com/moqom-cloud/moqom/go/internal/listen"
+	"github.com/moqom-cloud/moqom/go/internal/mls"
+	mlspg "github.com/moqom-cloud/moqom/go/internal/mls/postgres"
+	"github.com/moqom-cloud/moqom/go/internal/recording"
+	recordingpg "github.com/moqom-cloud/moqom/go/internal/recording/postgres"
 	"github.com/moqom-cloud/moqom/go/internal/server"
 	"github.com/moqom-cloud/moqom/go/internal/store"
 	"github.com/moqom-cloud/moqom/go/internal/store/memory"
@@ -88,15 +98,87 @@ func run() error {
 		return err
 	}
 
-	instance, err := server.New(server.Config{
+	payments, err := billingService(backing)
+	if err != nil {
+		return err
+	}
+	config := server.Config{
 		Store:    backing,
 		Accounts: accounts,
 		Issuer:   issuer,
 		Keys:     keys,
 		Clock:    clock,
-	})
+	}
+	// The key audit is buffered in memory and written every few seconds; the
+	// last write happens on the way out, after the listeners have drained.
+	keyAudit, stopKeyAudit := context.WithCancel(context.Background())
+	keyAuditDone := make(chan struct{})
+	defer func() {
+		stopKeyAudit()
+		<-keyAuditDone
+	}()
+	if payments != nil {
+		config.Accounts = server.AnyAccounts{accounts, payments.Accounts()}
+		config.Credits = payments
+		go func() {
+			defer close(keyAuditDone)
+			payments.RunKeyAudit(keyAudit)
+		}()
+	} else {
+		close(keyAuditDone)
+	}
+	if config.Recording, err = recordingConfig(backing); err != nil {
+		return err
+	}
+	storageBilling, stopStorageBilling := context.WithCancel(context.Background())
+	defer stopStorageBilling()
+	if err := billRecordingStorage(storageBilling, config.Recording, payments); err != nil {
+		return err
+	}
+	if config.Overlay, err = overlayConfig(backing); err != nil {
+		return err
+	}
+	if config.Stun, err = stunEndpoint(); err != nil {
+		return err
+	}
+	instance, err := server.New(config)
 	if err != nil {
 		return err
+	}
+
+	// Billing rides on the join endpoint's public port, beside /join, so the
+	// deployment keeps exactly one internet-facing listener. Its own address is
+	// for a laptop running without a join endpoint.
+	var billingRoutes http.Handler
+	if payments != nil {
+		billingRoutes = billing.CORS(payments.Handler(accounts), strings.Split(os.Getenv("MOQOM_BILLING_CORS_ORIGINS"), ","))
+		operatorRoutes, err := operatorAPI(payments)
+		if err != nil {
+			return err
+		}
+		if operatorRoutes != nil {
+			// Its own subtree and its own CORS, so the public site's origins
+			// never reach it and its origin never reaches the tenant API.
+			combined := http.NewServeMux()
+			combined.Handle("/v1/operator/", operatorRoutes)
+			combined.Handle("/", billingRoutes)
+			billingRoutes = combined
+		}
+	}
+	var billingAPI *http.Server
+	if address := os.Getenv("MOQOM_BILLING_ADDR"); billingRoutes != nil && address != "" {
+		billingAPI = &http.Server{
+			Addr:              address,
+			Handler:           billingRoutes,
+			ReadHeaderTimeout: 5 * time.Second,
+			WriteTimeout:      30 * time.Second,
+		}
+		go func() {
+			if err := billingAPI.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+				slog.Error("billing endpoint stopped", "error", err)
+			}
+		}()
+		slog.Info("billing endpoint listening", "address", billingAPI.Addr)
 	}
 
 	transport, described, err := transportCredentials()
@@ -138,6 +220,32 @@ func run() error {
 		"address", listener.Addr().String(), "issuer", issuer,
 		"keys", len(keys), "transport", described)
 
+	// The same gRPC server, also bound as an OpenZiti service when the
+	// deployment has enrolled one. Same credentials on top: the overlay
+	// decides who may reach the port, and mutual TLS still decides who the
+	// caller is to this deployment. See internal/listen.
+	overlaySpec, err := listen.Overlay(os.Getenv)
+	if err != nil {
+		return err
+	}
+	var overlay net.Listener
+	if overlaySpec != nil {
+		overlay, err = listen.Open(context.Background(), *overlaySpec)
+		if err != nil {
+			return err
+		}
+		slog.Info("control plane listening", "overlay", overlaySpec.String())
+	}
+	overlayServer, overlayAPIListener, err := overlayAPI(instance)
+	if err != nil {
+		return err
+	}
+	reconciling, stopReconciling := context.WithCancel(context.Background())
+	defer stopReconciling()
+	if config.Overlay != nil {
+		go reconcileRelays(reconciling, instance)
+	}
+
 	// A second listener for the probes, on a port of its own.
 	//
 	// Separate from the gRPC port because the things that read it cannot speak
@@ -166,7 +274,11 @@ func run() error {
 	// the internet and a surface like that should be something a deployment
 	// turned on rather than something it inherited. See internal/server/join.go
 	// for what it serves and why exposing it does not expose the admin API.
-	joins, err := joinEndpoint(instance)
+	keyRoutes, err := keyDelivery(instance, backing, clock)
+	if err != nil {
+		return err
+	}
+	joins, err := joinEndpoint(instance, billingRoutes, keyRoutes)
 	if err != nil {
 		return err
 	}
@@ -186,8 +298,14 @@ func run() error {
 			"transport", joinTransport())
 	}
 
-	stopped := make(chan error, 1)
+	stopped := make(chan error, 3)
 	go func() { stopped <- grpcServer.Serve(listener) }()
+	if overlay != nil {
+		go func() { stopped <- grpcServer.Serve(overlay) }()
+	}
+	if overlayServer != nil {
+		go func() { stopped <- overlayServer.Serve(overlayAPIListener) }()
+	}
 
 	interrupted, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
@@ -207,11 +325,36 @@ func run() error {
 		if joins != nil {
 			_ = joins.Shutdown(shutdown)
 		}
+		if billingAPI != nil {
+			_ = billingAPI.Shutdown(shutdown)
+		}
 		// Graceful, so relays see a clean close and reattach rather than timing out.
 		// Their grace period covers the gap, which is the whole reason it exists.
+		if overlayServer != nil {
+			overlayServer.GracefulStop()
+		}
 		grpcServer.GracefulStop()
 		return nil
 	}
+}
+
+// stunEndpoint reads MOQOM_CONTROL_STUN, the relays' STUN responder as
+// "host" or "host:port" (port 3478 if omitted), which every token whose room
+// allows direct paths names so devices behind NATs can learn their public
+// address. The relays' edge name is the usual value: any relay answers.
+// Unset names none, and devices offer only their own interface addresses.
+func stunEndpoint() (*control.StunEndpoint, error) {
+	value := os.Getenv("MOQOM_CONTROL_STUN")
+	if value == "" {
+		slog.Info("no MOQOM_CONTROL_STUN, so tokens name no STUN server")
+		return nil, nil
+	}
+	endpoint, err := control.ParseStunEndpoint(value)
+	if err != nil {
+		return nil, fmt.Errorf("MOQOM_CONTROL_STUN: %w", err)
+	}
+	slog.Info("tokens name a STUN server", "host", endpoint.Host, "port", endpoint.Port)
+	return &endpoint, nil
 }
 
 func env(name, fallback string) string {
@@ -237,7 +380,7 @@ func env(name, fallback string) string {
 // pin. What it must not do is ask for one back. A client CA here would mean
 // every phone needed an issued certificate before it could ask for a token,
 // which is the bootstrapping problem this endpoint exists to solve.
-func joinEndpoint(instance *server.Server) (*http.Server, error) {
+func joinEndpoint(instance *server.Server, billingRoutes, keyRoutes http.Handler) (*http.Server, error) {
 	address := os.Getenv("MOQOM_CONTROL_JOIN_ADDR")
 	if address == "" {
 		return nil, nil
@@ -252,14 +395,52 @@ func joinEndpoint(instance *server.Server) (*http.Server, error) {
 		ReadHeaderTimeout: 5 * time.Second,
 		WriteTimeout:      10 * time.Second,
 	}
+	// The console's live connections map. Authenticated by a tenant's backend
+	// key in the Authorization header and allowed from the same browser origins
+	// as billing; see internal/server/livemap.go. The stream clears the
+	// listener's write timeout for itself.
+	live := billing.CORS(instance.LiveHandler(server.LiveOptionsFromEnv()),
+		strings.Split(os.Getenv("MOQOM_BILLING_CORS_ORIGINS"), ","))
+	routes := http.NewServeMux()
+	// Annotated so an API key used on these routes is scoped, allowlisted and
+	// audited against the same trusted client address the billing routes use.
+	routes.Handle(server.JoinPath, billing.Annotate(endpoint.Handler))
+	// A child relay's credential for its parent, for relay service accounts
+	// only; see internal/server/relaylinktoken.go.
+	routes.Handle(server.RelayLinkPath, billing.Annotate(endpoint.Handler))
+	// A managed relay VM's overlay identity; see internal/server/overlay.go.
+	routes.Handle(server.RelayEnrollPath, billing.Annotate(endpoint.Handler))
+	live = billing.Annotate(live)
+	routes.Handle(server.LivePath, live)
+	routes.Handle(server.LiveStreamPath, live)
+	// The console's read-only rooms list and room event stream, authenticated
+	// and allowed from the same origins as the live map; see
+	// internal/server/roomsweb.go.
+	rooms := billing.Annotate(billing.CORS(instance.RoomsHandler(server.RoomsOptions{}),
+		strings.Split(os.Getenv("MOQOM_BILLING_CORS_ORIGINS"), ",")))
+	routes.Handle(server.RoomsPath, rooms)
+	routes.Handle(server.RoomEventsStreamPath, rooms)
+	// MLS key delivery for end-to-end encrypted rooms, authenticated by the
+	// device's participant token; see internal/mls. Here because this is the
+	// port a phone can reach. The sync long poll extends the write timeout for
+	// itself.
+	routes.Handle(mls.PathPrefix, keyRoutes)
+	endpoint.Handler = routes
+	if billingRoutes != nil {
+		routes.Handle("/v1/", billingRoutes)
+		// Signup makes several Stripe calls in a row, each allowed thirty seconds.
+		endpoint.WriteTimeout = 90 * time.Second
+	}
 
 	certificate := os.Getenv("MOQOM_CONTROL_TLS_CERT")
 	key := os.Getenv("MOQOM_CONTROL_TLS_KEY")
 	if certificate == "" || key == "" {
-		// Allowed, and only for a laptop. A credential travelling in a header
-		// over plaintext to an address on the internet is a credential anyone on
-		// the path collects, so the log line has to say which of the two this is
-		// -- see joinTransport, which is printed at startup.
+		// Reachable only with MOQOM_CONTROL_ALLOW_PLAINTEXT set, because
+		// transportCredentials runs first and refuses the same missing pair
+		// without it. A credential travelling in a header over plaintext to an
+		// address on the internet is a credential anyone on the path collects,
+		// so the log line has to say which of the two this is -- see
+		// joinTransport, which is printed at startup.
 		return endpoint, nil
 	}
 
@@ -297,7 +478,13 @@ func joinTransport() string {
 // rooms. Default off, so a deployment that has not thought about it has the
 // safer half.
 func joinCreatesRooms() bool {
-	switch strings.ToLower(os.Getenv("MOQOM_CONTROL_JOIN_CREATES_ROOMS")) {
+	return envFlag("MOQOM_CONTROL_JOIN_CREATES_ROOMS")
+}
+
+// envFlag reads a boolean switch. Anything other than an explicit yes is no,
+// because every switch read this way turns a protection off.
+func envFlag(name string) bool {
+	switch strings.ToLower(os.Getenv(name)) {
 	case "1", "true", "yes":
 		return true
 	default:
@@ -324,8 +511,16 @@ func joinCreatesRooms() bool {
 // they answer different questions, and the certificate answers the one that a
 // stolen credential would otherwise settle on its own.
 //
-// Unset everywhere means plaintext, which is what a laptop and the test suites
-// run with -- and the log says which of the two this process is, because "the
+// # Strict unless told otherwise
+//
+// Mutual TLS is the default, and the process refuses to start without it. A
+// laptop, the test suites, and a deployment that terminates TLS in front of the
+// container (Cloud Run) each have to say so: MOQOM_CONTROL_ALLOW_PLAINTEXT for
+// no TLS at all, MOQOM_CONTROL_ALLOW_NO_CLIENT_CERT for TLS that does not ask
+// relays for a certificate. A missing variable is how a deployment ends up
+// insecure without anybody having decided it should be, so a missing variable
+// is an error, and the decision is a line somebody wrote in the deployment's
+// configuration. The log says which of these this process is, because "the
 // relays cannot attach" and "the relays attached to something else" look the
 // same from here.
 func transportCredentials() (credentials.TransportCredentials, string, error) {
@@ -339,6 +534,14 @@ func transportCredentials() (credentials.TransportCredentials, string, error) {
 				"MOQOM_CONTROL_CLIENT_CA is set without MOQOM_CONTROL_TLS_CERT, " +
 					"so client certificates could never be presented, let alone verified")
 		}
+		if !envFlag("MOQOM_CONTROL_ALLOW_PLAINTEXT") {
+			return nil, "", errors.New(
+				"MOQOM_CONTROL_TLS_CERT and MOQOM_CONTROL_TLS_KEY are unset; the control plane " +
+					"serves mutual TLS by default. Set them (and MOQOM_CONTROL_CLIENT_CA), or set " +
+					"MOQOM_CONTROL_ALLOW_PLAINTEXT=true where TLS is terminated in front of this " +
+					"process or on a laptop")
+		}
+		slog.Warn("serving without TLS because MOQOM_CONTROL_ALLOW_PLAINTEXT is set")
 		return nil, "plaintext", nil
 	}
 	if certificate == "" || key == "" {
@@ -359,7 +562,15 @@ func transportCredentials() (credentials.TransportCredentials, string, error) {
 	}
 	described := "tls"
 
-	if clientCA != "" {
+	if clientCA == "" {
+		if !envFlag("MOQOM_CONTROL_ALLOW_NO_CLIENT_CERT") {
+			return nil, "", errors.New(
+				"MOQOM_CONTROL_CLIENT_CA is unset; the control plane requires relays to present " +
+					"a client certificate by default. Set it, or set " +
+					"MOQOM_CONTROL_ALLOW_NO_CLIENT_CERT=true to serve TLS without one")
+		}
+		slog.Warn("serving TLS without verifying client certificates because MOQOM_CONTROL_ALLOW_NO_CLIENT_CERT is set")
+	} else {
 		pool := x509.NewCertPool()
 		pem, err := os.ReadFile(clientCA)
 		if err != nil {
@@ -378,11 +589,15 @@ func transportCredentials() (credentials.TransportCredentials, string, error) {
 	return credentials.NewTLS(config), described, nil
 }
 
-// signingKeys reads the token signing keys.
+// signingKeys reads the token keys.
 //
-// MOQOM_CONTROL_SIGNING_KEYS is a comma-separated list of base64url Ed25519 seeds,
-// newest first: the first signs, all of them verify. That ordering is what makes
-// rotation a deployment rather than an outage.
+// MOQOM_CONTROL_SIGNING_KEYS is a comma-separated list, newest first: the first
+// signs, all of them verify. That ordering is what makes rotation a deployment
+// rather than an outage. Each entry is a base64url 32-byte seed, prefixed
+// `mldsa65:` for an ML-DSA-65 key or `ed25519:` (or nothing, as before the move)
+// for an Ed25519 one. Ed25519 entries only verify, so the first entry must be
+// ML-DSA-65: relays first, then prepend an `mldsa65:` key, then drop the Ed25519
+// entries once the last token they signed has expired.
 //
 // With none set, one is generated and its public half logged. Useful on a laptop and
 // wrong everywhere else, because tokens stop verifying at every restart -- so it says
@@ -394,40 +609,52 @@ func signingKeys() ([]token.Key, error) {
 		if err != nil {
 			return nil, err
 		}
-		jwk, err := generated.PublicJWK()
-		if err != nil {
-			return nil, err
-		}
 		slog.Warn("no signing key configured, generated an ephemeral one",
-			"key", generated.ID, "jwk", jwk,
+			"key", generated.ID, "algorithm", generated.Algorithm,
 			"consequence", "every token stops verifying when this process restarts")
 		return []token.Key{generated}, nil
 	}
 
 	var keys []token.Key
-	for _, encoded := range strings.Split(raw, ",") {
-		encoded = strings.TrimSpace(encoded)
-		if encoded == "" {
+	for _, entry := range strings.Split(raw, ",") {
+		entry = strings.TrimSpace(entry)
+		if entry == "" {
 			continue
+		}
+		kind, encoded, prefixed := strings.Cut(entry, ":")
+		if !prefixed {
+			kind, encoded = "ed25519", entry
 		}
 		seed, err := base64.RawURLEncoding.DecodeString(strings.TrimRight(encoded, "="))
 		if err != nil {
 			return nil, fmt.Errorf("signing key is not base64url: %w", err)
 		}
-		if len(seed) != ed25519.SeedSize {
-			return nil, fmt.Errorf("signing key is %d bytes, want a %d-byte seed", len(seed), ed25519.SeedSize)
-		}
-		private := ed25519.NewKeyFromSeed(seed)
 		// The identifier is derived from the public half rather than configured, so a
 		// key cannot be published twice under different names as if it were two.
-		derived, err := token.KeyFrom(private)
+		var key token.Key
+		switch kind {
+		case "mldsa65":
+			key, err = token.KeyFromSeed(seed)
+		case "ed25519":
+			if len(seed) != ed25519.SeedSize {
+				return nil, fmt.Errorf("signing key is %d bytes, want a %d-byte seed", len(seed), ed25519.SeedSize)
+			}
+			public, _ := ed25519.NewKeyFromSeed(seed).Public().(ed25519.PublicKey)
+			key, err = token.LegacyEd25519(public)
+		default:
+			return nil, fmt.Errorf("signing key kind %q, want mldsa65 or ed25519", kind)
+		}
 		if err != nil {
 			return nil, err
 		}
-		keys = append(keys, derived)
+		keys = append(keys, key)
 	}
 	if len(keys) == 0 {
 		return nil, errors.New("MOQOM_CONTROL_SIGNING_KEYS was set but held no keys")
+	}
+	if !keys[0].CanSign() {
+		return nil, fmt.Errorf("the first MOQOM_CONTROL_SIGNING_KEYS entry is %s, which only verifies: "+
+			"prepend an mldsa65: key to sign with", keys[0].Algorithm)
 	}
 	return keys, nil
 }
@@ -463,6 +690,7 @@ func serviceAccounts() (server.Accounts, error) {
 			Preset     string   `json:"preset"`
 			IsOwner    bool     `json:"is_owner"`
 			IsRelay    bool     `json:"is_relay"`
+			IsRecorder bool     `json:"is_recorder"`
 		} `json:"accounts"`
 	}
 	if err := json.Unmarshal(contents, &file); err != nil {
@@ -497,10 +725,11 @@ func serviceAccounts() (server.Accounts, error) {
 			grants.Publish |= scope
 		}
 		byCredential[entry.Credential] = server.ServiceAccount{
-			Name:    entry.Name,
-			Tenant:  entry.Tenant,
-			Grants:  grants,
-			IsRelay: entry.IsRelay,
+			Name:       entry.Name,
+			Tenant:     entry.Tenant,
+			Grants:     grants,
+			IsRelay:    entry.IsRelay,
+			IsRecorder: entry.IsRecorder,
 		}
 	}
 	if len(byCredential) == 0 {
@@ -509,6 +738,328 @@ func serviceAccounts() (server.Accounts, error) {
 
 	slog.Info("service accounts loaded", "count", len(byCredential))
 	return server.NewStaticAccounts(byCredential), nil
+}
+
+// billingService builds prepaid billing, or nil when MOQOM_BILLING is not "on".
+//
+// Off by default so a self-hosted control plane never starts refusing joins
+// because it has no Stripe account. On, every join and minted token needs a
+// tenant in credit, and customers authenticate with the API keys billing issues.
+//
+//	MOQOM_BILLING=on
+//	MOQOM_BILLING_ADDR           a listener of its own; default is the join endpoint's port
+//	MOQOM_BILLING_PUBLIC_URL     where checkout returns to (https://moqom.cloud)
+//	MOQOM_BILLING_CORS_ORIGINS   comma-separated origins allowed to call it from a browser
+//	MOQOM_STRIPE_SECRET_KEY      file path, not the key: environments leak
+//	MOQOM_STRIPE_WEBHOOK_SECRET  file path
+//	MOQOM_KEY_PEPPER             file path: API key hash peppers, see keyPeppers
+//	MOQOM_SMTP_*                 alert and notice email, see billingNotifier
+//	MOQOM_BILLING_EXEMPT         comma-separated tenants never gated (MOQOM's own)
+//	MOQOM_BILLING_MARKUP_BP      markup on cost in basis points (default 1500)
+//	MOQOM_BILLING_FEE_PER_GIB    platform fee in micro-dollars per GiB (default 10000)
+//	MOQOM_BILLING_EGRESS_PER_GIB negotiated egress cost in micro-dollars per GiB
+//	MOQOM_BILLING_DIRECT_FREE_MINUTES      direct participant-minutes free per tenant per month (default 1000)
+//	MOQOM_BILLING_DIRECT_FEE_PER_1000_MIN  direct fee in micro-dollars per 1,000 minutes past that (default 500000)
+func billingService(backing store.Store) (*billing.Service, error) {
+	if os.Getenv("MOQOM_BILLING") != "on" {
+		return nil, nil
+	}
+	ledger, err := billingStore(backing)
+	if err != nil {
+		return nil, err
+	}
+	config := billing.Config{
+		Store:     ledger,
+		Pricing:   billing.DefaultPricing(),
+		PublicURL: env("MOQOM_BILLING_PUBLIC_URL", "https://moqom.cloud"),
+		Exempt:    map[string]bool{},
+	}
+	for _, tenant := range strings.Split(os.Getenv("MOQOM_BILLING_EXEMPT"), ",") {
+		if tenant = strings.TrimSpace(tenant); tenant != "" {
+			config.Exempt[tenant] = true
+		}
+	}
+	for name, into := range map[string]*int64{
+		"MOQOM_BILLING_MARKUP_BP":               &config.Pricing.MarkupBasisPoints,
+		"MOQOM_BILLING_FEE_PER_GIB":             (*int64)(&config.Pricing.PlatformFeePerGiB),
+		"MOQOM_BILLING_SELF_HOSTED_FEE_PER_GIB": (*int64)(&config.Pricing.SelfHostedFeePerGiB),
+		"MOQOM_BILLING_EGRESS_PER_GIB":          (*int64)(&config.Pricing.Costs.EgressPerGiB),
+		"MOQOM_BILLING_DIRECT_FREE_MINUTES":     &config.Pricing.DirectFreeMinutesPerMonth,
+		"MOQOM_BILLING_DIRECT_FEE_PER_1000_MIN": (*int64)(&config.Pricing.DirectFeePer1000Minutes),
+	} {
+		if raw := os.Getenv(name); raw != "" {
+			value, err := strconv.ParseInt(raw, 10, 64)
+			if err != nil || value < 0 {
+				return nil, fmt.Errorf("%s must be a non-negative integer", name)
+			}
+			*into = value
+		}
+	}
+	// Recording storage is priced where the bucket is, which DefaultPricing
+	// assumes is a North American region.
+	if location := strings.TrimSpace(os.Getenv("MOQOM_RECORDING_BUCKET_LOCATION")); location != "" {
+		prices, ok := billing.GCSStorageListPrice(location)
+		if !ok {
+			return nil, fmt.Errorf("MOQOM_RECORDING_BUCKET_LOCATION %q has no storage price; add it to billing.GCSStorageListPrice", location)
+		}
+		config.Pricing.Costs.Storage = prices
+	}
+
+	// The key file is absent until tools/sync-secrets.sh finds the key in Secret
+	// Manager, and billing runs without payments until it is there, rather than
+	// the control plane refusing to start.
+	secretKey, err := secretFile("MOQOM_STRIPE_SECRET_KEY")
+	if errors.Is(err, os.ErrNotExist) {
+		secretKey, err = "", nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	if secretKey != "" {
+		config.Stripe = &billing.Stripe{SecretKey: secretKey}
+		if config.WebhookSecret, err = secretFile("MOQOM_STRIPE_WEBHOOK_SECRET"); err != nil {
+			return nil, err
+		}
+	} else {
+		slog.Warn("billing is on without Stripe",
+			"consequence", "nobody can pay, so only exempt tenants can join")
+	}
+	if config.Peppers, err = keyPeppers(); err != nil {
+		return nil, err
+	}
+	if config.Notifier, err = billingNotifier(config.PublicURL); err != nil {
+		return nil, err
+	}
+	payments, err := billing.New(config)
+	if err != nil {
+		return nil, err
+	}
+	slog.Info("billing on", "stripe", config.Stripe != nil, "exempt", len(config.Exempt),
+		"key_pepper", config.Peppers.Current(), "key_pepper_versions", len(config.Peppers.Versions()),
+		"markup_bp", config.Pricing.MarkupBasisPoints, "fee_per_gib", config.Pricing.PlatformFeePerGiB.String(),
+		"self_hosted_fee_per_gib", config.Pricing.SelfHostedFeePerGiB.String(),
+		"egress_per_gib", config.Pricing.Costs.EgressPerGiB.String(),
+		"direct_free_minutes", config.Pricing.DirectFreeMinutesPerMonth,
+		"direct_fee_per_1000_min", config.Pricing.DirectFeePer1000Minutes.String())
+	return payments, nil
+}
+
+// keyPeppers reads MOQOM_KEY_PEPPER, a file of base64 peppers, newest first,
+// mounted from Secret Manager. A missing or empty file keeps bare SHA-256
+// hashes, so the secret can be created empty and filled later without a
+// deploy breaking anything. Once filled, removing a version breaks every key
+// still hashed under it: add a new one at the top instead, and drop the old
+// only when no key's pepper_version names it.
+func keyPeppers() (billing.Peppers, error) {
+	contents, err := secretFile("MOQOM_KEY_PEPPER")
+	if errors.Is(err, os.ErrNotExist) {
+		contents, err = "", nil
+	}
+	if err != nil {
+		return billing.Peppers{}, err
+	}
+	peppers, err := billing.ParsePeppers(contents)
+	if err != nil {
+		return billing.Peppers{}, fmt.Errorf("MOQOM_KEY_PEPPER: %w", err)
+	}
+	if peppers.Current() == "" {
+		slog.Warn("API key hashes are not peppered",
+			"consequence", "a copy of billing_keys alone is enough to test a guessed key",
+			"remedy", "add a version to the api-key-pepper secret and rerun sync-secrets.sh")
+	}
+	return peppers, nil
+}
+
+// billingNotifier emails spend alerts and leaked-key notices, or logs them
+// when no SMTP server is configured.
+//
+//	MOQOM_SMTP_HOST            the submission server; unset logs instead of sending
+//	MOQOM_SMTP_PORT            587 (STARTTLS, default) or 465 (implicit TLS)
+//	MOQOM_SMTP_USERNAME        for AUTH PLAIN, over TLS only
+//	MOQOM_SMTP_PASSWORD        file path, not the password
+//	MOQOM_BILLING_EMAIL_FROM   sender (billing@moqom.cloud)
+//	MOQOM_BILLING_CONSOLE_URL  linked from each message (<public URL>/account)
+func billingNotifier(publicURL string) (billing.Notifier, error) {
+	host := strings.TrimSpace(os.Getenv("MOQOM_SMTP_HOST"))
+	if host == "" {
+		slog.Warn("no SMTP server configured", "consequence", "spend alerts and leaked-key notices are logged, not emailed")
+		return billing.LogNotifier{Log: slog.Default()}, nil
+	}
+	password, err := secretFile("MOQOM_SMTP_PASSWORD")
+	if errors.Is(err, os.ErrNotExist) {
+		password, err = "", nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	notifier := &billing.SMTPNotifier{
+		Host:       host,
+		Port:       env("MOQOM_SMTP_PORT", "587"),
+		Username:   strings.TrimSpace(os.Getenv("MOQOM_SMTP_USERNAME")),
+		Password:   password,
+		From:       env("MOQOM_BILLING_EMAIL_FROM", "MOQOM Billing <billing@moqom.cloud>"),
+		ConsoleURL: env("MOQOM_BILLING_CONSOLE_URL", strings.TrimRight(publicURL, "/")+"/account"),
+	}
+	if notifier.Username != "" && notifier.Password == "" {
+		// Logged rather than fatal: a password secret not filled yet should not
+		// stop billing, and every send would fail authentication anyway.
+		slog.Warn("MOQOM_SMTP_USERNAME is set but the MOQOM_SMTP_PASSWORD file is missing or empty",
+			"consequence", "spend alerts and leaked-key notices are logged, not emailed")
+		return billing.LogNotifier{Log: slog.Default()}, nil
+	}
+	slog.Info("billing email on", "host", host, "port", notifier.Port, "from", notifier.From)
+	return notifier, nil
+}
+
+// operatorAPI builds /v1/operator/*, MOQOM staff's view across tenants, or nil
+// when it is not configured. See internal/billing/operator.go and
+// docs/operations/admin-console.md.
+//
+//	MOQOM_OPERATOR_GOOGLE_CLIENT_ID  the admin console's OAuth client; the only ID token audience accepted
+//	MOQOM_OPERATOR_EMAILS            comma-separated operator addresses; nobody else is let in
+//	MOQOM_OPERATOR_HOSTED_DOMAIN     Workspace domain the account must belong to (moqom.cloud)
+//	MOQOM_OPERATOR_ORIGINS           browser origins allowed to call it (https://admin.moqom.cloud)
+func operatorAPI(payments *billing.Service) (http.Handler, error) {
+	clientID := strings.TrimSpace(os.Getenv("MOQOM_OPERATOR_GOOGLE_CLIENT_ID"))
+	allowed := billing.ParseAllowList(os.Getenv("MOQOM_OPERATOR_EMAILS"))
+	if clientID == "" && len(allowed) == 0 {
+		return nil, nil
+	}
+	if clientID == "" || len(allowed) == 0 {
+		return nil, errors.New("the operator API needs both MOQOM_OPERATOR_GOOGLE_CLIENT_ID and MOQOM_OPERATOR_EMAILS")
+	}
+	handler, err := payments.OperatorHandler(billing.OperatorOptions{
+		Verifier: &billing.GoogleIdentity{
+			ClientID:     clientID,
+			Allowed:      allowed,
+			HostedDomain: strings.TrimSpace(os.Getenv("MOQOM_OPERATOR_HOSTED_DOMAIN")),
+			Keys:         &billing.RemoteKeys{URL: billing.GoogleCertsURL},
+		},
+		Origins: strings.Split(os.Getenv("MOQOM_OPERATOR_ORIGINS"), ","),
+	})
+	if err != nil {
+		return nil, err
+	}
+	slog.Info("operator API on", "operators", len(allowed), "hosted_domain", os.Getenv("MOQOM_OPERATOR_HOSTED_DOMAIN"))
+	return handler, nil
+}
+
+// billingStore keeps the ledger in the same database as rooms, so a backup of
+// one is a backup of both.
+func billingStore(backing store.Store) (billing.Store, error) {
+	if subject, ok := backing.(*postgres.Store); ok {
+		return billingpg.New(context.Background(), subject.Pool())
+	}
+	if os.Getenv("MOQOM_BILLING_ALLOW_MEMORY") != "true" {
+		return nil, errors.New("billing on the in-memory store would lose every payment at restart; " +
+			"use MOQOM_CONTROL_STORE=postgres, or set MOQOM_BILLING_ALLOW_MEMORY=true on a laptop")
+	}
+	slog.Warn("billing ledger in memory", "consequence", "balances and keys are lost on restart")
+	return billing.NewMemory(), nil
+}
+
+// keyDelivery builds the MLS delivery service on the same database as rooms.
+//
+// In memory without the opt-in billing needs, because losing it costs every
+// live encrypted room one re-founding of its group and nothing else: it holds
+// no secrets and no history anybody needs back.
+func keyDelivery(instance *server.Server, backing store.Store, clock timecode.Clock) (http.Handler, error) {
+	var keys mls.Store = mls.NewMemory()
+	if subject, ok := backing.(*postgres.Store); ok {
+		durable, err := mlspg.New(context.Background(), subject.Pool())
+		if err != nil {
+			return nil, err
+		}
+		keys = durable
+	}
+	service := mls.NewService(keys, func() time.Time { return clock.Now().At })
+	return instance.KeyDeliveryHandler(service), nil
+}
+
+// recordingConfig turns hosted recording on when a bucket is named.
+//
+// Download links are signed through IAM as MOQOM_RECORDING_SIGNER_ACCOUNT,
+// which the control plane's own account needs roles/iam.serviceAccountTokenCreator
+// on; without it, GetRecording answers with the artifacts and no links.
+func recordingConfig(backing store.Store) (*server.RecordingConfig, error) {
+	bucket := strings.TrimSpace(os.Getenv("MOQOM_RECORDING_BUCKET"))
+	if bucket == "" {
+		return nil, nil
+	}
+	thumbprint := strings.TrimSpace(os.Getenv("MOQOM_RECORDER_THUMBPRINT"))
+	if thumbprint == "" {
+		return nil, errors.New("MOQOM_RECORDING_BUCKET needs MOQOM_RECORDER_THUMBPRINT, the JWK thumbprint of the recorder's key")
+	}
+	config := &server.RecordingConfig{Bucket: bucket, RecorderThumbprint: thumbprint}
+
+	if subject, ok := backing.(*postgres.Store); ok {
+		durable, err := recordingpg.New(context.Background(), subject.Pool())
+		if err != nil {
+			return nil, err
+		}
+		config.Store = durable
+	} else {
+		slog.Warn("recordings in memory", "consequence", "the list of recordings is lost on restart; the files are not")
+		config.Store = recording.NewMemory()
+	}
+
+	if account := strings.TrimSpace(os.Getenv("MOQOM_RECORDING_SIGNER_ACCOUNT")); account != "" {
+		client, err := google.DefaultClient(context.Background(), "https://www.googleapis.com/auth/cloud-platform")
+		if err != nil {
+			return nil, fmt.Errorf("credentials for signing recording links: %w", err)
+		}
+		config.Signer = recording.GCSSigner{Signer: recording.IAMSigner{Account: account, Client: client}}
+	}
+	slog.Info("hosted recording on", "bucket", bucket, "signed_links", config.Signer != nil)
+	return config, nil
+}
+
+// billRecordingStorage charges tenants for what their recordings hold in the
+// bucket, hourly, a closed day at a time. MOQOM_RECORDING_LIFECYCLE must be
+// the bucket's lifecycle rules, which Terraform sets beside them.
+func billRecordingStorage(ctx context.Context, config *server.RecordingConfig, payments *billing.Service) error {
+	if config == nil {
+		return nil
+	}
+	lifecycle, err := recording.ParseLifecycle(os.Getenv("MOQOM_RECORDING_LIFECYCLE"))
+	if err != nil {
+		return err
+	}
+	if payments == nil {
+		slog.Warn("recording storage not billed", "reason", "billing is off")
+		return nil
+	}
+	job := &recording.StorageBilling{Store: config.Store, Biller: storageBiller{payments}, Lifecycle: lifecycle}
+	go job.Loop(ctx, time.Hour)
+	slog.Info("recording storage billed", "lifecycle", fmt.Sprintf("%+v", lifecycle))
+	return nil
+}
+
+// storageBiller is billing.Service as recording.StorageBiller.
+type storageBiller struct{ service *billing.Service }
+
+func (b storageBiller) BillStorage(ctx context.Context, charges []recording.StorageCharge) error {
+	records := make([]billing.StorageRecord, 0, len(charges))
+	for _, c := range charges {
+		records = append(records, billing.StorageRecord{
+			ID: c.ID, Tenant: c.Tenant, Room: c.Room, Recording: c.Recording,
+			Class: billing.StorageClass(c.Class), Bytes: c.Bytes, Seconds: c.Seconds,
+		})
+	}
+	_, err := b.service.RecordStorage(ctx, records)
+	return err
+}
+
+func secretFile(name string) (string, error) {
+	path := os.Getenv(name)
+	if path == "" {
+		return "", nil
+	}
+	contents, err := os.ReadFile(path)
+	if err != nil {
+		return "", fmt.Errorf("%s: %w", name, err)
+	}
+	return strings.TrimSpace(string(contents)), nil
 }
 
 // reportClockHealth says at startup whether this host can timestamp anything.

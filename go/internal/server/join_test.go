@@ -22,12 +22,13 @@ import (
 	"time"
 
 	adminpb "github.com/moqom-cloud/moqom-go/admin/adminpb"
+	"github.com/moqom-cloud/moqom-security/go/proof"
 	"github.com/moqom-cloud/moqom/go/internal/control"
 	"github.com/moqom-cloud/moqom/go/internal/server"
 	"github.com/moqom-cloud/moqom/go/internal/token"
 )
 
-const deviceThumbprint = "MpXqvQAmv7Y3Kk9dHnJpLwRtUvXyZaBcDeFgHiJkLmN"
+const deviceThumbprint = "MpXqvQAmv7Y3Kk9dHnJpLwRtUvXyZaBcDeFgHiJkLmM"
 
 // The EC key from RFC 7517 §A.1 and the thumbprint RFC 7638 computes over it.
 //
@@ -123,7 +124,7 @@ func TestADeviceMintsItsOwnTokenForAnExistingRoom(t *testing.T) {
 	h.createRoom(t, "alice")
 
 	code, response, body := ask(t, h.server.JoinHandler(false), joinKey, server.JoinRequest{
-		Tenant: tenant, Username: "alice", Room: roomName, Device: deviceThumbprint,
+		Tenant: tenant, Username: "alice", Room: roomName, Key: &deviceKey,
 	})
 	if code != http.StatusOK {
 		t.Fatalf("joining: %d %s", code, body)
@@ -136,7 +137,7 @@ func TestADeviceMintsItsOwnTokenForAnExistingRoom(t *testing.T) {
 	if claims.MOQT.Room != roomName {
 		t.Errorf("room is %q, want %s", claims.MOQT.Room, roomName)
 	}
-	if claims.Confirmation.Thumbprint != deviceThumbprint {
+	if claims.Confirmation.Thumbprint != deviceKeyThumbprint {
 		t.Error("the token is not bound to the device that asked for it")
 	}
 	// The whole point of the endpoint: a credential that is good for a quarter of
@@ -148,6 +149,10 @@ func TestADeviceMintsItsOwnTokenForAnExistingRoom(t *testing.T) {
 	if response.ExpiresAt.IsZero() {
 		t.Error("the response does not say when the token dies, so a client cannot refresh")
 	}
+	// MoqomKit reads the room's direct-path limit from here.
+	if response.Direct == nil || !response.Direct.Allowed || response.Direct.MaxParticipants != 4 {
+		t.Errorf("the response states direct paths as %+v, want allowed for 4", response.Direct)
+	}
 }
 
 func TestADeviceGetsThePublishRightsOfItsCredentialAndNoMore(t *testing.T) {
@@ -158,7 +163,7 @@ func TestADeviceGetsThePublishRightsOfItsCredentialAndNoMore(t *testing.T) {
 	// grants at all -- that is deliberate, a device does not get a say -- so what
 	// arrives has to be exactly the account's ceiling.
 	code, response, body := ask(t, h.server.JoinHandler(false), joinKey, server.JoinRequest{
-		Tenant: tenant, Username: "bob", Room: roomName, Device: deviceThumbprint,
+		Tenant: tenant, Username: "bob", Room: roomName, Key: &deviceKey,
 	})
 	if code != http.StatusOK {
 		t.Fatalf("joining: %d %s", code, body)
@@ -180,7 +185,7 @@ func TestTheJoinEndpointNeverMintsModerationOrOwnership(t *testing.T) {
 	// ownership whatever the account behind it is allowed to grant, so the worst a
 	// misconfiguration or a leak produces is a participant.
 	code, response, body := ask(t, h.server.JoinHandler(false), modKey, server.JoinRequest{
-		Tenant: tenant, Username: "carol", Room: roomName, Device: deviceThumbprint,
+		Tenant: tenant, Username: "carol", Room: roomName, Key: &deviceKey,
 	})
 	if code != http.StatusOK {
 		t.Fatalf("joining: %d %s", code, body)
@@ -208,7 +213,7 @@ func TestACredentialThatCouldPublishNothingIsRefusedRatherThanServed(t *testing.
 	// refusal with the reason attached. Found by pointing the running endpoint at
 	// the admin credential and reading `pub = 0` off the token it happily returned.
 	code, _, body := ask(t, h.server.JoinHandler(false), barrenKey, server.JoinRequest{
-		Tenant: tenant, Username: "carol", Room: roomName, Device: deviceThumbprint,
+		Tenant: tenant, Username: "carol", Room: roomName, Key: &deviceKey,
 	})
 	if code != http.StatusForbidden {
 		t.Fatalf("an account with no publish rights got %d (%s), want 403", code, body)
@@ -252,7 +257,7 @@ func TestARelayCredentialCannotMintADeviceToken(t *testing.T) {
 	// and it is refused here, rather than being refused here only because a later
 	// check happens to run.
 	code, _, _ := ask(t, h.server.JoinHandler(false), relayKey, server.JoinRequest{
-		Tenant: tenant, Username: "alice", Room: roomName, Device: deviceThumbprint,
+		Tenant: tenant, Username: "alice", Room: roomName, Key: &deviceKey,
 	})
 	if code != http.StatusUnauthorized {
 		t.Errorf("a relay credential got %d, want 401", code)
@@ -264,7 +269,7 @@ func TestADeviceCannotReachAnotherTenant(t *testing.T) {
 	h.createRoom(t, "alice")
 
 	code, _, body := ask(t, h.server.JoinHandler(true), joinKey, server.JoinRequest{
-		Tenant: "somebody-else", Username: "alice", Room: roomName, Device: deviceThumbprint,
+		Tenant: "somebody-else", Username: "alice", Room: roomName, Key: &deviceKey,
 	})
 	if code != http.StatusForbidden {
 		t.Errorf("crossing tenants got %d (%s), want 403", code, body)
@@ -304,6 +309,28 @@ func TestATokenIsBoundToTheKeyTheDeviceSent(t *testing.T) {
 	// the credential to find out.
 	if response.Device != deviceKeyThumbprint {
 		t.Errorf("device = %q, want %q", response.Device, deviceKeyThumbprint)
+	}
+}
+
+// What every SDK now sends: an ML-DSA-65 key, as kty "AKP".
+func TestATokenIsBoundToAnMLDSAKey(t *testing.T) {
+	h := newHarness(t)
+	h.createRoom(t, "alice")
+
+	device, err := proof.GenerateProver(proof.MLDSA65)
+	if err != nil {
+		t.Fatal(err)
+	}
+	key := device.JWK()
+	code, response, body := ask(t, h.server.JoinHandler(false), joinKey, server.JoinRequest{
+		Tenant: tenant, Username: "alice", Room: roomName,
+		Device: device.Thumbprint()[:16], Key: &key,
+	})
+	if code != http.StatusOK {
+		t.Fatalf("joining with an ML-DSA-65 key: %d %s", code, body)
+	}
+	if got := scopeOf(t, response.Token).Confirmation.Thumbprint; got != device.Thumbprint() {
+		t.Errorf("cnf.jkt = %q, want the thumbprint of the key sent: %q", got, device.Thumbprint())
 	}
 }
 
@@ -359,13 +386,25 @@ func TestAKeyThatCannotBeBoundToIsRefused(t *testing.T) {
 	}
 }
 
+func TestABareThumbprintIsRefused(t *testing.T) {
+	h := newHarness(t)
+	h.createRoom(t, "alice")
+
+	code, _, body := ask(t, h.server.JoinHandler(false), joinKey, server.JoinRequest{
+		Tenant: tenant, Username: "alice", Room: roomName, Device: deviceThumbprint,
+	})
+	if code != http.StatusBadRequest {
+		t.Errorf("a thumbprint without its key got %d (%s), want 400", code, body)
+	}
+}
+
 func TestAnUnknownRoomIsRefusedUnlessTheDeploymentSaysOtherwise(t *testing.T) {
 	h := newHarness(t)
 
 	// Off: the room has to exist, and a device naming one that does not gets a
 	// 404 it can display rather than a room nobody meant to create.
 	code, _, body := ask(t, h.server.JoinHandler(false), joinKey, server.JoinRequest{
-		Tenant: tenant, Username: "alice", Room: "not-a-room", Device: deviceThumbprint,
+		Tenant: tenant, Username: "alice", Room: "not-a-room", Key: &deviceKey,
 	})
 	if code != http.StatusNotFound {
 		t.Errorf("an unknown room got %d (%s), want 404 with creation off", code, body)
@@ -373,7 +412,7 @@ func TestAnUnknownRoomIsRefusedUnlessTheDeploymentSaysOtherwise(t *testing.T) {
 
 	// On: somebody typed a room name on a phone, which is the demo.
 	code, response, body := ask(t, h.server.JoinHandler(true), joinKey, server.JoinRequest{
-		Tenant: tenant, Username: "alice", Room: "not-a-room", Device: deviceThumbprint,
+		Tenant: tenant, Username: "alice", Room: "not-a-room", Key: &deviceKey,
 	})
 	if code != http.StatusOK {
 		t.Fatalf("an unknown room got %d (%s), want a created room", code, body)
@@ -391,7 +430,7 @@ func TestJoiningAnExistingRoomDoesNotRewriteIt(t *testing.T) {
 	// path that can create a room must not be a path that can quietly reset the
 	// policy or ownership of one that is already running.
 	if code, _, body := ask(t, h.server.JoinHandler(true), joinKey, server.JoinRequest{
-		Tenant: tenant, Username: "bob", Room: roomName, Device: deviceThumbprint,
+		Tenant: tenant, Username: "bob", Room: roomName, Key: &deviceKey,
 	}); code != http.StatusOK {
 		t.Fatalf("joining: %d %s", code, body)
 	}
@@ -423,7 +462,7 @@ func TestAClosedRoomIsRefusedRatherThanReopened(t *testing.T) {
 	// implementation looks up the room, does not like what it finds, and makes a
 	// new one over the top.
 	code, _, body := ask(t, h.server.JoinHandler(true), joinKey, server.JoinRequest{
-		Tenant: tenant, Username: "alice", Room: roomName, Device: deviceThumbprint,
+		Tenant: tenant, Username: "alice", Room: roomName, Key: &deviceKey,
 	})
 	if code != http.StatusConflict {
 		t.Errorf("a closed room got %d (%s), want 409", code, body)
@@ -458,7 +497,7 @@ func TestOneCredentialCannotFloodTheEndpoint(t *testing.T) {
 	refused := 0
 	for i := 0; i < 60; i++ {
 		code, _, _ := ask(t, handler, joinKey, server.JoinRequest{
-			Tenant: tenant, Username: "alice", Room: roomName, Device: deviceThumbprint,
+			Tenant: tenant, Username: "alice", Room: roomName, Key: &deviceKey,
 		})
 		if code == http.StatusTooManyRequests {
 			refused++
@@ -472,7 +511,7 @@ func TestOneCredentialCannotFloodTheEndpoint(t *testing.T) {
 	// the rest of the process's life over a retry loop that has since stopped.
 	h.advance(time.Minute)
 	if code, _, body := ask(t, handler, joinKey, server.JoinRequest{
-		Tenant: tenant, Username: "alice", Room: roomName, Device: deviceThumbprint,
+		Tenant: tenant, Username: "alice", Room: roomName, Key: &deviceKey,
 	}); code != http.StatusOK {
 		t.Errorf("after the window, a join got %d (%s)", code, body)
 	}
@@ -483,7 +522,7 @@ func TestTheResponseIsNeverCached(t *testing.T) {
 	h.createRoom(t, "alice")
 
 	request := httptest.NewRequest(http.MethodPost, server.JoinPath,
-		strings.NewReader(`{"tenant":"`+tenant+`","username":"alice","room":"`+roomName+`","device":"`+deviceThumbprint+`"}`))
+		strings.NewReader(`{"tenant":"`+tenant+`","username":"alice","room":"`+roomName+`","key":{"kty":"EC","crv":"P-256","x":"`+deviceKey.X+`","y":"`+deviceKey.Y+`"}}`))
 	request.Header.Set("Authorization", "Bearer "+joinKey)
 	recorder := httptest.NewRecorder()
 	h.server.JoinHandler(false).ServeHTTP(recorder, request)

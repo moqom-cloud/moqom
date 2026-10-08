@@ -164,6 +164,9 @@ func Open(ctx context.Context, config Config) (*Store, error) {
 	return subject, nil
 }
 
+// Pool is the connection pool, for stores that share this database.
+func (s *Store) Pool() *pgxpool.Pool { return s.pool }
+
 // Close releases the pool and the connector.
 func (s *Store) Close() {
 	s.pool.Close()
@@ -230,8 +233,9 @@ func (s *Store) CreateRoom(ctx context.Context, room control.Room) (control.Room
 			tenant, room, lifecycle, owner, acting_host_user, acting_host_device,
 			starts_at, created_at, ended_at,
 			age_minimum, age_verified, recording, residency_zone,
-			max_participants, stage_slots, watchdog_limit
-		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)
+			max_participants, stage_slots, watchdog_limit, e2ee,
+			direct_paths, max_direct_participants
+		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19)
 		ON CONFLICT (tenant, room) DO NOTHING`,
 		room.Tenant, room.Room, string(room.Lifecycle), room.Owner,
 		room.ActingHost.Username, room.ActingHost.Device,
@@ -239,7 +243,8 @@ func (s *Store) CreateRoom(ctx context.Context, room control.Room) (control.Room
 		int64(room.Policy.AgeGate.MinimumAge), room.Policy.AgeGate.RequireVerification,
 		string(room.Policy.Recording), room.Policy.ResidencyZone,
 		int64(room.Policy.MaxParticipants), int64(room.Policy.StageSlots),
-		int64(room.Policy.WatchdogLimit),
+		int64(room.Policy.WatchdogLimit), string(room.Policy.E2EE),
+		string(room.Policy.DirectPaths), int64(room.Policy.MaxDirectParticipants),
 	)
 	if err != nil {
 		return control.Room{}, fmt.Errorf("creating a room: %w", err)
@@ -254,29 +259,34 @@ const roomColumns = `
 	tenant, room, lifecycle, owner, acting_host_user, acting_host_device,
 	starts_at, created_at, ended_at,
 	age_minimum, age_verified, recording, residency_zone,
-	max_participants, stage_slots, watchdog_limit`
+	max_participants, stage_slots, watchdog_limit, e2ee,
+	direct_paths, max_direct_participants`
 
 func scanRoom(row pgx.Row) (control.Room, error) {
 	var room control.Room
-	var lifecycle, recording string
+	var lifecycle, recording, e2ee, direct string
 	var startsAt, endedAt *time.Time
-	var age, maximum, slots, watchdogs int64
+	var age, maximum, slots, watchdogs, maxDirect int64
 	err := row.Scan(
 		&room.Tenant, &room.Room, &lifecycle, &room.Owner,
 		&room.ActingHost.Username, &room.ActingHost.Device,
 		&startsAt, &room.CreatedAt, &endedAt,
 		&age, &room.Policy.AgeGate.RequireVerification, &recording, &room.Policy.ResidencyZone,
-		&maximum, &slots, &watchdogs,
+		&maximum, &slots, &watchdogs, &e2ee,
+		&direct, &maxDirect,
 	)
 	if err != nil {
 		return control.Room{}, err
 	}
 	room.Lifecycle = control.Lifecycle(lifecycle)
 	room.Policy.Recording = control.RecordingPolicy(recording)
+	room.Policy.E2EE = control.E2EEPolicy(e2ee)
 	room.Policy.AgeGate.MinimumAge = uint32(age)
 	room.Policy.MaxParticipants = uint32(maximum)
 	room.Policy.StageSlots = uint32(slots)
 	room.Policy.WatchdogLimit = uint32(watchdogs)
+	room.Policy.DirectPaths = control.DirectPaths(direct)
+	room.Policy.MaxDirectParticipants = uint32(maxDirect)
 	room.StartsAt = at(startsAt)
 	room.EndedAt = at(endedAt)
 	return room, nil
@@ -300,7 +310,8 @@ func (s *Store) SaveRoom(ctx context.Context, room control.Room) (control.Room, 
 			lifecycle = $3, owner = $4, acting_host_user = $5, acting_host_device = $6,
 			starts_at = $7, ended_at = $8,
 			age_minimum = $9, age_verified = $10, recording = $11, residency_zone = $12,
-			max_participants = $13, stage_slots = $14, watchdog_limit = $15
+			max_participants = $13, stage_slots = $14, watchdog_limit = $15, e2ee = $16,
+			direct_paths = $17, max_direct_participants = $18
 		WHERE tenant = $1 AND room = $2`,
 		room.Tenant, room.Room, string(room.Lifecycle), room.Owner,
 		room.ActingHost.Username, room.ActingHost.Device,
@@ -308,7 +319,8 @@ func (s *Store) SaveRoom(ctx context.Context, room control.Room) (control.Room, 
 		int64(room.Policy.AgeGate.MinimumAge), room.Policy.AgeGate.RequireVerification,
 		string(room.Policy.Recording), room.Policy.ResidencyZone,
 		int64(room.Policy.MaxParticipants), int64(room.Policy.StageSlots),
-		int64(room.Policy.WatchdogLimit),
+		int64(room.Policy.WatchdogLimit), string(room.Policy.WithDefaults().E2EE),
+		string(room.Policy.DirectPaths), int64(room.Policy.MaxDirectParticipants),
 	)
 	if err != nil {
 		return control.Room{}, fmt.Errorf("saving a room: %w", err)
@@ -872,8 +884,8 @@ func (s *Store) AppendModerationEntry(ctx context.Context, entry control.Moderat
 			target_username, target_device, target_all_devices,
 			ban_kind, ban_subject, ban_scope_tenant, code, reason, expires_at,
 			media, audience_only, grants_publish, grants_moderation, grants_is_owner,
-			enforced, decided_by_model, idempotency_key
-		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24)
+			enforced, decided_by_model, idempotency_key, policy_change
+		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25)
 		ON CONFLICT (tenant, idempotency_key) WHERE idempotency_key <> '' DO NOTHING`,
 		entry.ID, entry.Tenant, entry.Room, entry.At, string(entry.Verb),
 		entry.ServiceAccount, entry.OnBehalfOf,
@@ -881,7 +893,7 @@ func (s *Store) AppendModerationEntry(ctx context.Context, entry control.Moderat
 		string(entry.BanKind), entry.BanSubject, entry.BanScopeTenant,
 		entry.Code, entry.Reason, moment(entry.ExpiresAt),
 		int64(entry.Media), entry.AudienceOnly, publish, moderation, owner,
-		entry.Enforced, entry.DecidedByModel, entry.IdempotencyKey,
+		entry.Enforced, entry.DecidedByModel, entry.IdempotencyKey, entry.PolicyChange,
 	)
 	if err != nil {
 		return control.ModerationEntry{}, fmt.Errorf("appending a moderation entry: %w", err)
@@ -899,7 +911,7 @@ const entryColumns = `
 	target_username, target_device, target_all_devices,
 	ban_kind, ban_subject, ban_scope_tenant, code, reason, expires_at,
 	media, audience_only, grants_publish, grants_moderation, grants_is_owner,
-	enforced, decided_by_model, idempotency_key`
+	enforced, decided_by_model, idempotency_key, policy_change`
 
 func scanEntry(row pgx.Row) (control.ModerationEntry, error) {
 	var entry control.ModerationEntry
@@ -914,7 +926,7 @@ func scanEntry(row pgx.Row) (control.ModerationEntry, error) {
 		&banKind, &entry.BanSubject, &entry.BanScopeTenant, &entry.Code,
 		&entry.Reason, &expires, &media, &entry.AudienceOnly,
 		&publish, &moderation, &owner, &entry.Enforced,
-		&entry.DecidedByModel, &entry.IdempotencyKey)
+		&entry.DecidedByModel, &entry.IdempotencyKey, &entry.PolicyChange)
 	if err != nil {
 		return control.ModerationEntry{}, err
 	}

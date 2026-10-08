@@ -116,6 +116,19 @@ variable "udp_port" {
   default     = 443
 }
 
+variable "stun_port" {
+  type        = number
+  description = "Port the relay answers STUN Binding requests on, so a device behind NAT can learn the public address it offers a peer for a direct path. 3478 is the registered port and the one the control plane advertises by default. Null turns the responder off. Must match the network module's `relay_stun_port`."
+  default     = 3478
+  nullable    = true
+}
+
+variable "enable_ipv6" {
+  type        = bool
+  description = "Serve QUIC and STUN on an IPv6 address as well, behind the same backends. Needs the subnet to be dual stack: set the network module's `enable_ipv6` too."
+  default     = false
+}
+
 variable "health_check_port" {
   type        = number
   description = "TCP port for the load-balancer health probe. See the comment in main.tf for why this cannot be the serving port."
@@ -205,6 +218,12 @@ variable "link_client_key_secret_id" {
   default     = null
 }
 
+variable "ticket_keys_secret_id" {
+  type        = string
+  description = "Secret Manager secret holding the fleet's direct-ticket keys, a JWK set of Ed25519 keys. Every relay in a fleet must hold the same set, or a participant on one relay can't verify a peer's ticket from another. Null issues no tickets, which keeps everyone on this tier off direct paths."
+  default     = null
+}
+
 variable "container_uid" {
   type        = number
   description = "UID the relay runs as inside its container. The fetched certificate and key are chowned to it, because a root-owned key is one the container cannot read."
@@ -237,4 +256,19 @@ variable "labels" {
   type        = map(string)
   description = "Labels applied to resources that accept them."
   default     = {}
+}
+
+variable "ziti" {
+  type = object({
+    # The tunneler sidecar: the ziti CLI image, pinned by digest.
+    cli_image = string
+    # Where the relay asks the control plane for its overlay identity, and the
+    # audience its instance identity token is minted for.
+    enroll_url      = string
+    enroll_audience = string
+    # Seconds between the tunneler's service polls.
+    service_poll_seconds = optional(number, 60)
+  })
+  description = "Turns on the relay's OpenZiti tunneler: an identity minted per instance by the control plane at boot, a sidecar that intercepts the control plane's overlay service on loopback and hosts this relay's admin port and SSH for operators. Null leaves the relay on its TCP link alone."
+  default     = null
 }

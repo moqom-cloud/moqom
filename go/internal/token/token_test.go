@@ -3,6 +3,8 @@ package token
 import (
 	"bytes"
 	"crypto/ed25519"
+	"crypto/mldsa"
+	"crypto/rand"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -10,8 +12,19 @@ import (
 	"testing"
 	"time"
 
+	sectoken "github.com/moqom-cloud/moqom-security/go/token"
+
 	"github.com/moqom-cloud/moqom/go/internal/control"
 )
+
+// header and tokenType are the JWS header as tokens carry it, for forging one.
+type header struct {
+	Algorithm string `json:"alg"`
+	Type      string `json:"typ"`
+	KeyID     string `json:"kid"`
+}
+
+const tokenType = sectoken.Type
 
 func testKey(t *testing.T) (Key, *Verifier) {
 	t.Helper()
@@ -19,20 +32,16 @@ func testKey(t *testing.T) (Key, *Verifier) {
 	if err != nil {
 		t.Fatalf("generating a key: %v", err)
 	}
-	public, ok := key.Private.Public().(ed25519.PublicKey)
-	if !ok {
-		t.Fatal("generated key is not Ed25519")
-	}
-	return key, NewVerifier("moqom", map[string]ed25519.PublicKey{key.ID: public})
+	return key, NewVerifier("moqom", []Key{key})
 }
 
 func claimsFor(grants control.Grants) Claims {
 	return Claims{
 		Issuer:       "moqom",
 		Subject:      "alice",
-		Audience:     "acme",
-		Confirmation: Confirmation{Thumbprint: "MpXqvQAmv7Y3Kk9dHnJpLwRtUvXyZaBcDeFgHiJkLmN"},
-		MOQT:         ScopeFrom(grants, "room-42", false, false),
+		Tenant:       "acme",
+		Confirmation: Confirmation{Thumbprint: "MpXqvQAmv7Y3Kk9dHnJpLwRtUvXyZaBcDeFgHiJkLmM"},
+		Grant:        ScopeFrom(grants, "room-42", false, false),
 	}
 }
 
@@ -54,7 +63,7 @@ func TestRoundTrip(t *testing.T) {
 		t.Fatalf("verifying: %v", err)
 	}
 
-	recovered, err := claims.MOQT.Grants()
+	recovered, err := Grants(claims.Grant)
 	if err != nil {
 		t.Fatalf("reading grants: %v", err)
 	}
@@ -64,7 +73,7 @@ func TestRoundTrip(t *testing.T) {
 
 	// The device is derived, never carried, so a token cannot name a device its
 	// key does not imply -- which is what makes a device ban match it.
-	identity, err := claims.Identity()
+	identity, err := Identity(claims)
 	if err != nil {
 		t.Fatalf("deriving identity: %v", err)
 	}
@@ -76,6 +85,43 @@ func TestRoundTrip(t *testing.T) {
 	}
 	if !strings.HasPrefix(claims.Confirmation.Thumbprint, identity.Device) {
 		t.Error("the device is not a prefix of the thumbprint it was derived from")
+	}
+}
+
+// The relay-link grant round-trips through the strict decoder, and a scope that
+// does not hold it says nothing about it at all: every token minted before the
+// field existed is byte for byte what it was.
+func TestARelayLinkGrantRoundTripsAndIsAbsentOtherwise(t *testing.T) {
+	key, verifier := testKey(t)
+	now := time.Date(2026, 7, 27, 12, 0, 0, 0, time.UTC)
+
+	link := claimsFor(control.Grants{})
+	link.Grant.Relay = true
+	minted, _, err := Mint(key, link, 5*time.Minute, now)
+	if err != nil {
+		t.Fatalf("minting: %v", err)
+	}
+	claims, err := verifier.Verify(minted, now)
+	if err != nil {
+		t.Fatalf("verifying: %v", err)
+	}
+	if !claims.Grant.Relay {
+		t.Error("the relay-link grant did not survive verification")
+	}
+
+	ordinary, _, err := Mint(key, claimsFor(control.Grants{Publish: control.PublishCamera}), 5*time.Minute, now)
+	if err != nil {
+		t.Fatalf("minting: %v", err)
+	}
+	payload, err := base64.RawURLEncoding.DecodeString(strings.Split(ordinary, ".")[1])
+	if err != nil {
+		t.Fatalf("decoding: %v", err)
+	}
+	if strings.Contains(string(payload), `"rly"`) {
+		t.Errorf("an ordinary token mentions the relay-link grant: %s", payload)
+	}
+	if ScopeFrom(control.Grants{IsOwner: true}, "room-42", false, false).Relay {
+		t.Error("ScopeFrom, which the backend path mints through, produced a relay link")
 	}
 }
 
@@ -113,7 +159,7 @@ func TestForeignTokenTypeIsRefused(t *testing.T) {
 		t.Fatalf("minting: %v", err)
 	}
 	parts := strings.Split(minted, ".")
-	forged := encodeSegment(t, header{Algorithm: algorithm, Type: "JWT", KeyID: key.ID})
+	forged := encodeSegment(t, header{Algorithm: key.Algorithm, Type: "JWT", KeyID: key.ID})
 
 	if _, err := verifier.Verify(forged+"."+parts[1]+"."+parts[2], now); !errors.Is(err, ErrUnsupported) {
 		t.Errorf("a non-MOQT token gave %v, want ErrUnsupported", err)
@@ -142,8 +188,8 @@ func TestTamperedClaimsFailVerification(t *testing.T) {
 	}
 
 	// Promote themselves to owner, which is the escalation an attacker wants.
-	claims.MOQT.Owner = true
-	claims.MOQT.Capabilities = uint32(control.CapAll)
+	claims.Grant.Owner = true
+	claims.Grant.Capabilities = uint32(control.CapAll)
 	tampered := encodeSegment(t, claims)
 
 	if _, err := verifier.Verify(parts[0]+"."+tampered+"."+parts[2], now); !errors.Is(err, ErrSignature) {
@@ -176,10 +222,7 @@ func TestBothKeysVerifyDuringRotation(t *testing.T) {
 	if err != nil {
 		t.Fatalf("generating: %v", err)
 	}
-	verifier := NewVerifier("moqom", map[string]ed25519.PublicKey{
-		retiring.ID: retiring.Private.Public().(ed25519.PublicKey),
-		incoming.ID: incoming.Private.Public().(ed25519.PublicKey),
-	})
+	verifier := NewVerifier("moqom", []Key{retiring, incoming})
 	now := time.Now()
 
 	for _, key := range []Key{retiring, incoming} {
@@ -204,11 +247,11 @@ func TestExpiryIsEnforcedAndSkewIsBounded(t *testing.T) {
 
 	// Just past expiry, inside the skew allowance: still accepted, because that
 	// is two machines disagreeing about the time.
-	if _, err := verifier.Verify(minted, expires.Add(clockSkew/2)); err != nil {
+	if _, err := verifier.Verify(minted, expires.Add(sectoken.ClockSkew/2)); err != nil {
 		t.Errorf("a token inside the skew allowance was refused: %v", err)
 	}
 	// Well past it: refused. Skew tolerance is not an extension.
-	if _, err := verifier.Verify(minted, expires.Add(clockSkew*2)); !errors.Is(err, ErrExpired) {
+	if _, err := verifier.Verify(minted, expires.Add(sectoken.ClockSkew*2)); !errors.Is(err, ErrExpired) {
 		t.Errorf("an expired token gave %v, want ErrExpired", err)
 	}
 }
@@ -253,7 +296,7 @@ func TestUnknownCapabilityBitsAreRefused(t *testing.T) {
 	now := time.Now()
 
 	future := claimsFor(control.Grants{})
-	future.MOQT.Capabilities = uint32(control.CapKick) | (1 << 31)
+	future.Grant.Capabilities = uint32(control.CapKick) | (1 << 31)
 
 	if _, _, err := Mint(key, future, time.Minute, now); !errors.Is(err, ErrUnsupported) {
 		t.Errorf("minting with an unknown bit gave %v, want ErrUnsupported", err)
@@ -271,7 +314,7 @@ func TestUnknownCapabilityBitsAreRefused(t *testing.T) {
 	if err := json.Unmarshal(decoded, &claims); err != nil {
 		t.Fatalf("parsing: %v", err)
 	}
-	claims.MOQT.Capabilities = 1 << 31
+	claims.Grant.Capabilities = 1 << 31
 	resigned, _, err := Mint(key, claims, time.Minute, now)
 	if err == nil {
 		if _, err := verifier.Verify(resigned, now); !errors.Is(err, ErrUnsupported) {
@@ -302,9 +345,7 @@ func TestMalformedTokensAreRejectedNotPanicked(t *testing.T) {
 // be accepted, so the issuer is checked rather than merely recorded.
 func TestForeignIssuerIsRefused(t *testing.T) {
 	key, _ := testKey(t)
-	verifier := NewVerifier("moqom", map[string]ed25519.PublicKey{
-		key.ID: key.Private.Public().(ed25519.PublicKey),
-	})
+	verifier := NewVerifier("moqom", []Key{key})
 	now := time.Now()
 
 	foreign := claimsFor(control.Grants{})
@@ -313,7 +354,7 @@ func TestForeignIssuerIsRefused(t *testing.T) {
 	if err != nil {
 		t.Fatalf("minting: %v", err)
 	}
-	if _, err := verifier.Verify(minted, now); !errors.Is(err, ErrMalformed) {
+	if _, err := verifier.Verify(minted, now); !errors.Is(err, ErrWrongIssuer) {
 		t.Errorf("a token from another issuer gave %v, want a rejection", err)
 	}
 }
@@ -329,18 +370,94 @@ func TestPublicJWKIsWellFormed(t *testing.T) {
 	if err := json.Unmarshal([]byte(encoded), &jwk); err != nil {
 		t.Fatalf("the JWK is not JSON: %v", err)
 	}
-	if jwk["kty"] != "OKP" || jwk["crv"] != "Ed25519" {
+	if jwk["kty"] != "AKP" || jwk["alg"] != "ML-DSA-65" {
 		t.Errorf("unexpected key type: %v", jwk)
 	}
 	if jwk["kid"] != key.ID {
 		t.Errorf("the JWK names key %q, want %q", jwk["kid"], key.ID)
 	}
-	raw, err := base64.RawURLEncoding.DecodeString(jwk["x"])
+	raw, err := base64.RawURLEncoding.DecodeString(jwk["pub"])
 	if err != nil {
 		t.Fatalf("the public key is not base64url: %v", err)
 	}
-	if len(raw) != ed25519.PublicKeySize {
-		t.Errorf("the public key is %d bytes, want %d", len(raw), ed25519.PublicKeySize)
+	if len(raw) != mldsa.MLDSA65().PublicKeySize() {
+		t.Errorf("the public key is %d bytes, want %d", len(raw), mldsa.MLDSA65().PublicKeySize())
+	}
+}
+
+func legacyKey(t *testing.T) (Key, ed25519.PrivateKey) {
+	t.Helper()
+	public, private, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("generating: %v", err)
+	}
+	key, err := LegacyEd25519(public)
+	if err != nil {
+		t.Fatalf("loading: %v", err)
+	}
+	return key, private
+}
+
+// signLegacy produces what Mint produced before ML-DSA, so the rollover can be
+// tested without Mint being able to make one.
+func signLegacy(t *testing.T, key Key, private ed25519.PrivateKey, claims Claims, now time.Time) string {
+	t.Helper()
+	claims.IssuedAt, claims.Expires, claims.ID = now.Unix(), now.Add(time.Minute).Unix(), "legacy"
+	signing := encodeSegment(t, header{Algorithm: AlgorithmEdDSA, Type: tokenType, KeyID: key.ID}) +
+		"." + encodeSegment(t, claims)
+	return signing + "." + base64.RawURLEncoding.EncodeToString(ed25519.Sign(private, []byte(signing)))
+}
+
+// Tokens signed with Ed25519 before the move still verify until they expire,
+// and an Ed25519 key never signs another.
+func TestEd25519KeysOnlyVerify(t *testing.T) {
+	legacy, private := legacyKey(t)
+	signer, _ := testKey(t)
+	verifier := NewVerifier("moqom", []Key{signer, legacy})
+	now := time.Now()
+
+	if _, err := verifier.Verify(signLegacy(t, legacy, private, claimsFor(control.Grants{}), now), now); err != nil {
+		t.Errorf("a token signed before the move was refused: %v", err)
+	}
+	if _, _, err := Mint(legacy, claimsFor(control.Grants{}), time.Minute, now); err == nil {
+		t.Error("an Ed25519 key minted a token")
+	}
+}
+
+// The algorithm belongs to the key, so a token naming EdDSA for an ML-DSA key
+// is refused before any signature is checked, and the reverse likewise.
+func TestATokenMustNameItsKeysAlgorithm(t *testing.T) {
+	legacy, private := legacyKey(t)
+	signer, _ := testKey(t)
+	verifier := NewVerifier("moqom", []Key{signer, legacy})
+	now := time.Now()
+
+	minted, _, err := Mint(signer, claimsFor(control.Grants{}), time.Minute, now)
+	if err != nil {
+		t.Fatalf("minting: %v", err)
+	}
+	parts := strings.Split(minted, ".")
+	parts[0] = encodeSegment(t, header{Algorithm: AlgorithmEdDSA, Type: tokenType, KeyID: signer.ID})
+	if _, err := verifier.Verify(strings.Join(parts, "."), now); !errors.Is(err, ErrUnsupported) {
+		t.Errorf("EdDSA named for an ML-DSA key gave %v, want ErrUnsupported", err)
+	}
+
+	legacyToken := strings.Split(signLegacy(t, legacy, private, claimsFor(control.Grants{}), now), ".")
+	legacyToken[0] = encodeSegment(t, header{Algorithm: AlgorithmMLDSA65, Type: tokenType, KeyID: legacy.ID})
+	if _, err := verifier.Verify(strings.Join(legacyToken, "."), now); !errors.Is(err, ErrUnsupported) {
+		t.Errorf("ML-DSA-65 named for an Ed25519 key gave %v, want ErrUnsupported", err)
+	}
+}
+
+func TestASeedAlwaysNamesTheSameKey(t *testing.T) {
+	seed := make([]byte, 32)
+	one, err := KeyFromSeed(seed)
+	if err != nil {
+		t.Fatalf("loading: %v", err)
+	}
+	two, _ := KeyFromSeed(seed)
+	if one.ID != two.ID || !one.CanSign() {
+		t.Errorf("a seed gave %s then %s", one.ID, two.ID)
 	}
 }
 
@@ -365,7 +482,7 @@ func TestProvenanceSurvivesTheRoundTripAndIsSigned(t *testing.T) {
 	now := time.Date(2026, 7, 27, 12, 0, 0, 0, time.UTC)
 
 	claims := claimsFor(control.Grants{})
-	claims.ArrivedVia = "bea"
+	claims.Via = "bea"
 
 	minted, _, err := Mint(key, claims, time.Minute, now)
 	if err != nil {
@@ -375,8 +492,8 @@ func TestProvenanceSurvivesTheRoundTripAndIsSigned(t *testing.T) {
 	if err != nil {
 		t.Fatalf("verifying: %v", err)
 	}
-	if verified.ArrivedVia != "bea" {
-		t.Errorf("provenance should survive, got %q", verified.ArrivedVia)
+	if verified.Via != "bea" {
+		t.Errorf("provenance should survive, got %q", verified.Via)
 	}
 
 	// The property the whole design rests on: these counts divide revenue between
@@ -384,14 +501,15 @@ func TestProvenanceSurvivesTheRoundTripAndIsSigned(t *testing.T) {
 	// somebody's audience for nothing.
 	segments := strings.Split(minted, ".")
 	var edited Claims
-	if err := decodeJSON(segments[1], &edited); err != nil {
+	decoded, err := base64.RawURLEncoding.DecodeString(segments[1])
+	if err != nil {
 		t.Fatalf("decoding claims: %v", err)
 	}
-	edited.ArrivedVia = "ana"
-	forged, err := encodeJSON(edited)
-	if err != nil {
-		t.Fatalf("re-encoding: %v", err)
+	if err := json.Unmarshal(decoded, &edited); err != nil {
+		t.Fatalf("decoding claims: %v", err)
 	}
+	edited.Via = "ana"
+	forged := encodeSegment(t, edited)
 	if _, err := verifier.Verify(segments[0]+"."+forged+"."+segments[2], now); !errors.Is(err, ErrSignature) {
 		t.Errorf("a rewritten provenance claim should fail the signature, got %v", err)
 	}
@@ -404,15 +522,15 @@ func TestProvenanceIsRefusedWhenItCannotMeanAnything(t *testing.T) {
 	// Attributed to itself: nobody brings themselves, and counting it would put a
 	// cohost in their own audience.
 	itself := claimsFor(control.Grants{})
-	itself.ArrivedVia = itself.Subject
+	itself.Via = itself.Subject
 	if _, _, err := Mint(key, itself, time.Minute, now); !errors.Is(err, control.ErrInvalid) {
 		t.Errorf("a self-attributed token should be refused, got %v", err)
 	}
 
 	// Attributed but naming no room: there is no audience for it to belong to.
 	roomless := claimsFor(control.Grants{})
-	roomless.MOQT = ScopeFrom(control.Grants{}, "", false, false)
-	roomless.ArrivedVia = "bea"
+	roomless.Grant = ScopeFrom(control.Grants{}, "", false, false)
+	roomless.Via = "bea"
 	if _, _, err := Mint(key, roomless, time.Minute, now); !errors.Is(err, control.ErrInvalid) {
 		t.Errorf("attribution with no room should be refused, got %v", err)
 	}
@@ -434,8 +552,8 @@ func TestATokenWithNoProvenanceIsNormal(t *testing.T) {
 	if err != nil {
 		t.Fatalf("verifying: %v", err)
 	}
-	if verified.ArrivedVia != "" {
-		t.Errorf("nobody brought them, got %q", verified.ArrivedVia)
+	if verified.Via != "" {
+		t.Errorf("nobody brought them, got %q", verified.Via)
 	}
 	// And the claim is absent from the wire rather than present and empty, so a
 	// token for a viewer who arrived alone is no larger than it was. Checked
@@ -448,5 +566,36 @@ func TestATokenWithNoProvenanceIsNormal(t *testing.T) {
 	}
 	if bytes.Contains(body, []byte(`"via"`)) {
 		t.Errorf("an empty provenance claim should be omitted, got %s", body)
+	}
+}
+
+// The encryption claim round-trips as required, and anything else -- including
+// the "optional" earlier versions allowed -- is refused at minting.
+func TestE2EEClaim(t *testing.T) {
+	key, verifier := testKey(t)
+	now := time.Date(2026, 7, 27, 12, 0, 0, 0, time.UTC)
+
+	for _, policy := range []control.E2EEPolicy{"", control.E2EERequired} {
+		claims := claimsFor(control.Grants{})
+		claims.E2EE = string(policy)
+		minted, _, err := Mint(key, claims, time.Minute, now)
+		if err != nil {
+			t.Fatalf("minting e2ee=%q: %v", policy, err)
+		}
+		verified, err := verifier.Verify(minted, now)
+		if err != nil {
+			t.Fatalf("verifying e2ee=%q: %v", policy, err)
+		}
+		if verified.E2EE != string(policy) {
+			t.Errorf("e2ee came back as %q, want %q", verified.E2EE, policy)
+		}
+	}
+
+	for _, policy := range []control.E2EEPolicy{"off", "optional"} {
+		relaxed := claimsFor(control.Grants{})
+		relaxed.E2EE = string(policy)
+		if _, _, err := Mint(key, relaxed, time.Minute, now); !errors.Is(err, control.ErrInvalid) {
+			t.Errorf("minting e2ee=%q gave %v, want ErrInvalid", policy, err)
+		}
 	}
 }

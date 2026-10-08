@@ -38,7 +38,6 @@ func (s *roomsService) CreateRoom(ctx context.Context, request *adminpb.CreateRo
 	if err != nil {
 		return nil, statusFor(err)
 	}
-
 	owner := ""
 	if request.GetOwnerUsername() != "" {
 		owner, err = control.NormaliseUsername(request.GetOwnerUsername())
@@ -70,6 +69,7 @@ func (s *roomsService) CreateRoom(ctx context.Context, request *adminpb.CreateRo
 	if err != nil {
 		return nil, statusFor(err)
 	}
+	s.core.followRecordingPolicy(ctx, account, request.GetActor(), created)
 	return roomToProto(created, roomCounts{}), nil
 }
 
@@ -152,7 +152,6 @@ func (s *roomsService) UpdateRoomPolicy(ctx context.Context, request *adminpb.Up
 	if err := room.Policy.ValidateChange(next); err != nil {
 		return nil, statusFor(err)
 	}
-
 	room.Policy = next
 	saved, err := s.core.store.SaveRoom(ctx, room)
 	if err != nil {
@@ -170,6 +169,7 @@ func (s *roomsService) UpdateRoomPolicy(ctx context.Context, request *adminpb.Up
 	// told a delta: a tightened participant limit has to reach them, and there is no
 	// verb for "the rules changed".
 	s.core.broadcastSnapshot(ctx, roomRef{room.Tenant, room.Room})
+	s.core.followRecordingPolicy(ctx, account, request.GetActor(), saved)
 
 	counts, err := s.core.counts(ctx, room.Tenant, room.Room)
 	if err != nil {
@@ -203,6 +203,12 @@ func applyMask(current, next control.Policy, mask []string) control.Policy {
 			result.StageSlots = next.StageSlots
 		case "watchdog_limit":
 			result.WatchdogLimit = next.WatchdogLimit
+		case "e2ee":
+			result.E2EE = next.E2EE
+		case "direct_paths":
+			result.DirectPaths = next.DirectPaths
+		case "max_direct_participants":
+			result.MaxDirectParticipants = next.MaxDirectParticipants
 		}
 	}
 	return result
@@ -266,6 +272,7 @@ func (s *roomsService) CloseRoom(ctx context.Context, request *adminpb.CloseRoom
 			To:   protoByLifecycle[control.LifecycleEnded],
 		}},
 	})
+	s.core.stopRecordings(ctx, room.Tenant, room.Room)
 
 	return roomToProto(saved, counts), nil
 }

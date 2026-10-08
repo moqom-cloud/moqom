@@ -1,0 +1,11 @@
+MOQOM Platform
+Copyright 2026 Elliott Wave LLC. All rights reserved except as licensed below.
+
+proto/, schemas/ and samples are Apache-2.0. The control plane in go/, the
+director, ingest and moqom-cc are proprietary and confidential
+(LicenseRef-MOQOM-Proprietary). See LICENSING.md and LICENSES/.
+
+"MOQOM" and the MOQOM logo are trademarks of Elliott Wave LLC.
+
+Elliott Wave LLC has patent applications pending. No patent license is granted
+except as stated in the licence of the component concerned.
