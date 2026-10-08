@@ -78,7 +78,7 @@ sealed direct-mode candidate offers. Media is protected by AES-256-GCM under
 those keys. Participant tokens and the room control log are ML-DSA-65 too.
 
 **What is not.** Device keys are P-256 in the Secure Enclave and sign ES256
-possession proofs, because the enclave has no post-quantum keys. Direct tickets
+possession proofs. The enclave holds ML-DSA-65 keys from OS 26 (`SecureEnclave.MLDSA65`), so moving proofs is ours to do, not a hardware limit. Direct tickets
 are EdDSA (Ed25519) JWTs. A quantum attacker could forge these, but only while
 they are being checked; forging one later does not decrypt recorded traffic.
 TLS and QUIC to the relay and control plane are outside this document.
