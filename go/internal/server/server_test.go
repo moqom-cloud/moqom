@@ -3,10 +3,12 @@ package server_test
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -1488,4 +1490,65 @@ func waitFor(t *testing.T, what string, condition func() bool) {
 		time.Sleep(5 * time.Millisecond)
 	}
 	t.Fatalf("timed out waiting for %s", what)
+}
+
+func TestAnAgentTokenIsMintedOnlyForAnAttachedWatchdogAndOnlyWatches(t *testing.T) {
+	h := newHarness(t)
+	h.createRoom(t, "alice")
+	mint := func(username string) (*adminpb.MintClientTokenResponse, error) {
+		return h.tokens.MintClientToken(as(ownerKey), &adminpb.MintClientTokenRequest{
+			Tenant: tenant, Username: username, Room: roomName,
+			DeviceThumbprint: "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQ",
+			Preset:           adminpb.CapabilityPreset_CAPABILITY_PRESET_SUPER_MODERATOR,
+			Grants: &adminpb.Grants{
+				Publish: []adminpb.PublishScope{adminpb.PublishScope_PUBLISH_SCOPE_VIDEO},
+			},
+		})
+	}
+
+	if _, err := mint("watchdog.rec-1"); status.Code(err) != codes.FailedPrecondition {
+		t.Fatalf("an agent for a watchdog nobody attached gave %v, want FailedPrecondition", status.Code(err))
+	}
+
+	attached, err := h.rooms.AttachWatchdog(as(ownerKey), &adminpb.AttachWatchdogRequest{
+		Tenant: tenant, Room: roomName,
+		Kind:        adminpb.WatchdogKind_WATCHDOG_KIND_RECORDING,
+		OperatedBy:  adminpb.WatchdogOperator_WATCHDOG_OPERATOR_TENANT,
+		Descriptor_: "Recording for compliance",
+	})
+	if err != nil {
+		t.Fatalf("attaching: %v", err)
+	}
+	response, err := mint("watchdog." + attached.GetId())
+	if err != nil {
+		t.Fatalf("minting for an attached watchdog: %v", err)
+	}
+
+	// Whatever the request asked for, an agent watches.
+	parts := strings.Split(response.GetToken(), ".")
+	payload, err := base64.RawURLEncoding.DecodeString(parts[1])
+	if err != nil {
+		t.Fatal(err)
+	}
+	var claims struct {
+		MOQT struct {
+			Publish      uint8  `json:"pub"`
+			Capabilities uint32 `json:"cap"`
+			Owner        bool   `json:"own"`
+		} `json:"moqt"`
+	}
+	if err := json.Unmarshal(payload, &claims); err != nil {
+		t.Fatal(err)
+	}
+	if claims.MOQT.Publish != 0 || claims.MOQT.Capabilities != 0 || claims.MOQT.Owner {
+		t.Errorf("an agent token grants %+v, want nothing but watching", claims.MOQT)
+	}
+
+	// And an agent token is always for one room.
+	if _, err := h.tokens.MintClientToken(as(ownerKey), &adminpb.MintClientTokenRequest{
+		Tenant: tenant, Username: "watchdog." + attached.GetId(),
+		DeviceThumbprint: "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQ",
+	}); status.Code(err) != codes.InvalidArgument {
+		t.Errorf("an agent token with no room gave %v, want InvalidArgument", status.Code(err))
+	}
 }

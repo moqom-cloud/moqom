@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -49,6 +50,18 @@ func (s *tokensService) MintClientToken(
 	requested, err := grantsFromProto(request.GetGrants(), request.GetPreset())
 	if err != nil {
 		return nil, statusFor(err)
+	}
+
+	// A recorder or classifier the tenant runs, joining the room's encrypted
+	// group so it can decrypt. Its username is the one thing every member's
+	// device sees of it — each holds back its media until the room discloses the
+	// watchdog the name points at — so the name is minted only for a watchdog
+	// that is attached to this room, and the token lets it watch and nothing else.
+	if watchdog, ok := strings.CutPrefix(username, control.AgentUsernamePrefix); ok {
+		if err := s.agentMayJoin(ctx, request.GetTenant(), request.GetRoom(), watchdog); err != nil {
+			return nil, err
+		}
+		requested = control.Grants{}
 	}
 
 	// The ceiling, and the reason it exists.
@@ -183,4 +196,26 @@ func (s *tokensService) ListVerificationKeys(
 		})
 	}
 	return response, nil
+}
+
+// agentMayJoin refuses an agent token unless its watchdog is attached to the
+// room and has not failed.
+func (s *tokensService) agentMayJoin(ctx context.Context, tenant, room, watchdog string) error {
+	if room == "" {
+		return status.Error(codes.InvalidArgument, "an agent token names the room its watchdog is attached to")
+	}
+	attached, err := s.core.store.ListWatchdogs(ctx, tenant, room)
+	if err != nil {
+		return statusFor(err)
+	}
+	for _, candidate := range attached {
+		if candidate.ID == watchdog {
+			if candidate.Health == control.WatchdogFailed {
+				return status.Errorf(codes.FailedPrecondition, "watchdog %s has failed; reattach it", watchdog)
+			}
+			return nil
+		}
+	}
+	return status.Errorf(codes.FailedPrecondition,
+		"no watchdog %s is attached to %s; attach it first, so the room is told", watchdog, room)
 }
