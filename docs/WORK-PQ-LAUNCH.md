@@ -35,7 +35,11 @@ Status: **done** · **in progress** · **to do** · **blocked** (needs a person)
 | Loadgen refuses runs its 15-minute tokens can't outlast | done | engine 616026f |
 | Loadgen renews tokens mid-run, for soak tests past 15 minutes | done | engine 7c751fb; adds `Subscription::renew` and `Announcement::renew` to moqom-client, with a test |
 | Relay, control plane, director, ingest, recorder, congestion controller: proprietary, binary only | done | moqom 4ad2e6a, engine cdb82fc; `LICENSES/LicenseRef-MOQOM-Proprietary.txt`; sites updated (notices, self-hosting, open-source). Counsel to review the text; `legal@moqom.cloud` must exist |
-| Direct paths wired into `Room` (Swift) and the Rust client | in progress | direct-mode agent, second attempt (the first stalled without code) |
+| Direct paths by default in Swift rooms: `DirectPolicy`, room policy, relay ticket refusal, backstage | done | swift 55f9ae6, pq 1a69af7, engine 3149af4, go 031894e, rust 7e08b34; Swift 1021 and Rust 521 tests pass |
+| Relays answer STUN and SDKs use it by default, so direct paths cross NATs | in progress | STUN agent; until then direct paths only open on the same network |
+| Rust client: direct paths wired into a room | to do | it has `DirectPolicy` and the room limit only |
+| Backstage moves tested against a relay that enforces the backstage grant | to do | tested on the loopback relay only |
+| Postgres test for `direct_paths` and `max_direct_participants` | to do | the memory store is covered |
 | `directPolicy` with `.relayOnly`; 1:1 calls point to point by default | in progress | direct-mode agent |
 | Small private rooms point to point (mesh up to a limit) | in progress | direct-mode agent |
 | Swift dependency on moqom-security by URL and tag, not path | to do | at publication: needs the repo public and tagged |
