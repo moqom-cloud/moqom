@@ -55,6 +55,7 @@ func Run(t *testing.T, newStore Factory) {
 		{"the moderation log reads newest first and filters", testLogQuery},
 		{"enforcement can be marked after the fact", testMarkEnforced},
 		{"the e2ee policy and its audit trail survive a read", testE2EEPolicy},
+		{"the direct path policy survives a create, a save and a read", testDirectPolicy},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) { test.run(t, newStore) })
@@ -749,5 +750,59 @@ func testE2EEPolicy(t *testing.T, newStore Factory) {
 	}
 	if len(page.Entries) != 1 || page.Entries[0].PolicyChange != "e2ee: required -> optional" {
 		t.Errorf("the log read back as %+v", page.Entries)
+	}
+}
+
+// Each token carries the room's direct grant, so a policy that reads back
+// different from how it was written would put a relay-only room's participants
+// on direct paths, or keep a 1:1 call on the relay.
+func testDirectPolicy(t *testing.T, newStore Factory) {
+	ctx, subject, _ := setup(t, newStore)
+
+	room := newRoom("acme", "room-1")
+	room.Policy.DirectPaths = control.DirectRelayOnly
+	room.Policy.MaxDirectParticipants = 2
+	created, err := subject.CreateRoom(ctx, room)
+	if err != nil {
+		t.Fatalf("creating a room: %v", err)
+	}
+	read, err := subject.GetRoom(ctx, "acme", "room-1")
+	if err != nil {
+		t.Fatalf("reading a room: %v", err)
+	}
+	if read.Policy.DirectPaths != control.DirectRelayOnly || read.Policy.MaxDirectParticipants != 2 {
+		t.Errorf("created as relay_only, 2; read back as %q, %d",
+			read.Policy.DirectPaths, read.Policy.MaxDirectParticipants)
+	}
+	if read.Policy.Direct().Allowed {
+		t.Error("a relay-only room grants direct paths after a read")
+	}
+
+	created.Policy.DirectPaths = control.DirectAllowed
+	created.Policy.MaxDirectParticipants = 3
+	if _, err := subject.SaveRoom(ctx, created); err != nil {
+		t.Fatalf("saving a room: %v", err)
+	}
+	read, err = subject.GetRoom(ctx, "acme", "room-1")
+	if err != nil {
+		t.Fatalf("reading a room: %v", err)
+	}
+	if grant := read.Policy.Direct(); !grant.Allowed || grant.MaxParticipants != 3 {
+		t.Errorf("saved as allowed, 3; the grant read back as %+v", grant)
+	}
+
+	if _, err := subject.CreateRoom(ctx, control.Room{
+		Tenant: "acme", Room: "room-2", Lifecycle: control.LifecycleLive,
+	}); err != nil {
+		t.Fatalf("creating a room with no policy: %v", err)
+	}
+	read, err = subject.GetRoom(ctx, "acme", "room-2")
+	if err != nil {
+		t.Fatalf("reading a room: %v", err)
+	}
+	grant := read.Policy.WithDefaults().Direct()
+	if !grant.Allowed || grant.MaxParticipants != control.MaxDirectParticipants {
+		t.Errorf("a room created with no policy grants %+v, want allowed for up to %d",
+			grant, control.MaxDirectParticipants)
 	}
 }

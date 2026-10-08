@@ -197,3 +197,56 @@ func sequentialIDs() func() string {
 	var counter atomic.Uint64
 	return func() string { return fmt.Sprintf("pg-%09d", counter.Add(1)) }
 }
+
+// Rooms created before the direct path columns existed read back allowed for
+// up to four, which is what every token minted for them already said.
+func TestTheDirectMigrationKeepsOldRoomsDirect(t *testing.T) {
+	dsn := os.Getenv("MOQOM_TEST_POSTGRES")
+	if dsn == "" {
+		t.Skip("MOQOM_TEST_POSTGRES is not set; run deploy/tools/conformance.sh")
+	}
+
+	ctx := context.Background()
+	schema := fmt.Sprintf("d%d", time.Now().UnixNano())
+	connection, err := pgx.Connect(ctx, dsn)
+	if err != nil {
+		t.Fatalf("connecting: %v", err)
+	}
+	defer connection.Close(ctx)
+	defer drop(t, dsn, schema)
+
+	before, err := postgres.Open(ctx, postgres.Config{DSN: dsn, Schema: schema})
+	if err != nil {
+		t.Fatalf("opening the store: %v", err)
+	}
+	if _, err := before.CreateRoom(ctx, control.Room{
+		Tenant: "acme", Room: "room-1", Lifecycle: control.LifecycleLive,
+	}); err != nil {
+		t.Fatalf("creating a room: %v", err)
+	}
+	before.Close()
+
+	quoted := pgx.Identifier{schema}.Sanitize()
+	if _, err := connection.Exec(ctx, "ALTER TABLE "+quoted+".rooms DROP COLUMN direct_paths, DROP COLUMN max_direct_participants"); err != nil {
+		t.Fatalf("restoring the old shape: %v", err)
+	}
+
+	subject, err := postgres.Open(ctx, postgres.Config{DSN: dsn, Schema: schema})
+	if err != nil {
+		t.Fatalf("opening the store, which applies the schema: %v", err)
+	}
+	defer subject.Close()
+
+	room, err := subject.GetRoom(ctx, "acme", "room-1")
+	if err != nil {
+		t.Fatalf("reading after the migration: %v", err)
+	}
+	policy := room.Policy.WithDefaults()
+	if err := policy.ValidateDirect(); err != nil {
+		t.Fatalf("the migrated policy is invalid: %v", err)
+	}
+	if grant := policy.Direct(); !grant.Allowed || grant.MaxParticipants != control.MaxDirectParticipants {
+		t.Errorf("an old room grants %+v after the migration, want allowed for up to %d",
+			grant, control.MaxDirectParticipants)
+	}
+}
