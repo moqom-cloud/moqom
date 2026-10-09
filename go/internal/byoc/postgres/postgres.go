@@ -47,14 +47,14 @@ func New(ctx context.Context, pool *pgxpool.Pool) (*Store, error) {
 	return &Store{pool: pool}, nil
 }
 
-const columns = `id, tenant, name, identity_id, identity_name, created_by, created_at, revoked_at`
+const columns = `id, tenant, name, identity_id, identity_name, created_by, created_at, revoked_at, pool`
 
 func scan(row pgx.Row) (byoc.Enrollment, error) {
 	var (
 		e       byoc.Enrollment
 		revoked *time.Time
 	)
-	err := row.Scan(&e.ID, &e.Tenant, &e.Name, &e.IdentityID, &e.IdentityName, &e.CreatedBy, &e.CreatedAt, &revoked)
+	err := row.Scan(&e.ID, &e.Tenant, &e.Name, &e.IdentityID, &e.IdentityName, &e.CreatedBy, &e.CreatedAt, &revoked, &e.Pool)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return byoc.Enrollment{}, byoc.ErrNotFound
 	}
@@ -70,8 +70,8 @@ func scan(row pgx.Row) (byoc.Enrollment, error) {
 
 func (s *Store) Create(ctx context.Context, e byoc.Enrollment) error {
 	_, err := s.pool.Exec(ctx, `INSERT INTO byoc_enrollments (`+columns+`)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, NULL)`,
-		e.ID, e.Tenant, e.Name, e.IdentityID, e.IdentityName, e.CreatedBy, e.CreatedAt)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, NULL, $8)`,
+		e.ID, e.Tenant, e.Name, e.IdentityID, e.IdentityName, e.CreatedBy, e.CreatedAt, e.Pool)
 	var violation *pgconn.PgError
 	if errors.As(err, &violation) && violation.Code == "23505" {
 		return byoc.ErrExists
@@ -103,6 +103,24 @@ func (s *Store) List(ctx context.Context, tenant string) ([]byoc.Enrollment, err
 		listed = append(listed, e)
 	}
 	return listed, rows.Err()
+}
+
+func (s *Store) ActiveTenants(ctx context.Context) ([]string, error) {
+	rows, err := s.pool.Query(ctx, `SELECT DISTINCT tenant FROM byoc_enrollments
+		WHERE revoked_at IS NULL ORDER BY tenant`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var tenants []string
+	for rows.Next() {
+		var tenant string
+		if err := rows.Scan(&tenant); err != nil {
+			return nil, err
+		}
+		tenants = append(tenants, tenant)
+	}
+	return tenants, rows.Err()
 }
 
 func (s *Store) Revoke(ctx context.Context, id string, at time.Time) (byoc.Enrollment, error) {

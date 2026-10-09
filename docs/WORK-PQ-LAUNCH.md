@@ -13,7 +13,7 @@ Status: **done** · **in progress** · **to do** · **blocked** (needs a person)
 | --- | --- | --- |
 | moqom-sframe (Swift, Go, Rust, [RFC 9605](https://www.rfc-editor.org/rfc/rfc9605) vectors) | done | caec138 |
 | moqom-token ([ML-DSA-65](https://csrc.nist.gov/pubs/fips/204/final) sign, Ed25519 verify-only, 64 vectors) | done | e2a32b9 |
-| moqom-mls ([ML-KEM-768](https://csrc.nist.gov/pubs/fips/203/final) + ML-DSA-65 suite, mlswg vectors) | done | 4875d09 |
+| moqom-mls ([ML-KEM-1024](https://csrc.nist.gov/pubs/fips/203/final) + ML-DSA-87 suite, 0xF0AC, mlswg vectors) | done (suite change uncommitted) | 4875d09 |
 | moqom-proof (ML-DSA-65 device proofs, ES256 rollover, 70 vectors) | done | fb6298a |
 | SFrame replay window really 1024 | done | 6c5f905; capped at 65536; also fixed a Swift race that could let one counter replay |
 | Proof: refuse JWKs carrying private-key members | done | 6a23287 |

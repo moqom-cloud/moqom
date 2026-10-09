@@ -15,9 +15,11 @@ import (
 
 	adminpb "github.com/moqom-cloud/moqom-go/admin/adminpb"
 	"github.com/moqom-cloud/moqom/go/internal/server"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
 
-func askForLink(t *testing.T, h *harness, credential string, body any) (int, server.JoinResponse, string) {
+func askForLink(t *testing.T, h *harness, credential string, body any) (int, server.TokenResponse, string) {
 	t.Helper()
 	encoded, err := json.Marshal(body)
 	if err != nil {
@@ -28,8 +30,8 @@ func askForLink(t *testing.T, h *harness, credential string, body any) (int, ser
 		request.Header.Set("Authorization", "Bearer "+credential)
 	}
 	recorder := httptest.NewRecorder()
-	h.server.JoinHandler(false).ServeHTTP(recorder, request)
-	var decoded server.JoinResponse
+	h.server.PublicHandler().ServeHTTP(recorder, request)
+	var decoded server.TokenResponse
 	if recorder.Code == http.StatusOK {
 		if err := json.Unmarshal(recorder.Body.Bytes(), &decoded); err != nil {
 			t.Fatalf("decoding the response: %v", err)
@@ -112,22 +114,17 @@ func TestTheBackendPathsNeverMintARelayLink(t *testing.T) {
 	h := newHarness(t)
 	h.createRoom(t, "alice")
 
-	code, response, body := ask(t, h.server.JoinHandler(false), joinKey, server.JoinRequest{
-		Tenant: tenant, Username: "alice", Room: roomName, Key: &deviceKey,
-	})
-	if code != http.StatusOK {
-		t.Fatalf("joining: %d %s", code, body)
-	}
-	if moqt := moqtOf(t, response.Token); moqt["rly"] != nil {
+	minted := h.mintFor(t, "alice", roomName)
+	if moqt := moqtOf(t, minted.GetToken()); moqt["rly"] != nil {
 		t.Errorf("a device token carries the relay grant: %v", moqt)
 	}
 
 	// Nor can a backend mint somebody who looks like one on a roster.
-	code, _, _ = ask(t, h.server.JoinHandler(false), joinKey, server.JoinRequest{
-		Tenant: tenant, Username: server.RelaySubject, Room: roomName, Key: &deviceKey,
+	_, err := h.tokens.MintClientToken(as(joinKey), &adminpb.MintClientTokenRequest{
+		Tenant: tenant, Username: server.RelaySubject, DeviceThumbprint: deviceKeyThumbprint, Room: roomName,
 	})
-	if code != http.StatusBadRequest {
-		t.Errorf("a device named %s got %d, want 400", server.RelaySubject, code)
+	if status.Code(err) != codes.InvalidArgument {
+		t.Errorf("a device named %s got %v, want InvalidArgument", server.RelaySubject, err)
 	}
 }
 

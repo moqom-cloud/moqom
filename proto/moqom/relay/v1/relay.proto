@@ -143,6 +143,11 @@ message Hello {
   // stream. Without it the control plane's view of who is where would be a
   // guess until every session happened to change.
   repeated SessionState existing = 4;
+
+  // Where clients dial this relay, `host:port`. Sent by a relay in a private
+  // relay pool, whose address is handed out with every token minted for the
+  // pool's tenant; ignored from the shared fleet, which clients reach by name.
+  string address = 5;
 }
 
 message Welcome {
@@ -168,6 +173,12 @@ message Welcome {
   // request per room per interval; zero means never, which is only correct in a
   // single-replica deployment.
   google.protobuf.Duration snapshot_interval = 3;
+
+  // The relay pool this relay belongs to, or empty for the shared fleet. A
+  // relay admits only tokens whose `pool` claim equals this, so a shared relay
+  // refuses a private tenant's tokens and a pool relay refuses everyone
+  // else's (`wrong_pool`).
+  string pool = 4;
 }
 
 // One session, as the relay sees it.
@@ -404,4 +415,19 @@ message Heartbeat {
 // signed has expired.
 message VerificationKeys {
   repeated moqom.admin.v1.VerificationKey keys = 1;
+
+  // The keys tokens are sealed under (AES-256-GCM), each with the 8-byte key
+  // ID a sealed token names. A relay opens a token with these before verifying
+  // its signature. A relay that serves one tenant is sent only that tenant's.
+  repeated SealKey seal_keys = 2;
+
+  // Refuse a token that is not sealed. False only during the rollover, while
+  // tokens minted before sealing are still unexpired.
+  bool require_sealed = 3;
+}
+
+// One AES-256-GCM token seal key.
+message SealKey {
+  bytes key_id = 1; // 8 bytes
+  bytes secret = 2; // 32 bytes
 }

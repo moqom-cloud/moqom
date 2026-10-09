@@ -34,7 +34,8 @@ func Handler(service *Service, authenticate Authenticate) http.Handler {
 		mux.HandleFunc(pattern, func(w http.ResponseWriter, r *http.Request) {
 			caller, err := authenticate(r)
 			if err != nil {
-				// Uninformative, as the join endpoint is.
+				// Uninformative: which credential was wrong is not
+				// something an unauthenticated caller learns.
 				http.Error(w, "invalid credentials", http.StatusUnauthorized)
 				return
 			}
@@ -98,7 +99,7 @@ func Handler(service *Service, authenticate Authenticate) http.Handler {
 	route("POST "+PathPrefix+"group", func(w http.ResponseWriter, r *http.Request, caller Caller) error {
 		var body struct {
 			GroupID []byte `json:"groupId"`
-			// Absent from clients that predate suites, whose groups are 0x0001.
+			// Required: an absent suite is 0, which CreateGroup refuses.
 			CipherSuite uint16 `json:"cipherSuite"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {

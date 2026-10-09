@@ -521,16 +521,18 @@ type recorderLinkService struct {
 
 // credential mints the recorder's relay token for a recording: a viewer of
 // the room, nothing more, bound to the recorder's key.
-func (s *recorderLinkService) credential(r recording.Recording, room control.Room) (*recorderpb.Credential, time.Time, error) {
+func (s *recorderLinkService) credential(ctx context.Context, r recording.Recording, room control.Room) (*recorderpb.Credential, time.Time, error) {
 	claims := token.Claims{
 		Issuer:       s.core.issuer,
 		Subject:      RecorderSubject,
 		Tenant:       r.Tenant,
 		Confirmation: token.Confirmation{Thumbprint: s.core.recording.thumbprint},
 		Grant:        token.ScopeFrom(control.Grants{}, r.Room, false, false),
-		E2EE:         string(room.Policy.WithDefaults().E2EE),
 	}
-	minted, expires, err := token.Mint(s.core.keys[0], claims, token.DefaultLifetime, s.core.now())
+	if _, err := s.core.confine(ctx, &claims); err != nil {
+		return nil, time.Time{}, err
+	}
+	minted, expires, err := s.core.mint(claims, token.DefaultLifetime)
 	if err != nil {
 		return nil, time.Time{}, err
 	}
@@ -591,7 +593,7 @@ func (s *recorderLinkService) Claim(ctx context.Context, request *recorderpb.Cla
 			continue
 		}
 
-		credential, expires, err := s.credential(claimed, room)
+		credential, expires, err := s.credential(ctx, claimed, room)
 		if err != nil {
 			return nil, statusFor(err)
 		}
@@ -675,7 +677,7 @@ func (s *recorderLinkService) Renew(ctx context.Context, request *recorderpb.Ren
 	// A fresh token once the one held is half spent, so the worker always has
 	// minutes in hand to pass it to the relay.
 	if !response.Stop && roomErr == nil && renewed.CredentialExpires.Sub(now) < token.DefaultLifetime/2 {
-		credential, expires, err := s.credential(renewed, room)
+		credential, expires, err := s.credential(ctx, renewed, room)
 		if err != nil {
 			return nil, statusFor(err)
 		}

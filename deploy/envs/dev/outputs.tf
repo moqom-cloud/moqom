@@ -8,6 +8,11 @@ output "relay_endpoints_v6" {
   description = "IPv6 address to dial on UDP/443 and ask STUN on UDP/3478, per region."
 }
 
+output "api_edge_address" {
+  value       = module.api_edge.address
+  description = "The IPv4 address api.moqom.cloud's A record points at; null until api_edge_image is set. No AAAA: the cluster is IPv4-only."
+}
+
 output "control_endpoint" {
   value       = module.control.endpoint
   description = "What a relay in this VPC puts in MOQOM_CONTROL_ENDPOINT. Internal, so nothing outside the VPC can reach it."

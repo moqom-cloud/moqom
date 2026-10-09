@@ -16,3 +16,6 @@ CREATE TABLE IF NOT EXISTS byoc_enrollments (
 );
 
 CREATE INDEX IF NOT EXISTS byoc_enrollments_by_tenant ON byoc_enrollments (tenant, created_at DESC);
+
+-- Relay pools arrived after the table existed. '' is a relay in no pool.
+ALTER TABLE byoc_enrollments ADD COLUMN IF NOT EXISTS pool text NOT NULL DEFAULT '';

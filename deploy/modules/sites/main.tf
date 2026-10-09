@@ -208,16 +208,20 @@ resource "google_compute_url_map" "sites" {
   dynamic "path_matcher" {
     for_each = var.apis
     content {
-      name = "api-${replace(path_matcher.key, ".", "-")}"
-      default_url_redirect {
-        host_redirect          = path_matcher.value.redirect_host
-        path_redirect          = "/"
-        https_redirect         = true
-        strip_query            = true
-        redirect_response_code = "FOUND"
+      name            = "api-${replace(path_matcher.key, ".", "-")}"
+      default_service = path_matcher.value.redirect_host == null ? path_matcher.value.backend_service : null
+      dynamic "default_url_redirect" {
+        for_each = path_matcher.value.redirect_host == null ? [] : [path_matcher.value.redirect_host]
+        content {
+          host_redirect          = default_url_redirect.value
+          path_redirect          = "/"
+          https_redirect         = true
+          strip_query            = true
+          redirect_response_code = "FOUND"
+        }
       }
       path_rule {
-        paths   = ["/v1/*"]
+        paths   = path_matcher.value.paths
         service = path_matcher.value.backend_service
       }
     }

@@ -44,22 +44,18 @@ func (h *harness) mint(t *testing.T, room string) map[string]any {
 	return claimsOf(t, response.GetToken())
 }
 
-// A room nobody configured is an encrypted room, and says so on read and in
-// every token minted for it.
+// A room nobody configured is an encrypted room, and says so on read. Tokens
+// carry no encryption claim: there is nothing to choose.
 func TestRoomsRequireEndToEndEncryptionByDefault(t *testing.T) {
 	h := newHarness(t)
 	created := h.createRoom(t, "alice")
 	if created.GetPolicy().GetE2Ee() != adminpb.E2EEPolicy_E2EE_POLICY_REQUIRED {
 		t.Errorf("a default room's e2ee is %v, want REQUIRED", created.GetPolicy().GetE2Ee())
 	}
-	if got := h.mint(t, roomName)["e2ee"]; got != "required" {
-		t.Errorf("a token for a default room carries e2ee=%v, want required", got)
-	}
-
-	// A token that names no room has no room policy to relax, and is silent,
-	// which the SDK reads as required.
-	if got, present := h.mint(t, "")["e2ee"]; present {
-		t.Errorf("a roomless token carries e2ee=%v, want no claim", got)
+	for _, room := range []string{roomName, ""} {
+		if got, present := h.mint(t, room)["e2ee"]; present {
+			t.Errorf("a token for room %q carries e2ee=%v, want no claim", room, got)
+		}
 	}
 }
 
@@ -81,10 +77,6 @@ func TestEncryptionCannotBeTurnedOff(t *testing.T) {
 			t.Fatalf("turning e2ee off (reason %q) gave %v, want InvalidArgument", reason, status.Code(err))
 		}
 	}
-	if got := h.mint(t, roomName)["e2ee"]; got != "required" {
-		t.Fatalf("a refused change reached the token: e2ee=%v", got)
-	}
-
 	_, err := h.rooms.CreateRoom(as(ownerKey), &adminpb.CreateRoomRequest{
 		Tenant: tenant, Room: "other-room",
 		Policy: &adminpb.RoomPolicy{E2Ee: adminpb.E2EEPolicy_E2EE_POLICY_OPTIONAL},

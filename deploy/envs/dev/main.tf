@@ -72,16 +72,14 @@ locals {
     # The bearer token an operator's own calls to the admin API carry. Held in
     # the same place as the rest so that a laptop reads it rather than keeps it.
     "${local.name_prefix}-admin-credential" = []
+    # The AES-256 keys every token is sealed with, an `oct` JWK set, newest
+    # first. Only the control plane holds them; relays are sent the keys for
+    # the tokens they verify over RelayLink, never read them from here.
+    "${local.name_prefix}-seal-keys" = []
 
-    # The credential a phone holds to ask the join endpoint for a token. The only
-    # secret here that is meant to leave the deployment, which is why the account
-    # behind it can do exactly one thing: mint participant tokens in this tenant,
-    # with no moderation and no ownership, whatever the request asks for.
-    #
-    # Long-lived, unlike the tokens it buys. That is the trade the endpoint makes:
-    # a credential that lasts means a phone can be set up once, and it means a
-    # phone that is lost stays able to join until this is rotated. Rotating it is
-    # a new version here and a rerun of sync-secrets.sh.
+    # Retired: the credential copies of the sample app used to carry. Its
+    # account is gone from the accounts file, so it opens nothing; the secret
+    # stays until somebody decides to destroy it.
     "${local.name_prefix}-device-credential" = []
 
     # RelayLink's mutual TLS: a private authority, and a certificate for each of
@@ -129,7 +127,7 @@ locals {
     # Only read when var.billing_smtp_host is set.
     "${local.name_prefix}-smtp-password" = []
 
-    # The relay fleet's direct-ticket keys: a JWK set of Ed25519 keys, the
+    # The relay fleet's direct-ticket keys: a JWK set of ML-DSA-87 keys, the
     # signing key first. One set for every region, because a participant
     # verifies a peer's ticket with keys from its own relay.
     "${local.name_prefix}-relay-ticket-keys" = []
@@ -352,6 +350,17 @@ module "data" {
   depends_on = [module.services]
 }
 
+data "http" "stripe_webhook_ips" {
+  url = "https://stripe.com/files/ips/ips_webhooks.json"
+
+  lifecycle {
+    postcondition {
+      condition     = self.status_code == 200 && length(jsondecode(self.response_body).WEBHOOKS) > 0
+      error_message = "Stripe's webhook address list did not load."
+    }
+  }
+}
+
 module "control" {
   source = "../../modules/workload"
 
@@ -408,6 +417,10 @@ module "control" {
 
     MOQOM_CONTROL_ACCOUNTS = "/etc/moqom/accounts.json"
 
+    # Tokens leave sealed (AES-256-GCM) for the relays that verify them; see
+    # internal/server/seal.go. Relays must open sealed tokens before this is set.
+    MOQOM_CONTROL_SEAL_KEYS = "/etc/moqom/seal-keys.json"
+
     # Mutual TLS on the gRPC port, from the same mounted secret. Both ends of
     # RelayLink are authenticated: the client certificate says the peer is one
     # of this deployment's relays, and the bearer credential it also presents
@@ -421,20 +434,25 @@ module "control" {
     MOQOM_CONTROL_TLS_KEY   = "/etc/moqom/link-key.pem"
     MOQOM_CONTROL_CLIENT_CA = "/etc/moqom/link-ca.pem"
 
-    # The device-facing route, on its own port and its own address. It serves the
+    # The public listener, on its own port and its own address: MLS key
+    # delivery, billing, and the relay link and enrollment routes. It serves the
     # same certificate as the port above and, pointedly, asks for none in return:
-    # requiring a client certificate here would mean every phone needed one issued
-    # before it could ask for a credential, which is the bootstrapping problem this
-    # endpoint exists to solve. What stands in for it is the device account, whose
-    # grants are the ceiling on everything minted against it.
-    MOQOM_CONTROL_JOIN_ADDR = ":${local.control_join_port}"
+    # a phone has no client certificate. Nothing on it mints a token from a
+    # credential a device carries.
+    MOQOM_CONTROL_PUBLIC_ADDR = ":${local.control_join_port}"
 
-    # On, because this is the environment two phones are tested from and typing a
-    # room name into one of them should produce a room. The cost is that the
-    # device credential can create rooms as well as join them; in an environment
-    # with paying tenants in it, this stays off and rooms are made through the
-    # admin API by something that knows why.
-    MOQOM_CONTROL_JOIN_CREATES_ROOMS = "1"
+    # The API edge (module.api_edge) runs in the pod range and sets
+    # X-Forwarded-For to the client it accepted, so billing believes the last
+    # entry from here. Any pod in the cluster could set it too; nothing else
+    # here is a tenant's code.
+    MOQOM_BILLING_TRUSTED_PROXIES = local.cluster_pod_cidr
+
+    # Requests for this host get the two webhook routes and nothing else; see
+    # envs/web, which routes it.
+    MOQOM_CONTROL_HOOKS_HOST = "hooks.moqom.cloud"
+    # Stripe deliveries only from Stripe's published senders, read on every
+    # plan so a change to the list lands with the next apply.
+    MOQOM_CONTROL_HOOKS_STRIPE_IPS = join(",", jsondecode(data.http.stripe_webhook_ips.response_body).WEBHOOKS)
   }, local.control_overlay_env, local.control_recording_env, local.control_stun_env)
 
   secret_env = {
@@ -508,6 +526,31 @@ resource "google_compute_firewall" "control_api" {
     protocol = "tcp"
     ports    = [tostring(local.control_join_port)]
   }
+}
+
+# api.moqom.cloud's own TLS edge, replacing the route on the sites' Google
+# balancer above (which negotiates only classical key exchange). It reaches the
+# public listener in-cluster by the public service's name and checks the link
+# certificate by the name it carries. See deploy/README.md for the cutover.
+module "api_edge" {
+  source = "../../modules/api-edge"
+
+  project_id  = var.project_id
+  region      = var.region
+  name_prefix = local.name_prefix
+  namespace   = local.namespace
+
+  image = var.api_edge_image
+
+  upstream             = "https://${module.control.service_name}-public.${local.namespace}.svc.cluster.local:${local.control_join_port}"
+  upstream_server_name = local.link_server_name
+  upstream_ca_secret   = local.control_secret
+
+  acme_bucket_name = "${local.name_prefix}-api-acme"
+  acme_directory   = var.api_edge_acme_directory
+  acme_email       = var.api_edge_acme_email
+
+  labels = merge(local.labels, { component = "api-edge" })
 }
 
 # The relays out to the control plane's public join port, through Cloud NAT:

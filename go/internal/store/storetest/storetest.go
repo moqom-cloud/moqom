@@ -56,6 +56,10 @@ func Run(t *testing.T, newStore Factory) {
 		{"enforcement can be marked after the fact", testMarkEnforced},
 		{"the e2ee policy and its audit trail survive a read", testE2EEPolicy},
 		{"the direct path policy survives a create, a save and a read", testDirectPolicy},
+		{"a relay pool is one tenant's and survives a save and a read", testRelayPoolRoundTrip},
+		{"a reattaching pool relay replaces its row", testPoolRelayReplacement},
+		{"pool tenants leave out deleted pools", testPoolTenants},
+		{"a tenant network is shared until set", testTenantNetwork},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) { test.run(t, newStore) })
@@ -804,5 +808,162 @@ func testDirectPolicy(t *testing.T, newStore Factory) {
 	if !grant.Allowed || grant.MaxParticipants != control.MaxDirectParticipants {
 		t.Errorf("a room created with no policy grants %+v, want allowed for up to %d",
 			grant, control.MaxDirectParticipants)
+	}
+}
+
+func newPool(tenant, id string) control.RelayPool {
+	return control.RelayPool{
+		ID: id, Tenant: tenant, Name: "production",
+		Regions: []control.PoolRegion{{Region: "us-west1", Relays: 2, MaxRelays: 4}},
+		Access:  control.PoolAccessPublic, State: control.PoolProvisioning,
+	}
+}
+
+// A pool decides where a tenant's media goes, so another tenant naming its ID
+// must find nothing, to read or to write.
+func testRelayPoolRoundTrip(t *testing.T, newStore Factory) {
+	ctx, subject, advance := setup(t, newStore)
+
+	created, err := subject.CreateRelayPool(ctx, newPool("acme", "pool-1"))
+	if err != nil {
+		t.Fatalf("creating a pool: %v", err)
+	}
+	if created.CreatedAt.IsZero() {
+		t.Error("a pool was created with no time")
+	}
+	if _, err := subject.CreateRelayPool(ctx, newPool("acme", "pool-1")); !errors.Is(err, control.ErrAlreadyExists) {
+		t.Errorf("reusing a pool ID gave %v, want ErrAlreadyExists", err)
+	}
+	advance(time.Minute)
+	if _, err := subject.CreateRelayPool(ctx, newPool("acme", "pool-0")); err != nil {
+		t.Fatalf("creating a second pool: %v", err)
+	}
+
+	if _, err := subject.GetRelayPool(ctx, "globex", "pool-1"); !errors.Is(err, store.ErrNotFound) {
+		t.Errorf("another tenant read the pool: %v", err)
+	}
+	stolen := newPool("globex", "pool-1")
+	if _, err := subject.SaveRelayPool(ctx, stolen); !errors.Is(err, store.ErrNotFound) {
+		t.Errorf("another tenant saved the pool: %v", err)
+	}
+	if err := subject.PutPoolRelay(ctx, "globex", "pool-1", control.PoolRelay{RelayID: "r1"}); !errors.Is(err, store.ErrNotFound) {
+		t.Errorf("another tenant's relay was recorded into the pool: %v", err)
+	}
+
+	created.Regions = append(created.Regions, control.PoolRegion{Region: "europe-west4", Relays: 3, MaxRelays: 3})
+	created.Access = control.PoolAccessOverlay
+	created.State = control.PoolReady
+	if _, err := subject.SaveRelayPool(ctx, created); err != nil {
+		t.Fatalf("saving a pool: %v", err)
+	}
+	read, err := subject.GetRelayPool(ctx, "acme", "pool-1")
+	if err != nil {
+		t.Fatalf("reading a pool: %v", err)
+	}
+	if read.Name != "production" || read.Access != control.PoolAccessOverlay || read.State != control.PoolReady ||
+		len(read.Regions) != 2 || read.Regions[1] != (control.PoolRegion{Region: "europe-west4", Relays: 3, MaxRelays: 3}) {
+		t.Errorf("the pool read back as %+v", read)
+	}
+
+	listed, err := subject.ListRelayPools(ctx, "acme")
+	if err != nil {
+		t.Fatalf("listing pools: %v", err)
+	}
+	if len(listed) != 2 || listed[0].ID != "pool-1" || listed[1].ID != "pool-0" {
+		t.Errorf("listed %+v, want pool-1 then pool-0, oldest first", listed)
+	}
+	if none, err := subject.ListRelayPools(ctx, "globex"); err != nil || len(none) != 0 {
+		t.Errorf("another tenant lists %+v (%v)", none, err)
+	}
+}
+
+// A relay that restarts, or moves, must not be counted twice towards its
+// region, or a pool would read as provisioned with one machine short.
+func testPoolRelayReplacement(t *testing.T, newStore Factory) {
+	ctx, subject, _ := setup(t, newStore)
+
+	if _, err := subject.CreateRelayPool(ctx, newPool("acme", "pool-1")); err != nil {
+		t.Fatalf("creating a pool: %v", err)
+	}
+	for _, relay := range []control.PoolRelay{
+		{RelayID: "r1", Address: "198.51.100.1:443", Region: "us-west1", State: control.PoolRelayReady},
+		{RelayID: "r1", Address: "198.51.100.9:443", Region: "us-west1", State: control.PoolRelayReady},
+		{RelayID: "r2", Address: "198.51.100.2:443", Region: "us-west1", State: control.PoolRelayStarting},
+	} {
+		if err := subject.PutPoolRelay(ctx, "acme", "pool-1", relay); err != nil {
+			t.Fatalf("recording %s: %v", relay.RelayID, err)
+		}
+	}
+	read, err := subject.GetRelayPool(ctx, "acme", "pool-1")
+	if err != nil {
+		t.Fatalf("reading a pool: %v", err)
+	}
+	if len(read.Relays) != 2 || read.Relays[0].Address != "198.51.100.9:443" || read.Relays[1].State != control.PoolRelayStarting {
+		t.Errorf("the pool's relays read back as %+v", read.Relays)
+	}
+	if read.Provisioned() {
+		t.Error("one ready relay provisioned a region that asked for two")
+	}
+}
+
+// The sealer reads this to decide whose tokens get a key of their own, and a
+// deleted pool is a tenant with no relays of its own left.
+func testPoolTenants(t *testing.T, newStore Factory) {
+	ctx, subject, _ := setup(t, newStore)
+
+	for _, pool := range []control.RelayPool{
+		newPool("globex", "pool-1"), newPool("acme", "pool-2"), newPool("acme", "pool-3"), newPool("initech", "pool-4"),
+	} {
+		if _, err := subject.CreateRelayPool(ctx, pool); err != nil {
+			t.Fatalf("creating %s: %v", pool.ID, err)
+		}
+	}
+	deleted := newPool("initech", "pool-4")
+	deleted.State = control.PoolDeleted
+	if _, err := subject.SaveRelayPool(ctx, deleted); err != nil {
+		t.Fatalf("deleting a pool: %v", err)
+	}
+	tenants, err := subject.PoolTenants(ctx)
+	if err != nil {
+		t.Fatalf("listing pool tenants: %v", err)
+	}
+	if fmt.Sprint(tenants) != "[acme globex]" {
+		t.Errorf("pool tenants are %v, want [acme globex]", tenants)
+	}
+}
+
+func testTenantNetwork(t *testing.T, newStore Factory) {
+	ctx, subject, _ := setup(t, newStore)
+
+	network, err := subject.GetTenantNetwork(ctx, "acme")
+	if err != nil {
+		t.Fatalf("reading an unset network: %v", err)
+	}
+	if network.Private() || network.Mode != control.NetworkShared || network.Tenant != "acme" {
+		t.Errorf("an unset network reads as %+v, want acme on the shared fleet", network)
+	}
+
+	if _, err := subject.SetTenantNetwork(ctx, control.TenantNetwork{
+		Tenant: "acme", Mode: control.NetworkPrivate, Pool: "pool-1",
+	}); err != nil {
+		t.Fatalf("setting a network: %v", err)
+	}
+	network, err = subject.GetTenantNetwork(ctx, "acme")
+	if err != nil || !network.Private() || network.Pool != "pool-1" {
+		t.Errorf("a private network reads as %+v (%v)", network, err)
+	}
+	if other, err := subject.GetTenantNetwork(ctx, "globex"); err != nil || other.Private() {
+		t.Errorf("another tenant's network reads as %+v (%v)", other, err)
+	}
+
+	// Shared names no pool, so a pool deleted later is not still named.
+	if _, err := subject.SetTenantNetwork(ctx, control.TenantNetwork{
+		Tenant: "acme", Mode: control.NetworkShared, Pool: "pool-1",
+	}); err != nil {
+		t.Fatalf("returning to shared: %v", err)
+	}
+	network, err = subject.GetTenantNetwork(ctx, "acme")
+	if err != nil || network.Private() || network.Pool != "" {
+		t.Errorf("a shared network reads as %+v (%v)", network, err)
 	}
 }

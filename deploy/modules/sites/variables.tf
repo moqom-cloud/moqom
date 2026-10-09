@@ -41,8 +41,11 @@ variable "embed_paths" {
 variable "apis" {
   type = map(object({
     backend_service = string
-    # Where anything outside /v1/ is sent, so the API host serves nothing else.
-    redirect_host = string
+    # Where anything outside paths is sent, so the API host serves nothing
+    # else. Null sends it to the backend service too, for a host whose
+    # security policy answers the rest.
+    redirect_host = optional(string)
+    paths         = optional(list(string), ["/v1/*"])
     # A certificate of its own instead of a place on the shared API one, so
     # adding the host never re-issues the certificate live APIs are using.
     own_certificate = optional(bool, false)

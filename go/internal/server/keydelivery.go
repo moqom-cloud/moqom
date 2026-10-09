@@ -11,7 +11,7 @@ import (
 )
 
 // KeyDeliveryHandler serves the MLS delivery service under mls.PathPrefix,
-// for devices, on the listener that serves JoinPath.
+// for devices, on the public listener.
 //
 // Authenticated by the participant token the device already holds for the
 // room: the tenant is its audience, the room its scope, and the device the

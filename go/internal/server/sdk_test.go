@@ -429,3 +429,60 @@ func TestTheSDKMakesRetriesSafe(t *testing.T) {
 		t.Fatal("two calls without an idempotency key were deduplicated, which they cannot be")
 	}
 }
+
+// A pool made private through the SDK confines the tenant: tokens are refused
+// until the pool has relays, then name it and list where to dial.
+func TestTheSDKMakesATenantPrivateOnAPool(t *testing.T) {
+	h, relays := newPoolHarness(t)
+	h.createRoom(t, "alice")
+	client := h.sdk(t, ownerKey)
+	ctx := context.Background()
+
+	pool, err := client.CreateRelayPool(ctx, moqom.NewRelayPool{
+		Name:    "production",
+		Regions: []moqom.PoolRegion{{Region: "us-west1", Relays: 2}},
+	})
+	if err != nil {
+		t.Fatalf("creating a pool: %v", err)
+	}
+	if pool.State != moqom.PoolProvisioning || pool.Regions[0].MaxRelays != 2 {
+		t.Errorf("created %+v", pool)
+	}
+	relays.set(pool.ID)
+	if err := client.SetTenantNetwork(ctx, moqom.TenantNetwork{Pool: pool.ID, Mode: moqom.NetworkPrivate}); err != nil {
+		t.Fatalf("going private: %v", err)
+	}
+	request := moqom.TokenRequest{Username: "bob", DeviceThumbprint: deviceKeyThumbprint, Room: roomName}
+	if _, err := client.MintToken(ctx, request); err == nil {
+		t.Fatal("a private tenant was minted a token before its pool had relays")
+	}
+
+	for _, relay := range []*fakeRelay{
+		h.attachPoolRelay(t, "pool-a", "us-west1", "198.51.100.2:443"),
+		h.attachPoolRelay(t, "pool-b", "us-west1", "198.51.100.1:443"),
+	} {
+		defer relay.stop()
+	}
+	waitFor(t, "the pool to be ready", func() bool {
+		read, err := client.GetRelayPool(ctx, pool.ID)
+		return err == nil && read.State == moqom.PoolReady && len(read.Relays) == 2
+	})
+	minted, err := client.MintToken(ctx, request)
+	if err != nil {
+		t.Fatalf("minting: %v", err)
+	}
+	if len(minted.Relays) != 2 {
+		t.Errorf("the token lists %v", minted.Relays)
+	}
+	if claim, _ := poolClaim(t, minted.Token); claim != pool.ID {
+		t.Errorf("the token names pool %q, want %q", claim, pool.ID)
+	}
+
+	if _, err := client.DeleteRelayPool(ctx, pool.ID); err == nil {
+		t.Error("the pool the tenant is private on was deleted")
+	}
+	network, err := client.TenantNetwork(ctx)
+	if err != nil || network.Mode != moqom.NetworkPrivate || network.Pool != pool.ID {
+		t.Errorf("the network reads as %+v (%v)", network, err)
+	}
+}

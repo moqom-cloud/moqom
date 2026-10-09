@@ -1,0 +1,20 @@
+# Builds and pushes the API edge image in Cloud Build, no local Docker.
+#
+#   gcloud builds submit /path/to/moqom-cloud --project=moqom-503700 \
+#     --config=moqom/deploy/tools/cloudbuild-api-edge.yaml --substitutions=_TAG=dev,_VERSION=$(git -C moqom rev-parse --short HEAD)
+#
+# Same context and .gcloudignore as cloudbuild-control.yaml.
+substitutions:
+  _IMAGE: us-docker.pkg.dev/${PROJECT_ID}/moqom-dev/moqom-api-edge
+  _TAG: dev
+  _VERSION: dev
+steps:
+  - name: gcr.io/cloud-builders/docker
+    args: ["build", "-f", "moqom/go/Dockerfile.api-edge", "--build-arg", "VERSION=${_VERSION}",
+           "-t", "${_IMAGE}:${_TAG}", "-t", "${_IMAGE}:${_VERSION}", "."]
+images:
+  - ${_IMAGE}:${_TAG}
+  - ${_IMAGE}:${_VERSION}
+options:
+  logging: CLOUD_LOGGING_ONLY
+  dynamicSubstitutions: true

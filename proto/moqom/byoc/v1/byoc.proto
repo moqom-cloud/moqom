@@ -47,11 +47,16 @@ message Enrollment {
   google.protobuf.Timestamp created_at = 6;
   // Unset while the enrolment is in force.
   google.protobuf.Timestamp revoked_at = 7;
+  // The tenant's relay pool this relay serves, or empty for none.
+  string pool = 8;
 }
 
 message CreateRequest {
   string tenant = 1;
   string name = 2;
+  // A relay pool of the tenant's, which the relay joins: it admits only
+  // tokens naming that pool, and its address is handed out with them.
+  string pool = 3;
 }
 
 message CreateResponse {

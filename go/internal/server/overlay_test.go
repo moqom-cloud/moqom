@@ -385,7 +385,7 @@ func enrollManaged(t *testing.T, h *overlayHarness, credential, instanceToken st
 	request := httptest.NewRequest(http.MethodPost, server.RelayEnrollPath, bytes.NewReader(body))
 	request.Header.Set("Authorization", "Bearer "+credential)
 	recorder := httptest.NewRecorder()
-	h.server.JoinHandler(false).ServeHTTP(recorder, request)
+	h.server.PublicHandler().ServeHTTP(recorder, request)
 	var response server.RelayEnrollResponse
 	raw, _ := io.ReadAll(recorder.Body)
 	_ = json.Unmarshal(raw, &response)

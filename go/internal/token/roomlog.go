@@ -6,7 +6,7 @@ import (
 	"strings"
 )
 
-// The room control log is signed by the control plane with the same ML-DSA-65
+// The room control log is signed by the control plane with the same ML-DSA-87
 // keys it signs tokens with, and clients apply only entries that verify against
 // the published key set. A relay forwarding the log can drop an entry, which the
 // log's sequence numbers surface; it cannot write one, alter one, or move one
@@ -52,8 +52,7 @@ func (k Key) SignRoomLog(tenant, room string, entry []byte) ([]byte, error) {
 }
 
 // VerifyRoomLog reports whether property is a valid authority signature over
-// entry in tenant's room, by one of keys. ML-DSA-65 keys only: the log was never
-// signed with anything else, so a legacy Ed25519 key verifies no entry.
+// entry in tenant's room, by one of keys. ML-DSA-87 keys only.
 func VerifyRoomLog(keys []Key, tenant, room string, entry, property []byte) bool {
 	if len(property) < 1 {
 		return false
@@ -68,7 +67,7 @@ func VerifyRoomLog(keys []Key, tenant, room string, entry, property []byte) bool
 		return false
 	}
 	for _, key := range keys {
-		if key.ID == id && key.Algorithm == AlgorithmMLDSA65 {
+		if key.ID == id && key.Algorithm == AlgorithmMLDSA87 {
 			return key.public.Verify(message, property[end:])
 		}
 	}

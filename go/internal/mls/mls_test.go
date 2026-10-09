@@ -43,20 +43,38 @@ func keyPackage(t *testing.T, identity string) []byte {
 	return keyPackageIn(t, mls.FoundingSuite, identity)
 }
 
+// The suites MoqomKit no longer implements, for packages and groups that must
+// be refused or replaced: the AES-128 suites, and MOQOM's earlier ML-KEM-768
+// and ML-KEM-1024 with ML-DSA-65 suites that SuiteMLDSA (0xF0AC) replaced.
+const (
+	suiteX25519   = mls.CipherSuite(0x0001)
+	suiteXWing    = mls.CipherSuite(0xF0A1)
+	suiteMLKEM768 = mls.CipherSuite(0xF0AA)
+	suiteMLDSA65  = mls.CipherSuite(0xF0AB)
+)
+
 // kemKey is a public key the size and shape of suite's: X25519's 32 bytes,
-// X-Wing's ML-KEM-768 encapsulation key followed by 32, or ML-KEM-768's alone.
+// X-Wing's ML-KEM-768 encapsulation key followed by 32, ML-KEM-768's alone, or
+// ML-KEM-1024's alone for 0xF0AB and the suite there is.
 func kemKey(t *testing.T, suite mls.CipherSuite) []byte {
 	t.Helper()
 	x25519 := make([]byte, 32)
 	_, _ = rand.Read(x25519)
-	if suite == mls.SuiteX25519 {
+	switch suite {
+	case suiteX25519:
 		return x25519
+	case mls.SuiteMLDSA, suiteMLDSA65:
+		key, err := mlkem.GenerateKey1024()
+		if err != nil {
+			t.Fatal(err)
+		}
+		return key.EncapsulationKey().Bytes()
 	}
 	key, err := mlkem.GenerateKey768()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if suite == mls.SuiteMLDSA {
+	if suite == suiteMLKEM768 {
 		return key.EncapsulationKey().Bytes()
 	}
 	return append(key.EncapsulationKey().Bytes(), x25519...)
@@ -67,6 +85,19 @@ func kemKey(t *testing.T, suite mls.CipherSuite) []byte {
 func signer(t *testing.T, suite mls.CipherSuite) ([]byte, func([]byte) []byte) {
 	t.Helper()
 	if suite == mls.SuiteMLDSA {
+		key, err := mldsa.GenerateKey(mldsa.MLDSA87())
+		if err != nil {
+			t.Fatal(err)
+		}
+		return key.PublicKey().Bytes(), func(message []byte) []byte {
+			signature, err := key.Sign(rand.Reader, message, &mldsa.Options{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			return signature
+		}
+	}
+	if suite == suiteMLKEM768 || suite == suiteMLDSA65 {
 		key, err := mldsa.GenerateKey(mldsa.MLDSA65())
 		if err != nil {
 			t.Fatal(err)
@@ -128,14 +159,26 @@ func caller(device string) mls.Caller {
 }
 
 func TestKeyPackages(t *testing.T) {
-	for _, suite := range []mls.CipherSuite{mls.SuiteX25519, mls.SuiteXWing, mls.SuiteMLDSA} {
-		parsed, err := mls.ParseKeyPackage(keyPackageIn(t, suite, "bob/b"))
-		if err != nil || parsed.Identity != "bob/b" || parsed.CipherSuite != suite {
-			t.Fatalf("suite %#04x: parsed %+v, %v", uint16(suite), parsed, err)
+	data := keyPackage(t, "bob/b")
+	parsed, err := mls.ParseKeyPackage(data)
+	if err != nil || parsed.Identity != "bob/b" || parsed.CipherSuite != mls.SuiteMLDSA {
+		t.Fatalf("parsed %+v, %v", parsed, err)
+	}
+	for _, suite := range []mls.CipherSuite{suiteX25519, suiteXWing, suiteMLKEM768, suiteMLDSA65} {
+		if _, err := mls.ParseKeyPackage(keyPackageIn(t, suite, "bob/b")); !errors.Is(err, mls.ErrInvalid) {
+			t.Fatalf("retired suite %#04x accepted: %v", uint16(suite), err)
 		}
 	}
-	data := keyPackage(t, "bob/b")
-	if len(data) < 7600 || len(data) > 7700 {
+	// The package relabelled to an earlier ML-KEM suite, with its keys and a
+	// signature that no longer covers it.
+	for _, old := range []byte{0xAA, 0xAB} {
+		relabelled := bytes.Clone(data)
+		relabelled[2], relabelled[3] = 0xF0, old
+		if _, err := mls.ParseKeyPackage(relabelled); !errors.Is(err, mls.ErrInvalid) {
+			t.Fatalf("relabelled to 0xF0%X accepted: %v", old, err)
+		}
+	}
+	if len(data) < 10350 || len(data) > 10450 {
 		t.Fatalf("an ML-DSA key package is %d bytes", len(data))
 	}
 
@@ -148,27 +191,24 @@ func TestKeyPackages(t *testing.T) {
 		t.Fatalf("trailing byte accepted: %v", err)
 	}
 
-	// A suite MoqomKit does not implement, keys the wrong size for the suite
-	// named, and an X-Wing key whose ML-KEM half fails FIPS 203's check.
+	// A suite MoqomKit does not implement, keys the wrong size, and an ML-KEM
+	// key that fails FIPS 203's check.
 	unknown := bytes.Clone(data)
 	unknown[2], unknown[3] = 0x00, 0x02
 	if _, err := mls.ParseKeyPackage(unknown); !errors.Is(err, mls.ErrInvalid) {
 		t.Fatalf("unknown suite accepted: %v", err)
 	}
-	short := signedKeyPackage(t, mls.SuiteXWing, "bob/b", kemKey(t, mls.SuiteX25519), kemKey(t, mls.SuiteX25519))
+	short := signedKeyPackage(t, mls.SuiteMLDSA, "bob/b", kemKey(t, suiteX25519), kemKey(t, suiteX25519))
 	if _, err := mls.ParseKeyPackage(short); !errors.Is(err, mls.ErrInvalid) {
-		t.Fatalf("X25519 keys under the X-Wing suite accepted: %v", err)
+		t.Fatalf("X25519 keys under the ML-DSA suite accepted: %v", err)
 	}
-	notMLKEM := bytes.Repeat([]byte{0xff}, 1216)
-	if _, err := mls.ParseKeyPackage(signedKeyPackage(t, mls.SuiteXWing, "bob/b", notMLKEM, kemKey(t, mls.SuiteXWing))); !errors.Is(err, mls.ErrInvalid) {
-		t.Fatalf("invalid ML-KEM key accepted: %v", err)
-	}
-	if _, err := mls.ParseKeyPackage(signedKeyPackage(t, mls.SuiteMLDSA, "bob/b", notMLKEM[:1184], kemKey(t, mls.SuiteMLDSA))); !errors.Is(err, mls.ErrInvalid) {
-		t.Fatalf("invalid ML-KEM-768 key accepted: %v", err)
+	notMLKEM := bytes.Repeat([]byte{0xff}, 1568)
+	if _, err := mls.ParseKeyPackage(signedKeyPackage(t, mls.SuiteMLDSA, "bob/b", notMLKEM, kemKey(t, mls.SuiteMLDSA))); !errors.Is(err, mls.ErrInvalid) {
+		t.Fatalf("invalid ML-KEM-1024 key accepted: %v", err)
 	}
 	// Ed25519-signed, but naming the ML-DSA suite: the key is the wrong size.
-	edSigned := signedKeyPackage(t, mls.SuiteXWing, "bob/b", kemKey(t, mls.SuiteMLDSA), kemKey(t, mls.SuiteMLDSA))
-	edSigned[2], edSigned[3] = 0xF0, 0xAA
+	edSigned := signedKeyPackage(t, suiteXWing, "bob/b", kemKey(t, mls.SuiteMLDSA), kemKey(t, mls.SuiteMLDSA))
+	edSigned[2], edSigned[3] = 0xF0, 0xAB
 	if _, err := mls.ParseKeyPackage(edSigned); !errors.Is(err, mls.ErrInvalid) {
 		t.Fatalf("Ed25519 key under the ML-DSA suite accepted: %v", err)
 	}
@@ -183,13 +223,11 @@ func TestKeyPackages(t *testing.T) {
 	if err := service.PublishKeyPackages(ctx, caller("bob/b"), [][]byte{data}, data); err != nil {
 		t.Fatal(err)
 	}
-	// One suite per device, so whichever package is claimed is in it.
-	classical := keyPackageIn(t, mls.SuiteX25519, "bob/b")
-	if err := service.PublishKeyPackages(ctx, caller("bob/b"), [][]byte{data}, classical); !errors.Is(err, mls.ErrInvalid) {
-		t.Fatalf("packages in two suites accepted: %v", err)
-	}
-	if err := service.PublishKeyPackages(ctx, caller("bob/b"), [][]byte{classical}, classical); err != nil {
-		t.Fatal(err)
+	for _, suite := range []mls.CipherSuite{suiteX25519, suiteMLKEM768, suiteMLDSA65} {
+		retired := keyPackageIn(t, suite, "bob/b")
+		if err := service.PublishKeyPackages(ctx, caller("bob/b"), [][]byte{retired}, retired); !errors.Is(err, mls.ErrInvalid) {
+			t.Fatalf("a package in suite %#04x published: %v", uint16(suite), err)
+		}
 	}
 }
 
@@ -199,32 +237,26 @@ func TestSwiftKeyPackageFixture(t *testing.T) {
 	if swiftKeyPackage == "" {
 		t.Skip("no fixture")
 	}
-	data := decodeHex(t, swiftKeyPackage)
-	parsed, err := mls.ParseKeyPackage(data)
-	if err != nil || parsed.Identity != "bob/iphone-b" {
-		t.Fatalf("Swift key package: %+v, %v", parsed, err)
-	}
-	if parsed.CipherSuite != mls.SuiteX25519 {
-		t.Fatalf("Swift key package suite %#04x", uint16(parsed.CipherSuite))
+	// MoqomKit's packages in the AES-128 suites it no longer implements.
+	for _, old := range []string{swiftKeyPackage, swiftHybridKeyPackage} {
+		if _, err := mls.ParseKeyPackage(decodeHex(t, old)); !errors.Is(err, mls.ErrInvalid) {
+			t.Fatalf("Swift AES-128 key package accepted: %v", err)
+		}
 	}
 	header, err := mls.ParseCommitHeader(decodeHex(t, swiftCommit))
 	if err != nil || header.Epoch != 0 || string(header.GroupID) != "acme/room-42" {
 		t.Fatalf("Swift commit header: %+v, %v", header, err)
 	}
 
-	fixture, err := os.ReadFile("testdata/moqomkit-keypackage-f0aa.hex")
+	fixture, err := os.ReadFile("testdata/moqomkit-keypackage-f0ac.hex")
 	if err != nil {
 		t.Fatal(err)
 	}
 	signed, err := mls.ParseKeyPackage(decodeHex(t, strings.TrimSpace(string(fixture))))
-	if err != nil || signed.Identity != "bob/b" || signed.CipherSuite != mls.SuiteMLDSA || len(signed.SignatureKey) != 1952 {
+	if err != nil || signed.Identity != "bob/b" || signed.CipherSuite != mls.SuiteMLDSA || len(signed.SignatureKey) != 2592 {
 		t.Fatalf("Swift ML-DSA key package: %+v, %v", signed.Identity, err)
 	}
 
-	hybrid, err := mls.ParseKeyPackage(decodeHex(t, swiftHybridKeyPackage))
-	if err != nil || hybrid.Identity != "bob/iphone-b" || hybrid.CipherSuite != mls.SuiteXWing || len(hybrid.InitKey) != 1216 {
-		t.Fatalf("Swift hybrid key package: %+v, %v", hybrid.Identity, err)
-	}
 	header, err = mls.ParseCommitHeader(decodeHex(t, swiftHybridCommit))
 	if err != nil || header.Epoch != 0 || string(header.GroupID) != "acme/room-42" {
 		t.Fatalf("Swift hybrid commit header: %+v, %v", header, err)
@@ -268,8 +300,9 @@ func TestLifecycle(t *testing.T) {
 	}
 	groupID := []byte("group-1")
 	// Only the ML-DSA suite founds a group: not one MoqomKit does not
-	// implement, not the older suites, and not a client that names none.
-	for _, suite := range []mls.CipherSuite{0x0002, 0, mls.SuiteX25519, mls.SuiteXWing} {
+	// implement, not the AES-128 suites or MOQOM's earlier ones, and not a
+	// client that names none.
+	for _, suite := range []mls.CipherSuite{0x0002, 0, suiteX25519, suiteXWing, suiteMLKEM768, suiteMLDSA65} {
 		if err := service.CreateGroup(ctx, alice, groupID, suite); !errors.Is(err, mls.ErrInvalid) {
 			t.Fatalf("founded in suite %#04x: %v", uint16(suite), err)
 		}
@@ -282,19 +315,6 @@ func TestLifecycle(t *testing.T) {
 	}
 	if snapshot, _ := service.Sync(ctx, alice, 0, 0); snapshot.Group == nil || snapshot.Group.CipherSuite != mls.SuiteMLDSA {
 		t.Fatalf("the group's suite: %+v", snapshot.Group)
-	}
-
-	// Dave is waiting with packages in the other suite. Claiming one is
-	// refused, so a committer never adds him to a group he cannot be in.
-	dave := caller("dave/d")
-	if err := service.PublishKeyPackages(ctx, dave, nil, keyPackageIn(t, mls.SuiteX25519, "dave/d")); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := service.ClaimKeyPackage(ctx, alice, "dave/d"); !errors.Is(err, mls.ErrConflict) {
-		t.Fatalf("a package in another suite was handed out: %v", err)
-	}
-	if err := service.Leave(ctx, dave); err != nil {
-		t.Fatal(err)
 	}
 
 	// Bob arrives with key packages and is pending; only a member may claim his.
@@ -432,10 +452,16 @@ func TestHTTP(t *testing.T) {
 	if code, _ := call("POST", "/mls/v1/group", "alice/a", map[string]any{"groupId": groupID, "cipherSuite": 0x7a7a}); code != http.StatusBadRequest {
 		t.Fatalf("found in an unknown suite: %d", code)
 	}
-	if code, _ := call("POST", "/mls/v1/group", "alice/a", map[string]any{"groupId": groupID, "cipherSuite": 0xf0aa}); code != http.StatusCreated {
+	if code, _ := call("POST", "/mls/v1/group", "alice/a", map[string]any{"groupId": groupID, "cipherSuite": 0xf0aa}); code != http.StatusBadRequest {
+		t.Fatalf("found in the ML-KEM-768 suite: %d", code)
+	}
+	if code, _ := call("POST", "/mls/v1/group", "alice/a", map[string]any{"groupId": groupID, "cipherSuite": 0xf0ab}); code != http.StatusBadRequest {
+		t.Fatalf("found in the ML-DSA-65 suite: %d", code)
+	}
+	if code, _ := call("POST", "/mls/v1/group", "alice/a", map[string]any{"groupId": groupID, "cipherSuite": 0xf0ac}); code != http.StatusCreated {
 		t.Fatalf("found: %d", code)
 	}
-	if code, _ := call("POST", "/mls/v1/group", "bob/b", map[string]any{"groupId": []byte("x"), "cipherSuite": 0xf0aa}); code != http.StatusConflict {
+	if code, _ := call("POST", "/mls/v1/group", "bob/b", map[string]any{"groupId": []byte("x"), "cipherSuite": 0xf0ac}); code != http.StatusConflict {
 		t.Fatalf("second found: %d", code)
 	}
 	kp := keyPackage(t, "bob/b")
@@ -460,7 +486,7 @@ func TestHTTP(t *testing.T) {
 	if code != http.StatusOK || len(messages) != 2 || body["cursor"] != float64(2) {
 		t.Fatalf("bob's sync: %d %v", code, body)
 	}
-	if group, _ := body["group"].(map[string]any); group["epoch"] != float64(1) || group["cipherSuite"] != float64(0xf0aa) {
+	if group, _ := body["group"].(map[string]any); group["epoch"] != float64(1) || group["cipherSuite"] != float64(0xf0ac) {
 		t.Fatalf("group %v", body["group"])
 	}
 	if code, _ := call("POST", "/mls/v1/rejoin", "bob/b", nil); code != http.StatusNoContent {
@@ -468,5 +494,26 @@ func TestHTTP(t *testing.T) {
 	}
 	if code, _ := call("DELETE", "/mls/v1/presence", "bob/b", nil); code != http.StatusNoContent {
 		t.Fatalf("leave: %d", code)
+	}
+}
+
+// A group stored in an AES-128 suite, from before they were removed, is
+// dropped when the room is next used, and the room is founded again.
+func TestAES128GroupIsReplaced(t *testing.T) {
+	ctx := context.Background()
+	store := mls.NewMemory()
+	alice := caller("alice/a")
+	if _, err := store.CreateGroup(ctx, alice.Room, []byte("old"), suiteX25519, alice.Device, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	service := mls.NewService(store, nil)
+	if snapshot, err := service.Sync(ctx, alice, 0, 0); err != nil || snapshot.Group != nil {
+		t.Fatalf("an AES-128 group was served: %+v, %v", snapshot.Group, err)
+	}
+	if err := service.CreateGroup(ctx, alice, []byte("new"), mls.SuiteMLDSA); err != nil {
+		t.Fatal(err)
+	}
+	if group, err := store.Group(ctx, alice.Room); err != nil || string(group.ID) != "new" || group.CipherSuite != mls.SuiteMLDSA {
+		t.Fatalf("refounded: %+v, %v", group, err)
 	}
 }

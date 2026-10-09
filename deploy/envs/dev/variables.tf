@@ -31,6 +31,24 @@ variable "recorder_image" {
   default     = null
 }
 
+variable "api_edge_image" {
+  type        = string
+  description = "moqom-api-edge container image (moqom/go/Dockerfile.api-edge). Null creates the edge's identity and ACME bucket and runs nothing: no pods, no address, no load balancer."
+  default     = null
+}
+
+variable "api_edge_acme_directory" {
+  type        = string
+  description = "ACME directory the API edge gets its certificate from. Let's Encrypt staging (https://acme-staging-v02.api.letsencrypt.org/directory) for a trial run; its certificates are not trusted by browsers."
+  default     = "https://acme-v02.api.letsencrypt.org/directory"
+}
+
+variable "api_edge_acme_email" {
+  type        = string
+  description = "Contact on the API edge's Let's Encrypt account. Empty registers without one."
+  default     = ""
+}
+
 variable "recorder_thumbprint" {
   type        = string
   description = "JWK thumbprint of the recorder's key, as tools/recorder-secrets.sh prints it. Not a secret. Null leaves hosted recording off in the control plane, which refuses to start with a recording bucket and no thumbprint."

@@ -35,11 +35,11 @@ const messagesPerSync = 256
 
 // maxCommitBytes bounds a commit or a Welcome. A commit carries an HPKE
 // ciphertext per member and a Welcome carries every member's leaf, which in
-// SuiteMLDSA is about 1,160 and 3,150 bytes (ML-KEM-768's 1,088-byte
-// encapsulation; its 1,184-byte public key and ML-DSA-65's 1,952-byte one).
-// 3 MiB keeps a room of 800 devices within bounds; past that a room uses
-// sender keys.
-const maxCommitBytes = 3 << 20
+// SuiteMLDSA is about 1,660 and 4,180 bytes (ML-KEM-1024's 1,568-byte
+// encapsulation; its 1,568-byte public key and ML-DSA-87's 2,592-byte one).
+// A Welcome into a room of 800 devices is about 3.35 MB, so 3.5 MiB keeps
+// that room within bounds; past that a room uses sender keys.
+const maxCommitBytes = 7 << 19
 
 // MessageRetention is how long a store keeps a commit or Welcome, pruned as
 // later ones arrive. Far longer than OnlineWindow: every member still in the
@@ -175,7 +175,7 @@ func (s *Service) ClaimKeyPackage(ctx context.Context, caller Caller, device str
 	if !targetIsPending {
 		return nil, fmt.Errorf("%w: %q is not waiting to be added", ErrNotFound, device)
 	}
-	group, err := s.store.Group(ctx, caller.Room)
+	group, err := s.group(ctx, caller.Room)
 	if err != nil {
 		return nil, err
 	}
@@ -202,9 +202,24 @@ func (s *Service) online(entry Presence) bool {
 	return s.now().Sub(entry.LastSeen) <= OnlineWindow
 }
 
+// group is the room's group, or ErrNotFound. A group stored in any suite but
+// FoundingSuite, from before the AES-128 suites were removed, is dropped as an
+// abandoned group is, so the next device founds the room again in
+// FoundingSuite: no member could open it any more.
+func (s *Service) group(ctx context.Context, room Room) (Group, error) {
+	group, err := s.store.Group(ctx, room)
+	if err != nil || group.CipherSuite == FoundingSuite {
+		return group, err
+	}
+	if err := s.store.DropGroup(ctx, room, group.ID); err != nil {
+		return Group{}, err
+	}
+	s.changed(room)
+	return Group{}, ErrNotFound
+}
+
 // CreateGroup founds the room's group in suite with the caller as its only
-// member. Only FoundingSuite is accepted: groups already founded in an older
-// suite keep working, but no new one is classical in its signatures or its KEM.
+// member. Only FoundingSuite is accepted, and it is the only suite there is.
 func (s *Service) CreateGroup(ctx context.Context, caller Caller, id []byte, suite CipherSuite) error {
 	if caller.Viewer {
 		return errViewer
@@ -214,6 +229,9 @@ func (s *Service) CreateGroup(ctx context.Context, caller Caller, id []byte, sui
 	}
 	if suite != FoundingSuite {
 		return fmt.Errorf("%w: groups are founded in cipher suite %#04x, not %#04x", ErrInvalid, uint16(FoundingSuite), uint16(suite))
+	}
+	if _, err := s.group(ctx, caller.Room); err != nil && !errors.Is(err, ErrNotFound) {
+		return err
 	}
 	if err := s.store.Touch(ctx, caller.Room, caller.Device, s.now()); err != nil {
 		return err
@@ -261,7 +279,7 @@ func (s *Service) SubmitCommit(ctx context.Context, caller Caller, request Commi
 	if !slices.ContainsFunc(presence, func(p Presence) bool { return p.Device == caller.Device && p.Member }) {
 		return 0, fmt.Errorf("%w: only a member commits", ErrForbidden)
 	}
-	group, err := s.store.Group(ctx, caller.Room)
+	group, err := s.group(ctx, caller.Room)
 	if errors.Is(err, ErrNotFound) {
 		return 0, ErrStale
 	} else if err != nil {
@@ -351,7 +369,7 @@ func (s *Service) snapshot(ctx context.Context, caller Caller, after uint64) (Sn
 	if err != nil {
 		return Snapshot{}, false, err
 	}
-	group, err := s.store.Group(ctx, caller.Room)
+	group, err := s.group(ctx, caller.Room)
 	switch {
 	case errors.Is(err, ErrNotFound):
 	case err != nil:

@@ -9,7 +9,8 @@
 #
 # Idempotent. Run it again and it reuses every value that already exists; the
 # only way to get a new signing key is to add a version yourself, which is what
-# rotation looks like.
+# rotation looks like. The one exception is a signing key from before ML-DSA-87:
+# see "signing key" below.
 #
 #   deploy/tools/sync-secrets.sh
 #
@@ -51,11 +52,11 @@ ensure() {
     printf '%s' "$value"
 }
 
-# A 32-byte Ed25519 seed in base64url without padding, which is the form the
-# control plane parses. Translated from base64 rather than produced directly:
-# `basenc --base64url` would be the obvious tool and it is GNU coreutils, which
-# a Mac does not have.
-seed_generator="openssl rand -base64 32 | tr '+/' '-_' | tr -d '=\n'"
+# An ML-DSA-87 signing key: `mldsa87:` and a 32-byte seed in base64url without
+# padding, which is the form the control plane parses. Translated from base64
+# rather than produced directly: `basenc --base64url` would be the obvious tool
+# and it is GNU coreutils, which a Mac does not have.
+seed_generator="printf 'mldsa87:%s' \"\$(openssl rand -base64 32 | tr '+/' '-_' | tr -d '=\n')\""
 
 # Bearer credentials. Hex rather than base64 so that a value can be pasted into
 # a shell, a header, or a log filter without anything quoting it differently.
@@ -64,33 +65,51 @@ credential_generator="openssl rand -hex 32"
 say "signing key"
 SIGNING="$(ensure "$PREFIX-cat-signing-key" "$seed_generator")"
 
+# The control plane signs with the first entry and accepts nothing but ML-DSA-87,
+# so a current key of any other kind (`mldsa65:`, `ed25519:`, unprefixed) means
+# no token it mints would verify. A new mldsa87 key goes in front as a new
+# version, with what was there kept after it: the control plane passes over the
+# old entries, and the previous version stays in Secret Manager untouched.
+# Nothing about the old key is printed, not even its kind, because an unprefixed
+# entry is nothing but the seed.
+current="$(printf '%s' "${SIGNING%%,*}" | tr -d ' \n')"
+case "$current" in
+    mldsa87:*) ;;
+    *)
+        say "  the current signing key is not ML-DSA-87; adding an mldsa87 key as current"
+        SIGNING="$(eval "$seed_generator"),$SIGNING"
+        printf '%s' "$SIGNING" | $GCLOUD secrets versions add "$PREFIX-cat-signing-key" --data-file=- >/dev/null
+        ;;
+esac
+
+# One AES-256-GCM seal key as an `oct` JWK set: an 8-byte ID and a 32-byte
+# secret, both base64url. A new key is a new version, written newest first with
+# the old one after it until every token it sealed has expired.
+seal_generator="printf '{\"keys\":[{\"kty\":\"oct\",\"alg\":\"A256GCM\",\"kid\":\"%s\",\"k\":\"%s\"}]}' \"\$(openssl rand -base64 8 | tr '+/' '-_' | tr -d '=\n')\" \"\$(openssl rand -base64 32 | tr '+/' '-_' | tr -d '=\n')\""
+
+say "seal keys"
+ensure "$PREFIX-seal-keys" "$seal_generator" > "$WORK/seal-keys.json"
+
 say "relay credential"
 RELAY_CREDENTIAL="$(ensure "$PREFIX-relay-credential" "$credential_generator")"
 
 say "admin credential"
 ADMIN_CREDENTIAL="$(ensure "$PREFIX-admin-credential" "$credential_generator")"
 
-# The credential a phone holds, which is the only one of the three that leaves
-# the deployment. It buys exactly one thing: asking the join endpoint for a
-# participant token in this tenant. Not an owner, not a relay, no moderation --
-# and the endpoint refuses to mint moderation or ownership regardless of the
-# account behind it, so a copy of this on a lost phone is somebody who can join
-# rooms, which is what a phone is for.
-say "device credential"
-DEVICE_CREDENTIAL="$(ensure "$PREFIX-device-credential" "$credential_generator")"
-
 # The account file is derived from the two credentials above rather than
 # generated independently, so the token a relay presents is by construction the
 # one the control plane will accept.
 #
-# Three accounts and no more. `admin` is an operator's own key: owner of every
+# Two accounts and no more. `admin` is an operator's own key: owner of every
 # room in the tenant, which is what creating rooms and issuing bans from a
 # laptop requires. `relay` is the tier's key, and `is_relay` is what permits
 # attaching to RelayLink -- it is not an owner and cannot mint tokens. It has
 # no tenant, because the fleet serves every tenant and hosted usage reports are
-# refused from a tenant-scoped relay account. `device`
-# is what a phone holds, and its grants are the ceiling on every token the join
-# endpoint will mint against it: publishing, in this tenant, and nothing else.
+# refused from a tenant-scoped relay account.
+#
+# There is no account for phones. A credential shipped in an app is held by
+# everybody with the binary, so a phone gets its token from a server that knows
+# who signed in: the sample token server, or the control plane's Apple sign-in.
 say "service accounts"
 cat > "$WORK/accounts.json" <<JSON
 {
@@ -105,12 +124,6 @@ cat > "$WORK/accounts.json" <<JSON
       "name": "relay",
       "credential": "$RELAY_CREDENTIAL",
       "is_relay": true
-    },
-    {
-      "name": "device",
-      "credential": "$DEVICE_CREDENTIAL",
-      "tenant": "$TENANT",
-      "publish": ["audio", "video", "screen_share", "data"]
     }
   ]
 }
@@ -134,7 +147,7 @@ JSON
 # balancer can be given a different address without reissuing anything.
 SERVER_NAME="${MOQOM_LINK_SERVER_NAME:-moqom-control}"
 
-# The one exception to that, and it is not optional. The join endpoint is on this
+# The one exception to that, and it is not optional. The public listener is on this
 # same certificate and is reached by a phone, by address, because dev has no DNS
 # for it -- and iOS enforces the certificate's name against the address even when
 # the application has already accepted the certificate by pin. A certificate with
@@ -244,7 +257,7 @@ fi
 say "link certificates"
 # The service's in-cluster name as well as the short one, so a caller inside the
 # cluster and a relay dialling the load balancer verify the same certificate. And
-# the join endpoint's public address, for the phones -- see JOIN_ADDRESS above.
+# the public listener's address, for the phones -- see JOIN_ADDRESS above.
 SERVER_SANS="DNS:$SERVER_NAME,DNS:$PREFIX-control.$NAMESPACE.svc.cluster.local,DNS:$PREFIX-control,DNS:localhost"
 if [ -n "$JOIN_ADDRESS" ]; then
     SERVER_SANS="$SERVER_SANS,IP:$JOIN_ADDRESS"
@@ -266,27 +279,19 @@ else
     # means somebody edited the file directly. Keep theirs.
     $GCLOUD secrets versions access latest --secret="$PREFIX-control-accounts" > "$WORK/accounts.json"
 
-    # Except for accounts that did not exist when theirs was written. A
-    # deployment that predates the join endpoint has a perfectly good accounts
-    # file with no device account in it, and "keep theirs" would mean the phones
-    # can never be enrolled without somebody editing a secret by hand. Added
-    # rather than merged: an existing `device` entry is left exactly as it is,
-    # including its credential, because that credential is on somebody's phone.
-    if ! grep -q '"device"' "$WORK/accounts.json"; then
-        say "  adding the device account to an existing file"
-        DEVICE_CREDENTIAL="$DEVICE_CREDENTIAL" TENANT="$TENANT" python3 - "$WORK/accounts.json" <<'PY'
-import json, os, sys
+    # Except the retired `device` account, which every copy of the sample app
+    # used to carry. Removed as a new version, so the old file is still there to
+    # read; the credential's own secret is left alone.
+    if grep -q '"name": *"device"' "$WORK/accounts.json"; then
+        say "  retiring the device account"
+        python3 - "$WORK/accounts.json" <<'PY'
+import json, sys
 
 path = sys.argv[1]
 with open(path) as f:
     document = json.load(f)
 
-document.setdefault("accounts", []).append({
-    "name": "device",
-    "credential": os.environ["DEVICE_CREDENTIAL"],
-    "tenant": os.environ["TENANT"],
-    "publish": ["audio", "video", "screen_share", "data"],
-})
+document["accounts"] = [a for a in document.get("accounts", []) if a.get("name") != "device"]
 
 with open(path, "w") as f:
     json.dump(document, f, indent=2)
@@ -360,6 +365,7 @@ $KUBE create secret generic "$PREFIX-control" \
     --namespace="$NAMESPACE" \
     --from-literal=signing-keys="$SIGNING" \
     --from-file=accounts.json="$WORK/accounts.json" \
+    --from-file=seal-keys.json="$WORK/seal-keys.json" \
     --from-file=link-ca.pem="$WORK/link-ca.pem" \
     --from-file=link-cert.pem="$WORK/link-cert.pem" \
     --from-file=link-key.pem="$WORK/link-key.pem" \

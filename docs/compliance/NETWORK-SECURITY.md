@@ -68,8 +68,9 @@ on SSH, RDP, Postgres, MySQL, the Kubernetes API, kubelet or etcd ports.
   secp256r1, secp384r1, secp521r1` (after a GREASE value) to a rustls server
   with the engine's settings, so the hybrid group is chosen. Not yet checked
   on an iPhone, and not covered by automated tests.
-- End-to-end media keys come from [MLS](https://www.rfc-editor.org/rfc/rfc9420), not TLS. MoqomKit's default MLS suite
-  for new rooms uses the X-Wing hybrid KEM (ML-KEM-768 with X25519); see
+- End-to-end media keys come from [MLS](https://www.rfc-editor.org/rfc/rfc9420), not TLS. Every room's MLS group uses
+  `MLS_256_MLKEM1024_AES256GCM_SHA512_MLDSA87` (`0xF0AC`): pure ML-KEM-1024 key
+  encapsulation and ML-DSA-87 signatures; see
   `docs/E2EE-KEY-MANAGEMENT.md` for what that does and doesn't
   cover.
 

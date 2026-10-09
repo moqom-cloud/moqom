@@ -2,9 +2,7 @@ package token
 
 import (
 	"bytes"
-	"crypto/ed25519"
 	"crypto/mldsa"
-	"crypto/rand"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -370,7 +368,7 @@ func TestPublicJWKIsWellFormed(t *testing.T) {
 	if err := json.Unmarshal([]byte(encoded), &jwk); err != nil {
 		t.Fatalf("the JWK is not JSON: %v", err)
 	}
-	if jwk["kty"] != "AKP" || jwk["alg"] != "ML-DSA-65" {
+	if jwk["kty"] != "AKP" || jwk["alg"] != "ML-DSA-87" {
 		t.Errorf("unexpected key type: %v", jwk)
 	}
 	if jwk["kid"] != key.ID {
@@ -380,72 +378,28 @@ func TestPublicJWKIsWellFormed(t *testing.T) {
 	if err != nil {
 		t.Fatalf("the public key is not base64url: %v", err)
 	}
-	if len(raw) != mldsa.MLDSA65().PublicKeySize() {
-		t.Errorf("the public key is %d bytes, want %d", len(raw), mldsa.MLDSA65().PublicKeySize())
+	if len(raw) != mldsa.MLDSA87().PublicKeySize() {
+		t.Errorf("the public key is %d bytes, want %d", len(raw), mldsa.MLDSA87().PublicKeySize())
 	}
 }
 
-func legacyKey(t *testing.T) (Key, ed25519.PrivateKey) {
-	t.Helper()
-	public, private, err := ed25519.GenerateKey(rand.Reader)
-	if err != nil {
-		t.Fatalf("generating: %v", err)
-	}
-	key, err := LegacyEd25519(public)
-	if err != nil {
-		t.Fatalf("loading: %v", err)
-	}
-	return key, private
-}
-
-// signLegacy produces what Mint produced before ML-DSA, so the rollover can be
-// tested without Mint being able to make one.
-func signLegacy(t *testing.T, key Key, private ed25519.PrivateKey, claims Claims, now time.Time) string {
-	t.Helper()
-	claims.IssuedAt, claims.Expires, claims.ID = now.Unix(), now.Add(time.Minute).Unix(), "legacy"
-	signing := encodeSegment(t, header{Algorithm: AlgorithmEdDSA, Type: tokenType, KeyID: key.ID}) +
-		"." + encodeSegment(t, claims)
-	return signing + "." + base64.RawURLEncoding.EncodeToString(ed25519.Sign(private, []byte(signing)))
-}
-
-// Tokens signed with Ed25519 before the move still verify until they expire,
-// and an Ed25519 key never signs another.
-func TestEd25519KeysOnlyVerify(t *testing.T) {
-	legacy, private := legacyKey(t)
+// A token naming any algorithm but ML-DSA-87 is refused before any signature
+// is checked, whatever key it names.
+func TestATokenNamingAnotherAlgorithmIsRefused(t *testing.T) {
 	signer, _ := testKey(t)
-	verifier := NewVerifier("moqom", []Key{signer, legacy})
-	now := time.Now()
-
-	if _, err := verifier.Verify(signLegacy(t, legacy, private, claimsFor(control.Grants{}), now), now); err != nil {
-		t.Errorf("a token signed before the move was refused: %v", err)
-	}
-	if _, _, err := Mint(legacy, claimsFor(control.Grants{}), time.Minute, now); err == nil {
-		t.Error("an Ed25519 key minted a token")
-	}
-}
-
-// The algorithm belongs to the key, so a token naming EdDSA for an ML-DSA key
-// is refused before any signature is checked, and the reverse likewise.
-func TestATokenMustNameItsKeysAlgorithm(t *testing.T) {
-	legacy, private := legacyKey(t)
-	signer, _ := testKey(t)
-	verifier := NewVerifier("moqom", []Key{signer, legacy})
+	verifier := NewVerifier("moqom", []Key{signer})
 	now := time.Now()
 
 	minted, _, err := Mint(signer, claimsFor(control.Grants{}), time.Minute, now)
 	if err != nil {
 		t.Fatalf("minting: %v", err)
 	}
-	parts := strings.Split(minted, ".")
-	parts[0] = encodeSegment(t, header{Algorithm: AlgorithmEdDSA, Type: tokenType, KeyID: signer.ID})
-	if _, err := verifier.Verify(strings.Join(parts, "."), now); !errors.Is(err, ErrUnsupported) {
-		t.Errorf("EdDSA named for an ML-DSA key gave %v, want ErrUnsupported", err)
-	}
-
-	legacyToken := strings.Split(signLegacy(t, legacy, private, claimsFor(control.Grants{}), now), ".")
-	legacyToken[0] = encodeSegment(t, header{Algorithm: AlgorithmMLDSA65, Type: tokenType, KeyID: legacy.ID})
-	if _, err := verifier.Verify(strings.Join(legacyToken, "."), now); !errors.Is(err, ErrUnsupported) {
-		t.Errorf("ML-DSA-65 named for an Ed25519 key gave %v, want ErrUnsupported", err)
+	for _, algorithm := range []string{"EdDSA", "ES256", "ML-DSA-65"} {
+		parts := strings.Split(minted, ".")
+		parts[0] = encodeSegment(t, header{Algorithm: algorithm, Type: tokenType, KeyID: signer.ID})
+		if _, err := verifier.Verify(strings.Join(parts, "."), now); !errors.Is(err, ErrUnsupported) {
+			t.Errorf("an %s token gave %v, want ErrUnsupported", algorithm, err)
+		}
 	}
 }
 
@@ -566,36 +520,5 @@ func TestATokenWithNoProvenanceIsNormal(t *testing.T) {
 	}
 	if bytes.Contains(body, []byte(`"via"`)) {
 		t.Errorf("an empty provenance claim should be omitted, got %s", body)
-	}
-}
-
-// The encryption claim round-trips as required, and anything else -- including
-// the "optional" earlier versions allowed -- is refused at minting.
-func TestE2EEClaim(t *testing.T) {
-	key, verifier := testKey(t)
-	now := time.Date(2026, 7, 27, 12, 0, 0, 0, time.UTC)
-
-	for _, policy := range []control.E2EEPolicy{"", control.E2EERequired} {
-		claims := claimsFor(control.Grants{})
-		claims.E2EE = string(policy)
-		minted, _, err := Mint(key, claims, time.Minute, now)
-		if err != nil {
-			t.Fatalf("minting e2ee=%q: %v", policy, err)
-		}
-		verified, err := verifier.Verify(minted, now)
-		if err != nil {
-			t.Fatalf("verifying e2ee=%q: %v", policy, err)
-		}
-		if verified.E2EE != string(policy) {
-			t.Errorf("e2ee came back as %q, want %q", verified.E2EE, policy)
-		}
-	}
-
-	for _, policy := range []control.E2EEPolicy{"off", "optional"} {
-		relaxed := claimsFor(control.Grants{})
-		relaxed.E2EE = string(policy)
-		if _, _, err := Mint(key, relaxed, time.Minute, now); !errors.Is(err, control.ErrInvalid) {
-			t.Errorf("minting e2ee=%q gave %v, want ErrInvalid", policy, err)
-		}
 	}
 }

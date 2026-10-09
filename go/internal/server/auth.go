@@ -58,6 +58,12 @@ type ServiceAccount struct {
 	// Enrollment is the customer relay enrolment this account came from, if
 	// any; a stream it holds is cut when the enrolment is revoked.
 	Enrollment string
+
+	// Pool is the relay pool a relay account's relay belongs to, told to it
+	// in its Welcome. A relay in a pool admits only tokens naming the pool,
+	// and its address is handed out with them. Set only beside Tenant: a pool
+	// is one tenant's, and a relay serving every tenant cannot be in one.
+	Pool string
 }
 
 // Accounts resolves a credential to an account.
@@ -287,8 +293,10 @@ func statusFor(err error) error {
 		return status.Error(codes.PermissionDenied, err.Error())
 	case errors.Is(err, control.ErrInvalid), errors.Is(err, control.ErrImmutablePolicy):
 		return status.Error(codes.InvalidArgument, err.Error())
-	case errors.Is(err, control.ErrRoomClosed):
+	case errors.Is(err, control.ErrRoomClosed), errors.Is(err, control.ErrPoolNotReady):
 		return status.Error(codes.FailedPrecondition, err.Error())
+	case errors.Is(err, errPoolSealPending):
+		return status.Error(codes.Unavailable, err.Error())
 	case errors.Is(err, context.Canceled):
 		return status.Error(codes.Canceled, err.Error())
 	case errors.Is(err, context.DeadlineExceeded):

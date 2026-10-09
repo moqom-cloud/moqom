@@ -955,6 +955,105 @@ project hosts before this needs Certificate Manager.
 The hourly Cloud Build publish (`tools/cloudbuild-sites.yaml`) rebuilds only the
 sites in its `_SITES`; add a project there if it shows build-time figures.
 
+## The API's own TLS edge
+
+`api.moqom.cloud` moves off the sites' Google balancer, which negotiates only
+classical key exchange, to `cmd/moqom-api-edge`: two pods in the dev cluster
+(`envs/dev` `module.api_edge`, `modules/api-edge`) behind a passthrough network
+load balancer on a static regional address. The pods hold a Let's Encrypt
+certificate themselves, accept TLS 1.3 with ML-KEM only (X25519MLKEM768 is the
+weakest group they take, because that is what browsers offer), and forward
+`/v1/*` to the control plane's public listener inside the cluster, verified
+against the link CA. Every other path is a 302 to `https://moqom.cloud/`. The
+websites stay on the Google balancer.
+
+A client that offers no ML-KEM group is refused at the handshake. That includes
+macOS's `/usr/bin/curl` and any backend on OpenSSL older than 3.5. Use Homebrew's
+curl (OpenSSL 3.5+), Go 1.24+, or a current browser.
+
+The certificate can't be issued until the A record below resolves to the edge,
+because Let's Encrypt checks the name through public DNS. Before that, an HTTPS
+request to the edge fails its handshake and counts against Let's Encrypt's
+limit of 5 failed validations per host per hour. So check port 80 only until
+the record is in.
+
+1. Build the image from the directory holding `moqom/`, `moqom-go/` and
+   `moqom-security/`:
+
+   ```sh
+   gcloud builds submit . --project=moqom-503700 \
+     --config=moqom/deploy/tools/cloudbuild-api-edge.yaml \
+     --substitutions=_TAG=dev,_VERSION=$(git -C moqom rev-parse --short HEAD)
+   ```
+
+2. Apply from `envs/dev`. Set `api_edge_image` in `terraform.tfvars` to the
+   pushed digest, and optionally `api_edge_acme_email`:
+
+   ```sh
+   terraform plan -out=edge.tfplan   # creates module.api_edge.*; the control
+                                     # deployment changes in place for
+                                     # MOQOM_BILLING_TRUSTED_PROXIES
+   terraform apply edge.tfplan
+   IP=$(terraform output -raw api_edge_address)
+   ```
+
+   `tools/sync-secrets.sh` must already have created the `moqom-dev-control`
+   secret, because the pods mount `link-ca.pem` from it.
+
+3. Before DNS, check port 80 and the pods:
+
+   ```sh
+   kubectl -n moqom get pods -l app.kubernetes.io/name=moqom-dev-api-edge -o wide   # 2 Ready, two zones
+   curl -sI --resolve api.moqom.cloud:80:$IP 'http://api.moqom.cloud/v1/rates?x=1'
+   # 301, Location: https://api.moqom.cloud/v1/rates?x=1
+   ```
+
+4. Add the record at Hover, in the `moqom.cloud` zone:
+
+   | Type | Host | Value | TTL |
+   | --- | --- | --- | --- |
+   | A | `api` | `$IP` (`terraform output api_edge_address`) | default |
+
+   No AAAA. The cluster is IPv4-only, so the load balancer has no IPv6 address.
+
+5. Once `dig +short api.moqom.cloud` returns `$IP`, the first HTTPS request
+   issues the certificate (a few seconds). Then verify:
+
+   ```sh
+   # Hybrid accepted, and the API answering
+   /opt/homebrew/opt/curl/bin/curl -sS --resolve api.moqom.cloud:443:$IP https://api.moqom.cloud/v1/rates
+   # Non-API paths redirect to the site
+   /opt/homebrew/opt/curl/bin/curl -sI --resolve api.moqom.cloud:443:$IP https://api.moqom.cloud/   # 302 -> https://moqom.cloud/
+   # Which group was negotiated, and classical refused (OpenSSL 3.5+)
+   openssl s_client -connect $IP:443 -servername api.moqom.cloud -groups X25519MLKEM768 </dev/null 2>&1 | rg -i 'group|verify return'
+   openssl s_client -connect $IP:443 -servername api.moqom.cloud -groups X25519 </dev/null 2>&1 | rg -i 'alert|error'
+   ```
+
+   Every request logs the negotiated group, so you can see which clients still
+   arrive on X25519MLKEM768 rather than ML-KEM-1024:
+
+   ```sh
+   gcloud logging read --project=moqom-503700 --freshness=1d \
+     'resource.labels.container_name="api-edge" AND jsonPayload.msg="request"' \
+     --format='value(jsonPayload.tls_group)' | sort | uniq -c
+   ```
+
+   Billing's per-address limits now see the client's address, not the
+   pod's. The edge sets X-Forwarded-For, and the control plane believes it from
+   the pod range (`MOQOM_BILLING_TRUSTED_PROXIES`).
+
+6. Remove the old route from the Google balancer, in `envs/web/main.tf`: the
+   `api.moqom.cloud` entry in `apis`, plus `google_compute_backend_service.control_api`,
+   `google_compute_health_check.control_api`, the `control_api` data source and
+   `control_api_zones`. Plan from `envs/web` and expect it to delete the API
+   certificate (`module.sites.google_compute_managed_ssl_certificate.apis`) and
+   update the URL map and HTTPS proxy in place. If it replaces
+   `google_compute_managed_ssl_certificate.sites` or any project certificate,
+   stop. Then, from `envs/dev`, the network endpoint group service
+   `kubernetes_service_v1.control_api` and the firewall rule
+   `google_compute_firewall.control_api` for Google's front ends can go too.
+   Keep the Google ranges in `internal/billing`'s `googleFrontEnds` until then.
+
 ## 3D Viewer licence server
 
 `envs/viewer-licensing` (module `modules/viewer-licensing`): the Cloud Run

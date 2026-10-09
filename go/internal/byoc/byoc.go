@@ -26,6 +26,9 @@ type Enrollment struct {
 	Tenant string
 	// Name is the customer's label for the relay.
 	Name string
+	// Pool is the tenant's relay pool the relay serves, or empty for none. A
+	// relay in a pool admits only tokens naming it.
+	Pool string
 	// IdentityID and IdentityName are the overlay identity. The name is what
 	// arrives with every connection, so it is what a stream is matched on.
 	IdentityID   string
@@ -60,6 +63,8 @@ type Store interface {
 	// Revoke marks one revoked at the given time and returns it. Revoking a
 	// revoked enrolment keeps the first time and is not an error.
 	Revoke(ctx context.Context, id string, at time.Time) (Enrollment, error)
+	// ActiveTenants returns every tenant with an enrolment in force, sorted.
+	ActiveTenants(ctx context.Context) ([]string, error)
 }
 
 // Memory is a Store in memory, for a single replica and for tests.
@@ -127,6 +132,21 @@ func (m *Memory) List(_ context.Context, tenant string) ([]Enrollment, error) {
 		return compareStrings(b.ID, a.ID)
 	})
 	return listed, nil
+}
+
+func (m *Memory) ActiveTenants(_ context.Context) ([]string, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	seen := map[string]bool{}
+	var tenants []string
+	for _, enrollment := range m.byID {
+		if enrollment.Active() && !seen[enrollment.Tenant] {
+			seen[enrollment.Tenant] = true
+			tenants = append(tenants, enrollment.Tenant)
+		}
+	}
+	slices.Sort(tenants)
+	return tenants, nil
 }
 
 func (m *Memory) Revoke(_ context.Context, id string, at time.Time) (Enrollment, error) {

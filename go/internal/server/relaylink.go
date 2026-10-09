@@ -65,6 +65,10 @@ type relayConn struct {
 	// relay. Sessions and snapshot requests for any other are ignored.
 	tenant string
 
+	// sentKeys fingerprints the verification keys this relay was last sent, so
+	// a refresh sends only what changed. Guarded by mu.
+	sentKeys []byte
+
 	// revoked is closed to cut the stream, when the enrolment it came from is
 	// revoked.
 	revoked    chan struct{}
@@ -137,6 +141,17 @@ func (c *relayConn) cut() {
 // serves reports whether this relay may serve a tenant's rooms.
 func (c *relayConn) serves(tenant string) bool {
 	return c.tenant == "" || c.tenant == tenant
+}
+
+// all is every attached relay.
+func (r *relayRegistry) all() []*relayConn {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	out := make([]*relayConn, 0, len(r.relays))
+	for _, connection := range r.relays {
+		out = append(out, connection)
+	}
+	return out
 }
 
 func (r *relayRegistry) detach(connection *relayConn) {
@@ -284,13 +299,11 @@ func (s *relayLinkService) Attach(stream relaypb.RelayLink_AttachServer) error {
 			At:               timestamppb.New(s.core.now()),
 			Grace:            durationpb.New(s.core.relayGrace),
 			SnapshotInterval: durationpb.New(s.core.snapshotInterval),
+			Pool:             account.Pool,
 		},
 	}})
-	if keys := s.verificationKeys(); keys != nil {
-		connection.enqueue(&relaypb.ControlMessage{Body: &relaypb.ControlMessage_VerificationKeys{
-			VerificationKeys: keys,
-		}})
-	}
+	s.core.sendVerificationKeys(connection, s.core.sealer.current())
+	s.core.notePoolRelay(stream.Context(), account, connection.id, hello)
 
 	// Read on another goroutine, so a revoke can end the stream while a Recv
 	// is waiting; returning cancels the stream, which ends the Recv.
@@ -653,9 +666,11 @@ func (c *core) snapshot(ctx context.Context, ref roomRef) (*relaypb.RoomSnapshot
 	return snapshot, nil
 }
 
-func (s *relayLinkService) verificationKeys() *relaypb.VerificationKeys {
+// verificationKeysFor is what a relay serving tenant ("" for the shared fleet)
+// verifies and opens tokens with.
+func (c *core) verificationKeysFor(tenant string, state *sealState) *relaypb.VerificationKeys {
 	keys := &relaypb.VerificationKeys{}
-	for _, key := range s.core.keys {
+	for _, key := range c.keys {
 		jwk, err := key.PublicJWK()
 		if err != nil {
 			continue
@@ -668,6 +683,14 @@ func (s *relayLinkService) verificationKeys() *relaypb.VerificationKeys {
 	}
 	if len(keys.Keys) == 0 {
 		return nil
+	}
+	if c.sealer.enabled() && state != nil {
+		seal := state.shared
+		if tenant != "" {
+			seal = c.sealer.keysFor(tenant)
+		}
+		keys.SealKeys = sealKeysToProto(seal)
+		keys.RequireSealed = !c.now().Before(c.sealer.unsealedUntil())
 	}
 	return keys
 }

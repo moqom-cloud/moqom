@@ -11,7 +11,7 @@ var (
 )
 
 // PublicKey is the public half of a device's signing key, as a JWK: kty "AKP"
-// with alg "ML-DSA-65" and pub, or kty "EC" with crv "P-256", x and y.
+// with alg "ML-DSA-87" and pub, and nothing else.
 //
 // Sent by a device at join so the control plane can bind a token to it. Its
 // Thumbprint is the value that goes in `cnf.jkt`, and the point of computing it

@@ -3,7 +3,6 @@ package server_test
 import (
 	"context"
 	"encoding/json"
-	"net/http"
 	"testing"
 
 	"google.golang.org/grpc/codes"
@@ -66,17 +65,6 @@ func TestTokensNameTheRelaysStunServer(t *testing.T) {
 		t.Errorf("the token names %v, want relay.moqom.test:3478", stun)
 	}
 
-	code, response, body := ask(t, h.server.JoinHandler(false), joinKey, server.JoinRequest{
-		Tenant: tenant, Username: "carol", Room: roomName, Key: &deviceKey,
-	})
-	if code != http.StatusOK {
-		t.Fatalf("joining: %d %s", code, body)
-	}
-	if response.Direct == nil || response.Direct.Stun == nil ||
-		*response.Direct.Stun != (server.JoinStun{Host: "relay.moqom.test", Port: 3478}) {
-		t.Errorf("the join response states %+v", response.Direct)
-	}
-
 	// Nothing to learn an address for in a room that keeps media on the relay.
 	if _, err := h.rooms.UpdateRoomPolicy(as(ownerKey), &adminpb.UpdateRoomPolicyRequest{
 		Tenant: tenant, Room: roomName,
@@ -91,9 +79,9 @@ func TestTokensNameTheRelaysStunServer(t *testing.T) {
 }
 
 // The join endpoint's JSON is what MoqomKit parses.
-func TestTheJoinResponseSpellsTheStunServer(t *testing.T) {
-	encoded, err := json.Marshal(server.JoinDirect{
-		Allowed: true, MaxParticipants: 2, Stun: &server.JoinStun{Host: "relay.moqom.test", Port: 3478},
+func TestTheTokenResponseSpellsTheStunServer(t *testing.T) {
+	encoded, err := json.Marshal(server.TokenDirect{
+		Allowed: true, MaxParticipants: 2, Stun: &server.TokenStun{Host: "relay.moqom.test", Port: 3478},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -102,7 +90,7 @@ func TestTheJoinResponseSpellsTheStunServer(t *testing.T) {
 	if string(encoded) != want {
 		t.Errorf("rendered as %s, want %s", encoded, want)
 	}
-	encoded, _ = json.Marshal(server.JoinDirect{Allowed: false, MaxParticipants: 4})
+	encoded, _ = json.Marshal(server.TokenDirect{Allowed: false, MaxParticipants: 4})
 	if string(encoded) != `{"allowed":false,"maxParticipants":4}` {
 		t.Errorf("without a STUN server, rendered as %s", encoded)
 	}

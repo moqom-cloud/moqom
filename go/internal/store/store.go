@@ -98,6 +98,28 @@ type Store interface {
 	// is a promise to consumers and only the writer can keep it.
 	AppendEvent(ctx context.Context, event Event) (Event, error)
 	ListEvents(ctx context.Context, query EventQuery) ([]Event, error)
+
+	// Relay pools and the networks that confine tenants to them.
+	//
+	// A pool is never removed, only marked deleted: it is the record of what a
+	// tenant ran and was billed for. CreateRelayPool is ErrAlreadyExists for a
+	// reused ID. SaveRelayPool writes the pool's settings and state and leaves
+	// its relays alone; PutPoolRelay records one relay, replacing what the same
+	// relay ID last recorded. Both are ErrNotFound for a pool that is not the
+	// tenant's.
+	CreateRelayPool(ctx context.Context, pool control.RelayPool) (control.RelayPool, error)
+	GetRelayPool(ctx context.Context, tenant, id string) (control.RelayPool, error)
+	// ListRelayPools is oldest first, deleted ones included.
+	ListRelayPools(ctx context.Context, tenant string) ([]control.RelayPool, error)
+	SaveRelayPool(ctx context.Context, pool control.RelayPool) (control.RelayPool, error)
+	PutPoolRelay(ctx context.Context, tenant, pool string, relay control.PoolRelay) error
+	// PoolTenants is every tenant with a pool that is not deleted, sorted.
+	PoolTenants(ctx context.Context) ([]string, error)
+
+	// GetTenantNetwork is the shared fleet for a tenant that never set one,
+	// rather than ErrNotFound: that is every tenant's default.
+	GetTenantNetwork(ctx context.Context, tenant string) (control.TenantNetwork, error)
+	SetTenantNetwork(ctx context.Context, network control.TenantNetwork) (control.TenantNetwork, error)
 }
 
 // Mute is a force-mute in force.

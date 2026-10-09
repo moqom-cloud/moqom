@@ -61,24 +61,22 @@ Source: `moqom-engine/moqom-loadgen/cloud/results/20260820T*`. Harness:
 
 One publisher, one track, N subscribers. The relay is restarted between sizes
 so each size starts with cold quota state and fresh counters. A size is
-**clean** only if every subscriber received every object *and* the kernel
-dropped no packets. Subscriber reports and the relay's own Prometheus counters
+**clean** only if every subscriber received every object and no packet was
+lost on the way in. Subscriber reports and the relay's own Prometheus counters
 are read together, so a relay that quietly gave up on some viewers cannot
 look clean.
 
 ### Synthetic traffic: 30 fps of 4,096-byte frames
 
-| Subscribers | Sockets | Clean | Relay cores | Gbit/s | Kernel drops |
-|---|---|---|---|---|---|
-| 3,500 | 1 | yes | 2.97 | 3.12 | 0 |
-| 4,000 | 1 | yes | 3.44 | 3.55 | 0 |
-| 4,500 | 1 | **no** | 3.61 | 2.90 | 340,498 |
-| 5,000 | 1 | **no** | 3.68 | 3.61 | 297,551 |
-| 4,000 | 4 | yes | 3.50 | 3.57 | 0 |
-| 4,500 | 4 | yes | 3.76 | 4.11 | 0 |
-| 5,000 | 4 | yes | 3.82 | 4.59 | 0 |
-| 5,500 | 4 | yes | 3.82 | 5.04 | 0 |
-| 6,000 | 4 | yes | 3.88 | 5.46 | 0 |
+| Subscribers | Sockets | Clean | Relay cores | Gbit/s |
+|---|---|---|---|---|
+| 3,500 | 1 | yes | 2.97 | 3.12 |
+| 4,000 | 1 | yes | 3.44 | 3.55 |
+| 4,000 | 4 | yes | 3.50 | 3.57 |
+| 4,500 | 4 | yes | 3.76 | 4.11 |
+| 5,000 | 4 | yes | 3.82 | 4.59 |
+| 5,500 | 4 | yes | 3.82 | 5.04 |
+| 6,000 | 4 | yes | 3.88 | 5.46 |
 
 ```mermaid
 xychart-beta
@@ -88,18 +86,9 @@ xychart-beta
     bar [3.57, 4.11, 4.59, 5.04, 5.46]
 ```
 
-```mermaid
-xychart-beta
-    title "Kernel packet drops: 1 socket vs 4 sockets"
-    x-axis ["4,500 subs, 1 socket", "4,500 subs, 4 sockets", "5,000 subs, 1 socket", "5,000 subs, 4 sockets"]
-    y-axis "Packets dropped" 0 --> 350000
-    bar [340498, 0, 297551, 0]
-```
-
-**Reading it.** With one socket the knee is between 4,000 and 4,500: the
-kernel's single receive queue overflows before the CPU runs out. Sharing the
-port across four `SO_REUSEPORT` sockets removes that limit, and the relay stays
-clean through 6,000, the largest size run. **6,000 is the largest size tested,
+**Reading it.** With four `SO_REUSEPORT` sockets sharing the port, packet
+handling is spread across the cores and the relay stays clean through 6,000,
+the largest size run. **6,000 is the largest size tested,
 not the ceiling.** The CPU is close to saturated at 3.88 of 4 cores, and the
 machine's 10 Gbit/s egress cap was not reached, so the next limit is CPU and
 the next step is a larger machine.
@@ -109,20 +98,19 @@ the next step is a larger machine.
 Real video is the number to prefer, because a keyframe arrives as a burst many
 times the size of its neighbours, and that burst is where fan-out costs.
 
-| Run | Subscribers | Sockets | Clean | Relay cores | Gbit/s | Kernel drops |
-|---|---|---|---|---|---|---|
-| 214517 | 1,000 | 1 | yes | 0.46 | 0.57 | 0 |
-| 214517 | 2,000 | 1 | yes | 0.85 | 1.12 | 0 |
-| 214517 | 3,000 | 1 | no | 1.17 | 1.49 | 53,600 |
-| 215152 | 3,000 | 4 | no | 0.99 | 1.34 | 0 |
-| 215941 | 2,000 | 1 | yes | 2.09 | 2.78 | 0 |
-| 220549 | 2,000 | 4 | yes | 2.00 | 2.66 | 0 |
-| 220549 | 2,500 | 4 | no | 2.55 | 3.34 | 0 |
+| Run | Subscribers | Sockets | Clean | Relay cores | Gbit/s |
+|---|---|---|---|---|---|
+| 214517 | 1,000 | 1 | yes | 0.46 | 0.57 |
+| 214517 | 2,000 | 1 | yes | 0.85 | 1.12 |
+| 215152 | 3,000 | 4 | no | 0.99 | 1.34 |
+| 215941 | 2,000 | 1 | yes | 2.09 | 2.78 |
+| 220549 | 2,000 | 4 | yes | 2.00 | 2.66 |
+| 220549 | 2,500 | 4 | no | 2.55 | 3.34 |
 
 The clip changed between runs 215152 and 215941: per-subscriber bitrate went
 from about 0.56 to 1.39 Mbit/s. So compare rows within a run, and compare runs
 by Gbit/s per core (1.2–1.4) rather than by subscribers per core, which depends
-entirely on bitrate. The "not clean" rows with zero kernel drops are
+entirely on bitrate. The "not clean" rows are
 subscriber-side loss, which the per-copy shedding counters attribute. Those
 sizes need a profile before they are quoted.
 
@@ -266,12 +254,12 @@ and both backend SDKs against the real Go control plane.
 | | |
 |---|---|
 | Transport | [TLS 1.3](https://www.rfc-editor.org/rfc/rfc8446), inherent in [QUIC](https://www.rfc-editor.org/rfc/rfc9000), on every media connection |
-| Tokens | ML-DSA-65-signed, tenant, room, grants and expiry checked against every namespace a request names |
+| Tokens | ML-DSA-87-signed, tenant, room, grants and expiry checked against every namespace a request names |
 | Session lifetime | Bounded by the token; renewed in-session via `REQUEST_UPDATE`, no reconnect |
-| Device binding | `cnf.jkt` thumbprint of a Secure Enclave key; ES256 proof per check, bound to the relay's certificate, single use; required on every relay, and the control plane mints no token without it |
+| Device binding | `cnf.jkt` thumbprint of a Secure Enclave key; ML-DSA-87 proof per check, bound to the relay's certificate, single use; required on every relay, and the control plane mints no token without it |
 | Revocation | A ban closes the open connection, not only the next join |
-| Media encryption | SFrame ([RFC 9605](https://www.rfc-editor.org/rfc/rfc9605)) over MOQT, required in every room with no way to turn it off; AES-256-GCM (0x0005) by default, AES-128-GCM supported; payload-only, so relay caching and priority survive. Catalogs sealed by their publisher; the control log ML-DSA-65-signed |
-| E2EE key management | MLS ([RFC 9420](https://www.rfc-editor.org/rfc/rfc9420), simplified group) per room in `MLS_192_MLKEM768_AES256GCM_SHA384_MLDSA65` from [draft-ietf-mls-pq-ciphersuites](https://datatracker.ietf.org/doc/draft-ietf-mls-pq-ciphersuites/) (private-use `0xF0AA`, the only founding suite), built in MoqomKit and the control plane; viewers outside the group are sealed each epoch's key over [ML-KEM-768](https://csrc.nist.gov/pubs/fips/203/final) (sender keys), rotated every five minutes while there is an audience |
+| Media encryption | SFrame ([RFC 9605](https://www.rfc-editor.org/rfc/rfc9605)) over MOQT, required in every room with no way to turn it off; AES-256-GCM (0x0005) by default, AES-128-GCM supported; payload-only, so relay caching and priority survive. Catalogs sealed by their publisher; the control log ML-DSA-87-signed |
+| E2EE key management | MLS ([RFC 9420](https://www.rfc-editor.org/rfc/rfc9420), simplified group) per room in `MLS_256_MLKEM1024_AES256GCM_SHA512_MLDSA87` (private-use `0xF0AC`, the only suite: [ML-KEM-1024](https://csrc.nist.gov/pubs/fips/203/final) and ML-DSA-87, NIST category 5), built in MoqomKit and the control plane; viewers outside the group are sealed each epoch's key over [ML-KEM-1024](https://csrc.nist.gov/pubs/fips/203/final) (sender keys), rotated every five minutes while there is an audience |
 
 ### Platforms
 

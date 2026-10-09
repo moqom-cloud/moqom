@@ -51,7 +51,9 @@ type Enrollment struct {
 	CreatedBy    string                 `protobuf:"bytes,5,opt,name=created_by,json=createdBy,proto3" json:"created_by,omitempty"`
 	CreatedAt    *timestamppb.Timestamp `protobuf:"bytes,6,opt,name=created_at,json=createdAt,proto3" json:"created_at,omitempty"`
 	// Unset while the enrolment is in force.
-	RevokedAt     *timestamppb.Timestamp `protobuf:"bytes,7,opt,name=revoked_at,json=revokedAt,proto3" json:"revoked_at,omitempty"`
+	RevokedAt *timestamppb.Timestamp `protobuf:"bytes,7,opt,name=revoked_at,json=revokedAt,proto3" json:"revoked_at,omitempty"`
+	// The tenant's relay pool this relay serves, or empty for none.
+	Pool          string `protobuf:"bytes,8,opt,name=pool,proto3" json:"pool,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -135,10 +137,20 @@ func (x *Enrollment) GetRevokedAt() *timestamppb.Timestamp {
 	return nil
 }
 
+func (x *Enrollment) GetPool() string {
+	if x != nil {
+		return x.Pool
+	}
+	return ""
+}
+
 type CreateRequest struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Tenant        string                 `protobuf:"bytes,1,opt,name=tenant,proto3" json:"tenant,omitempty"`
-	Name          string                 `protobuf:"bytes,2,opt,name=name,proto3" json:"name,omitempty"`
+	state  protoimpl.MessageState `protogen:"open.v1"`
+	Tenant string                 `protobuf:"bytes,1,opt,name=tenant,proto3" json:"tenant,omitempty"`
+	Name   string                 `protobuf:"bytes,2,opt,name=name,proto3" json:"name,omitempty"`
+	// A relay pool of the tenant's, which the relay joins: it admits only
+	// tokens naming that pool, and its address is handed out with them.
+	Pool          string `protobuf:"bytes,3,opt,name=pool,proto3" json:"pool,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -183,6 +195,13 @@ func (x *CreateRequest) GetTenant() string {
 func (x *CreateRequest) GetName() string {
 	if x != nil {
 		return x.Name
+	}
+	return ""
+}
+
+func (x *CreateRequest) GetPool() string {
+	if x != nil {
+		return x.Pool
 	}
 	return ""
 }
@@ -437,7 +456,7 @@ var File_moqom_byoc_v1_byoc_proto protoreflect.FileDescriptor
 
 const file_moqom_byoc_v1_byoc_proto_rawDesc = "" +
 	"\n" +
-	"\x18moqom/byoc/v1/byoc.proto\x12\rmoqom.byoc.v1\x1a\x1fgoogle/protobuf/timestamp.proto\"\x82\x02\n" +
+	"\x18moqom/byoc/v1/byoc.proto\x12\rmoqom.byoc.v1\x1a\x1fgoogle/protobuf/timestamp.proto\"\x96\x02\n" +
 	"\n" +
 	"Enrollment\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x16\n" +
@@ -449,10 +468,12 @@ const file_moqom_byoc_v1_byoc_proto_rawDesc = "" +
 	"\n" +
 	"created_at\x18\x06 \x01(\v2\x1a.google.protobuf.TimestampR\tcreatedAt\x129\n" +
 	"\n" +
-	"revoked_at\x18\a \x01(\v2\x1a.google.protobuf.TimestampR\trevokedAt\";\n" +
+	"revoked_at\x18\a \x01(\v2\x1a.google.protobuf.TimestampR\trevokedAt\x12\x12\n" +
+	"\x04pool\x18\b \x01(\tR\x04pool\"O\n" +
 	"\rCreateRequest\x12\x16\n" +
 	"\x06tenant\x18\x01 \x01(\tR\x06tenant\x12\x12\n" +
-	"\x04name\x18\x02 \x01(\tR\x04name\"\xbc\x01\n" +
+	"\x04name\x18\x02 \x01(\tR\x04name\x12\x12\n" +
+	"\x04pool\x18\x03 \x01(\tR\x04pool\"\xbc\x01\n" +
 	"\x0eCreateResponse\x129\n" +
 	"\n" +
 	"enrollment\x18\x01 \x01(\v2\x19.moqom.byoc.v1.EnrollmentR\n" +

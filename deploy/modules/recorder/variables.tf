@@ -62,7 +62,7 @@ variable "kubernetes_secret" {
   description = <<-EOT
     The Kubernetes secret the pod mounts, populated out of band from the Secret
     Manager entries below, as the control plane's is. Keys: recorder-key.pem
-    (the ES256 PKCS#8 key), credential (the is_recorder service-account
+    (the ML-DSA-87 PKCS#8 key), credential (the is_recorder service-account
     credential), link-ca.pem, link-cert.pem, link-key.pem (RelayLink's private
     authority and a client certificate it issued), and relay-cert.pem when the
     relay's certificate is pinned.

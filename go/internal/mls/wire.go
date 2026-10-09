@@ -14,22 +14,16 @@ import (
 // CipherSuite is an MLS cipher suite identifier, RFC 9420 §17.1.
 type CipherSuite = moqommls.CipherSuite
 
-// The suites moqom-mls implements; see its CipherSuite.
-const (
-	SuiteX25519 = moqommls.SuiteX25519
-	SuiteXWing  = moqommls.SuiteXWing
-	SuiteMLDSA  = moqommls.SuiteMLDSA
-)
+// SuiteMLDSA is the one suite moqom-mls implements; see its CipherSuite.
+const SuiteMLDSA = moqommls.SuiteMLDSA
 
-// FoundingSuite is the suite every new group is founded in.
+// FoundingSuite is the suite every group is founded in.
 const FoundingSuite = moqommls.FoundingSuite
 
 const (
-	// Bounds on what a device may store. A package is about 200 bytes in
-	// SuiteX25519, about 2.5 KiB in SuiteXWing, whose two keys are 1,216 bytes
-	// each, and about 7.5 KiB in SuiteMLDSA (two 1,184-byte keys, a 1,952-byte
-	// ML-DSA key and a 3,309-byte signature); 16 KiB leaves room for a long
-	// identity in any.
+	// Bounds on what a device may store. A package is about 10.1 KiB (two
+	// 1,568-byte keys, a 2,592-byte ML-DSA-87 key and a 4,627-byte
+	// signature); 16 KiB leaves room for a long identity.
 	maxKeyPackageBytes = 16 << 10
 	maxOneTimePackages = 16
 )

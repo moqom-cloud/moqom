@@ -85,7 +85,7 @@ Postgres store is written and reachable with `MOQOM_CONTROL_STORE=postgres`,
 against Cloud SQL as the runtime's own Google identity, so there is no password
 to configure, store, or rotate — but it is the choice rather than the default,
 and a default that loses the moderation log is the one that will be running
-somewhere. Tokens are [ML-DSA-65](https://csrc.nist.gov/pubs/fips/204/final) over JSON rather than CAT/CWT's CBOR and COSE,
+somewhere. Tokens are [ML-DSA-87](https://csrc.nist.gov/pubs/fips/204/final) over JSON rather than CAT/CWT's CBOR and COSE,
 which is an encoding away from the target and no longer a binding away from it:
 `cnf.jkt` is derived from a key the device sends at join, held in its Secure
 Enclave, the control plane mints no token without one, and every relay makes every

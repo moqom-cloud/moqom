@@ -1,8 +1,7 @@
 // Package token is the control plane's half of the credential a client joins
 // with: the rules about what may be minted into one, on top of moqom-token.
 //
-// The token itself -- ML-DSA-65 over JSON claims in the compact JWS form, with
-// Ed25519 keys read only to verify tokens signed before the move, the claims'
+// The token itself -- ML-DSA-87 over JSON claims in the compact JWS form, the claims'
 // wire format, the fifteen-minute cap, and every check a verifier makes -- is
 // github.com/moqom-cloud/moqom-security/go/token, which the relay (Rust) and
 // MoqomKit (Swift) share through the same library's vectors. What is here is
@@ -19,10 +18,10 @@
 package token
 
 import (
-	"crypto/ed25519"
 	"crypto/rand"
 	"encoding/base64"
 	"fmt"
+	"sync/atomic"
 	"time"
 
 	sectoken "github.com/moqom-cloud/moqom-security/go/token"
@@ -44,12 +43,9 @@ var (
 )
 
 const (
-	// AlgorithmMLDSA65 is the JOSE name for ML-DSA-65, which every token is
+	// AlgorithmMLDSA87 is the JOSE name for ML-DSA-87, which every token is
 	// signed with.
-	AlgorithmMLDSA65 = string(sectoken.MLDSA65)
-	// AlgorithmEdDSA is Ed25519, read only to verify tokens signed before the
-	// move to ML-DSA.
-	AlgorithmEdDSA = string(sectoken.EdDSA)
+	AlgorithmMLDSA87 = string(sectoken.MLDSA87)
 )
 
 // MaxLifetime caps how long a token is good for; a longer request is refused
@@ -114,8 +110,8 @@ func Identity(c Claims) (control.Identity, error) {
 	return control.Identity{Username: c.Subject, Device: device}, nil
 }
 
-// Key is a token key with an identifier: an ML-DSA-65 key that signs, or an
-// Ed25519 public key kept to verify what was signed before ML-DSA.
+// Key is a token key with an identifier: an ML-DSA-87 key, which signs when
+// the control plane holds its seed and verifies either way.
 type Key struct {
 	ID        string
 	Algorithm string
@@ -127,7 +123,7 @@ type Key struct {
 // CanSign reports whether Mint will sign with this key.
 func (k Key) CanSign() bool { return k.signer != nil }
 
-// PublicBytes is the raw public key: 1952 bytes for ML-DSA-65, 32 for Ed25519.
+// PublicBytes is the raw public key: 2592 bytes for ML-DSA-87.
 func (k Key) PublicBytes() []byte { return k.public.Bytes() }
 
 // PublicKey is the verification half, as the library holds it.
@@ -140,7 +136,7 @@ func (k Key) PublicJWK() (string, error) {
 	return string(encoded), err
 }
 
-// GenerateKey makes an ML-DSA-65 signing key, named by its public half.
+// GenerateKey makes an ML-DSA-87 signing key, named by its public half.
 func GenerateKey() (Key, error) {
 	signer, err := sectoken.GenerateSigner()
 	if err != nil {
@@ -149,7 +145,7 @@ func GenerateKey() (Key, error) {
 	return signingKey(signer), nil
 }
 
-// KeyFromSeed loads an ML-DSA-65 signing key from its 32-byte FIPS 204 seed, as
+// KeyFromSeed loads an ML-DSA-87 signing key from its 32-byte FIPS 204 seed, as
 // when one is read from a secret. The identifier is a function of the key, so a
 // deployment that reloads its secrets keeps verifying the tokens it signed.
 func KeyFromSeed(seed []byte) (Key, error) {
@@ -161,18 +157,7 @@ func KeyFromSeed(seed []byte) (Key, error) {
 }
 
 func signingKey(signer *sectoken.Signer) Key {
-	return Key{ID: signer.ID(), Algorithm: AlgorithmMLDSA65, signer: signer, public: signer.PublicKey()}
-}
-
-// LegacyEd25519 is an Ed25519 public key that verifies and never signs, for the
-// tokens a deployment issued before it moved to ML-DSA. Its identifier is the
-// one it had when it signed, so those tokens still find it.
-func LegacyEd25519(public ed25519.PublicKey) (Key, error) {
-	key, err := sectoken.NewPublicKey(sectoken.EdDSA, "", public)
-	if err != nil {
-		return Key{}, err
-	}
-	return Key{ID: key.ID(), Algorithm: AlgorithmEdDSA, public: key}, nil
+	return Key{ID: signer.ID(), Algorithm: AlgorithmMLDSA87, signer: signer, public: signer.PublicKey()}
 }
 
 // ValidThumbprint refuses anything but an RFC 7638 SHA-256 thumbprint. A token
@@ -197,7 +182,7 @@ func ValidThumbprint(thumbprint string) error {
 func Mint(key Key, claims Claims, lifetime time.Duration, now time.Time) (string, time.Time, error) {
 	if !key.CanSign() {
 		return "", time.Time{}, fmt.Errorf("key %s is %s and only verifies; tokens are signed with %s",
-			key.ID, key.Algorithm, AlgorithmMLDSA65)
+			key.ID, key.Algorithm, AlgorithmMLDSA87)
 	}
 	if lifetime == 0 {
 		lifetime = DefaultLifetime
@@ -226,12 +211,6 @@ func Mint(key Key, claims Claims, lifetime time.Duration, now time.Time) (string
 		return "", time.Time{}, fmt.Errorf(
 			"%w: token is attributed to %q but names no room", control.ErrInvalid, claims.Via)
 	}
-	// "required", or absent meaning the same; MoqomKit refuses to publish
-	// without a key whatever this says.
-	if err := (control.Policy{E2EE: control.E2EEPolicy(claims.E2EE)}).ValidateE2EE(); err != nil {
-		return "", time.Time{}, err
-	}
-
 	expires := now.Add(lifetime).Truncate(time.Second)
 	claims.IssuedAt = now.Unix()
 	claims.Expires = expires.Unix()
@@ -249,10 +228,26 @@ func Mint(key Key, claims Claims, lifetime time.Duration, now time.Time) (string
 	return signed, expires, nil
 }
 
-// Verifier holds the public keys tokens may be signed with, and the issuer
-// they must name.
+// Verifier holds the public keys tokens may be signed with, the issuer they
+// must name, and the keys sealed tokens are opened with.
 type Verifier struct {
 	inner *sectoken.Verifier
+	seal  atomic.Pointer[sealing]
+}
+
+type sealing struct {
+	keys []sectoken.SealKey
+	// unsealedUntil is when a token that is signed and not sealed stops being
+	// accepted: the overlap after sealing is switched on, during which tokens
+	// minted before it are still in hands.
+	unsealedUntil time.Time
+}
+
+// SetSealKeys replaces the keys sealed tokens are opened with. With none, only
+// unsealed tokens verify; with some, an unsealed token is refused after
+// unsealedUntil.
+func (v *Verifier) SetSealKeys(keys []sectoken.SealKey, unsealedUntil time.Time) {
+	v.seal.Store(&sealing{keys: keys, unsealedUntil: unsealedUntil})
 }
 
 // NewVerifier builds a verifier from keys, each found by its identifier.
@@ -268,6 +263,18 @@ func NewVerifier(issuer string, keys []Key) *Verifier {
 // capability bits, so an unrecognised bit cannot reach a decision about what
 // somebody may do.
 func (v *Verifier) Verify(token string, now time.Time) (Claims, error) {
+	if seal := v.seal.Load(); seal != nil && len(seal.keys) > 0 {
+		switch {
+		case sectoken.IsSealed(token):
+			opened, err := sectoken.Open(token, seal.keys...)
+			if err != nil {
+				return Claims{}, err
+			}
+			token = opened
+		case !now.Before(seal.unsealedUntil):
+			return Claims{}, fmt.Errorf("%w: token is not sealed", sectoken.ErrUnsupported)
+		}
+	}
 	claims, err := v.inner.Verify(token, now)
 	if err != nil {
 		return Claims{}, err

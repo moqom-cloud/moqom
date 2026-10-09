@@ -56,8 +56,8 @@ func UseFrom(ctx context.Context) Use {
 	return use
 }
 
-// Annotate wraps the control plane's own HTTP routes (/join, the console's
-// rooms and live map), so keys used there are scoped, allowlisted and audited
+// Annotate wraps the control plane's own HTTP routes (the relay routes, the
+// console's rooms and live map), so keys used there are scoped, allowlisted and audited
 // by the same trusted address the billing routes use.
 func Annotate(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -82,7 +82,6 @@ var scopes = map[KeyKind]map[string]bool{
 		adminRPC + "Rooms/ListRooms":             true,
 		adminRPC + "Rooms/ListParticipants":      true,
 		adminRPC + "Rooms/GetParticipant":        true,
-		"POST /join":                             true,
 	},
 	KeyReadOnly: {
 		adminRPC + "Tokens/ListVerificationKeys":  true,

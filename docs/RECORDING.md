@@ -391,7 +391,7 @@ through IAM `signBlob`. No key file exists anywhere.
 - **Catch-up window.** Only what the relay still caches can be caught up (8
   groups or 16 seconds per track by default). A group that has aged out is
   recorded as `next_group`.
-- **Signing key.** The recorder's ES256 key is a file from Secret Manager.
+- **Signing key.** The recorder's ML-DSA-87 key is a file from Secret Manager.
   Holding it in Cloud KMS would mean `DeviceKey` signing through a remote
   signer. The proof is signed on every connect and renewal, so the latency
   matters less than the dependency.

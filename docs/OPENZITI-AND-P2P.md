@@ -324,11 +324,11 @@ its own slot's track `.direct/{peerUser}/{peerDevice}` (the stage slot
 `SUBSCRIBE_OK` and then sends one object per group, a fresh ticket every 60 s:
 
 ```json
-{"version":1,"ticket":"<compact JWS>","expires":1791288000,"keys":[{"kty":"OKP","crv":"Ed25519","kid":"…","x":"…"}]}
+{"version":1,"ticket":"<compact JWS>","expires":1791288000,"keys":[{"kty":"AKP","alg":"ML-DSA-87","kid":"…","pub":"…"}]}
 ```
 
-The ticket is an Ed25519 compact [JWS](https://www.rfc-editor.org/rfc/rfc7515), header
-`{"alg":"EdDSA","typ":"moqom-direct-ticket","kid"}`, claims `ten`, `room`,
+The ticket is an ML-DSA-87 compact [JWS](https://www.rfc-editor.org/rfc/rfc7515), header
+`{"alg":"ML-DSA-87","typ":"moqom-direct-ticket","kid"}`, claims `ten`, `room`,
 `sub`, `dev`, `peer` (`user/device`), `iat`, `exp` (90 s after issue), with
 unknown claims refused. It is bound to the holder's verified identity, the room
 and the one peer. Seconds with at least one ticket subscription open are the

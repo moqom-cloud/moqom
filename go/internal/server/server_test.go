@@ -61,6 +61,7 @@ type harness struct {
 	tokens     adminpb.TokensClient
 	events     adminpb.EventsClient
 	relay      relaypb.RelayLinkClient
+	relayPools adminpb.RelayPoolsClient
 	store      store.Store
 	now        func() time.Time
 	advance    func(time.Duration)
@@ -165,6 +166,7 @@ func newConfiguredHarness(t *testing.T, configure func(*server.Config)) *harness
 		tokens:     adminpb.NewTokensClient(connection),
 		events:     adminpb.NewEventsClient(connection),
 		relay:      relaypb.NewRelayLinkClient(connection),
+		relayPools: adminpb.NewRelayPoolsClient(connection),
 		store:      memoryStore,
 		now:        now,
 		advance:    advance,
@@ -1348,12 +1350,25 @@ type fakeRelay struct {
 	snapshots  chan *relaypb.RoomSnapshot
 	welcomes   chan *relaypb.Welcome
 	keys       chan *relaypb.VerificationKeys
+
+	// welcome is the Welcome the control plane attached it with.
+	welcome *relaypb.Welcome
 }
 
 func (h *harness) attachRelay(t *testing.T) *fakeRelay {
 	t.Helper()
+	return h.attachRelayAs(t, relayKey, "relay-1")
+}
 
-	ctx, cancel := context.WithCancel(as(relayKey))
+func (h *harness) attachRelayAs(t *testing.T, credential, id string) *fakeRelay {
+	t.Helper()
+	return h.attachRelayWith(t, credential, &relaypb.Hello{RelayId: id, Region: "test", Version: "0"})
+}
+
+func (h *harness) attachRelayWith(t *testing.T, credential string, hello *relaypb.Hello) *fakeRelay {
+	t.Helper()
+
+	ctx, cancel := context.WithCancel(as(credential))
 	stream, err := h.relay.Attach(ctx)
 	if err != nil {
 		cancel()
@@ -1361,7 +1376,7 @@ func (h *harness) attachRelay(t *testing.T) *fakeRelay {
 	}
 
 	if err := stream.Send(&relaypb.RelayMessage{Body: &relaypb.RelayMessage_Hello{
-		Hello: &relaypb.Hello{RelayId: "relay-1", Region: "test", Version: "0"},
+		Hello: hello,
 	}}); err != nil {
 		cancel()
 		t.Fatalf("sending hello: %v", err)
@@ -1380,7 +1395,7 @@ func (h *harness) attachRelay(t *testing.T) *fakeRelay {
 	// The relay is not attached until the control plane has said so, and a directive
 	// sent before then would go to a registry entry that does not exist yet.
 	select {
-	case <-relay.welcomes:
+	case relay.welcome = <-relay.welcomes:
 	case <-time.After(5 * time.Second):
 		cancel()
 		t.Fatal("no welcome from the control plane")

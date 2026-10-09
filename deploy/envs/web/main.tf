@@ -74,6 +74,142 @@ resource "google_compute_backend_service" "control_api" {
   }
 }
 
+# hooks.moqom.cloud: where Stripe and GitHub deliver webhooks. Their senders
+# do not offer ML-KEM, which api.moqom.cloud's edge requires, so they stay on
+# this balancer. Nothing a user sends or receives passes through it: each
+# delivery carries its sender's signature, which the control plane checks
+# before reading the body, and every other request is refused at three
+# layers -- the URL map routes only the two paths, the policy below allows
+# only a POST to them, and the control plane's own hooks-only gate
+# (MOQOM_CONTROL_HOOKS_HOST, MOQOM_CONTROL_HOOKS_STRIPE_IPS) answers anything
+# else for this host, and a Stripe path from anyone but Stripe, with 404.
+locals {
+  hooks_host        = "hooks.moqom.cloud"
+  stripe_hooks_path = "/v1/stripe/webhook"
+  github_hooks_path = "/v1/github/secret-scanning"
+}
+
+# Read on every plan, so a change to Stripe's published list lands with the
+# next apply. Stripe announces changes ahead of making them.
+data "http" "stripe_webhook_ips" {
+  url = "https://stripe.com/files/ips/ips_webhooks.json"
+
+  lifecycle {
+    postcondition {
+      condition     = self.status_code == 200 && length(jsondecode(self.response_body).WEBHOOKS) > 0
+      error_message = "Stripe's webhook address list did not load."
+    }
+  }
+}
+
+locals {
+  stripe_webhook_ranges = [for ip in jsondecode(data.http.stripe_webhook_ips.response_body).WEBHOOKS : "${ip}/32"]
+}
+
+# Off until the project has Cloud Armor quota (requested: 2 policies, 10
+# rules). The control plane's gate enforces the same paths and Stripe senders
+# without it.
+variable "hooks_cloud_armor" {
+  type    = bool
+  default = false
+}
+
+resource "google_compute_security_policy" "hooks" {
+  count = var.hooks_cloud_armor ? 1 : 0
+
+  name        = "moqom-hooks"
+  description = "hooks.moqom.cloud: a POST to one of two webhook paths, nothing else."
+  type        = "CLOUD_ARMOR"
+
+  # Stripe, from Stripe's own addresses only. A basic match holds ten ranges.
+  dynamic "rule" {
+    for_each = chunklist(local.stripe_webhook_ranges, 10)
+    content {
+      priority = 100 + rule.key
+      action   = "allow"
+      match {
+        versioned_expr = "SRC_IPS_V1"
+        config {
+          src_ip_ranges = rule.value
+        }
+      }
+      description = "Stripe webhook senders"
+    }
+  }
+
+  # Before every allow: rules run lowest priority number first.
+  rule {
+    priority = 50
+    action   = "deny(404)"
+    match {
+      expr {
+        expression = "!(request.method == 'POST' && request.path == '${local.github_hooks_path}') && !(request.method == 'POST' && request.path == '${local.stripe_hooks_path}')"
+      }
+    }
+    description = "Anything but a POST to a webhook path"
+  }
+
+  # GitHub publishes no fixed range for secret-scanning reports; its ECDSA
+  # signature is the check, and this bounds how often anyone can make the
+  # control plane run it.
+  rule {
+    priority = 200
+    action   = "throttle"
+    match {
+      expr {
+        expression = "request.method == 'POST' && request.path == '${local.github_hooks_path}'"
+      }
+    }
+    rate_limit_options {
+      conform_action = "allow"
+      exceed_action  = "deny(429)"
+      enforce_on_key = "IP"
+      rate_limit_threshold {
+        count        = 30
+        interval_sec = 60
+      }
+    }
+    description = "GitHub secret-scanning reports, rate limited per address"
+  }
+
+  rule {
+    priority = 2147483647
+    action   = "deny(404)"
+    match {
+      versioned_expr = "SRC_IPS_V1"
+      config {
+        src_ip_ranges = ["*"]
+      }
+    }
+    description = "Everything else"
+  }
+}
+
+resource "google_compute_backend_service" "control_hooks" {
+  name                  = "moqom-control-hooks"
+  protocol              = "HTTPS"
+  load_balancing_scheme = "EXTERNAL_MANAGED"
+  timeout_sec           = 30
+  health_checks         = [google_compute_health_check.control_api.id]
+  security_policy       = one(google_compute_security_policy.hooks[*].id)
+
+  dynamic "backend" {
+    for_each = data.google_compute_network_endpoint_group.control_api
+    content {
+      group                 = backend.value.id
+      balancing_mode        = "RATE"
+      max_rate_per_endpoint = 20
+    }
+  }
+
+  # Records the sender's address, path and status: Stripe's and GitHub's
+  # servers, or whoever was refused. No user's request is ever routed here.
+  log_config {
+    enable      = true
+    sample_rate = 1
+  }
+}
+
 # The 3D Viewer licence server (envs/viewer-licensing), on the same balancer.
 # Empty until that env is applied; then set it to its backend_service output:
 #
@@ -95,9 +231,18 @@ module "sites" {
 
   apis = merge(
     {
+      # Moving to the API's own post-quantum TLS edge (envs/dev module.api_edge,
+      # cmd/moqom-api-edge). Remove this entry, with control_api's backend and
+      # health check above, after api.moqom.cloud's A record at Hover points at
+      # the edge; see deploy/README.md.
       "api.moqom.cloud" = {
         backend_service = google_compute_backend_service.control_api.id
         redirect_host   = "moqom.cloud"
+      }
+      (local.hooks_host) = {
+        backend_service = google_compute_backend_service.control_hooks.id
+        paths           = [local.stripe_hooks_path, local.github_hooks_path]
+        own_certificate = true
       }
     },
     var.viewer_licensing_backend == "" ? {} : {

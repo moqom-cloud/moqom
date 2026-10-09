@@ -7,10 +7,10 @@
 //
 //   swift qr.swift 'moqom://join?...' /tmp/invite.png
 //
-// Correction level L, which is the lowest. A credential is four hundred
-// characters and the correction level is what decides whether that fits in a
-// code somebody can hold a phone up to: at L this is 73 modules across, and at Q
-// it is 101. The redundancy is protection against a torn or dirty print, and
+// Correction level L, which is the lowest. A link with a relay, two certificate
+// hashes and a token server URL runs to a few hundred characters, and the
+// correction level is what decides whether that fits in a code somebody can hold
+// a phone up to. The redundancy is protection against a torn or dirty print, and
 // this is a screen.
 
 import CoreImage

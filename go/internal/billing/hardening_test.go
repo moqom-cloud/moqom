@@ -210,6 +210,9 @@ const (
 	rpcBan          = "/moqom.admin.v1.Moderation/Ban"
 	rpcModLog       = "/moqom.admin.v1.Moderation/ListModerationLog"
 	rpcUpdatePolicy = "/moqom.admin.v1.Rooms/UpdateRoomPolicy"
+	rpcCreatePool   = "/moqom.admin.v1.RelayPools/CreateRelayPool"
+	rpcListPools    = "/moqom.admin.v1.RelayPools/ListRelayPools"
+	rpcSetNetwork   = "/moqom.admin.v1.RelayPools/SetTenantNetwork"
 )
 
 func intercept(t *testing.T, accounts server.Accounts, ctx context.Context) (server.ServiceAccount, codes.Code) {
@@ -257,6 +260,10 @@ func TestScopedKeysOverGRPC(t *testing.T) {
 		{"relay key is not an admin credential", rpcGetRoom, relay, codes.Unauthenticated},
 		{"a wrong secret learns nothing", rpcGetRoom, alterSecret(mint), codes.Unauthenticated},
 		{"an RPC added later is closed to scoped keys", "/moqom.admin.v1.Rooms/SomethingNew", mint, codes.PermissionDenied},
+		{"owner key manages relay pools", rpcCreatePool, signup.APIKey, codes.OK},
+		{"mint key cannot create a relay pool", rpcCreatePool, mint, codes.PermissionDenied},
+		{"mint key cannot change the tenant's network", rpcSetNetwork, mint, codes.PermissionDenied},
+		{"readonly key cannot read relay pools", rpcListPools, readonly, codes.PermissionDenied},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {

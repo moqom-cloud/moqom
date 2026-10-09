@@ -86,18 +86,12 @@ func (s *tokensService) MintClientToken(
 	// A room that exists, is open, and whose policy this token satisfies. Checked at
 	// minting because it is the last moment a backend can be told why: a token that
 	// fails at the relay produces a client-side error nobody can explain.
-	//
-	// The room's encryption policy is read here too, so the token can state it.
-	// Stated even when it is the default, so a client reading the claim sees what
-	// the control plane decided rather than inferring it from silence.
-	var e2ee control.E2EEPolicy
 	var direct *adminpb.DirectGrant
 	if request.GetRoom() != "" {
 		room, err := s.core.store.GetRoom(ctx, request.GetTenant(), request.GetRoom())
 		if err != nil {
 			return nil, statusFor(err)
 		}
-		e2ee = room.Policy.WithDefaults().E2EE
 		direct = directGrantToProto(room.Policy.Direct())
 		if direct.GetAllowed() && s.core.stun != nil {
 			direct.Stun = stunToProto(*s.core.stun)
@@ -153,12 +147,16 @@ func (s *tokensService) MintClientToken(
 			request.GetBackstage(),
 			request.GetAgeVerified(),
 		),
-		Via:  arrivedVia,
-		E2EE: string(e2ee),
+		Via: arrivedVia,
+	}
+
+	relays, err := s.core.confine(ctx, &claims)
+	if err != nil {
+		return nil, statusFor(err)
 	}
 
 	signing := s.core.keys[0]
-	minted, expires, err := token.Mint(signing, claims, request.GetLifetime().AsDuration(), s.core.now())
+	minted, expires, err := s.core.mint(claims, request.GetLifetime().AsDuration())
 	if err != nil {
 		return nil, statusFor(err)
 	}
@@ -174,6 +172,7 @@ func (s *tokensService) MintClientToken(
 		Identity:  identityToProto(identity),
 		KeyId:     signing.ID,
 		Direct:    direct,
+		Relays:    relays,
 	}, nil
 }
 

@@ -1,0 +1,13 @@
+# Builds the sample app's token server. Submitted by deploy/tools/sample-tokens.sh
+# from the parent directory, like cloudbuild-control.yaml.
+substitutions:
+  _IMAGE: us-docker.pkg.dev/${PROJECT_ID}/moqom-dev/moqom-sample-tokens
+  _TAG: dev
+steps:
+  - name: gcr.io/cloud-builders/docker
+    args: ["build", "-f", "moqom/go/Dockerfile.sample-tokens", "-t", "${_IMAGE}:${_TAG}", "."]
+images:
+  - ${_IMAGE}:${_TAG}
+options:
+  logging: CLOUD_LOGGING_ONLY
+  dynamicSubstitutions: true

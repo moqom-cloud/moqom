@@ -4,6 +4,7 @@ package byoctest
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -19,6 +20,25 @@ func Run(t *testing.T, open func(t *testing.T) byoc.Store) {
 	t.Run("ListsOneTenantNewestFirst", func(t *testing.T) { listsOneTenantNewestFirst(t, open(t)) })
 	t.Run("RevokingIsSticky", func(t *testing.T) { revokingIsSticky(t, open(t)) })
 	t.Run("MissingIsNotFound", func(t *testing.T) { missingIsNotFound(t, open(t)) })
+	t.Run("ActiveTenantsLeavesOutRevoked", func(t *testing.T) { activeTenants(t, open(t)) })
+}
+
+func activeTenants(t *testing.T, store byoc.Store) {
+	ctx := context.Background()
+	create(t, store, enrollment("a1", "globex", "i1", epoch))
+	create(t, store, enrollment("a2", "acme", "i2", epoch))
+	create(t, store, enrollment("a3", "acme", "i3", epoch))
+	create(t, store, enrollment("a4", "initech", "i4", epoch))
+	if _, err := store.Revoke(ctx, "a4", epoch); err != nil {
+		t.Fatal(err)
+	}
+	got, err := store.ActiveTenants(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Join(got, ",") != "acme,globex" {
+		t.Errorf("active tenants %v, want [acme globex]", got)
+	}
 }
 
 func enrollment(id, tenant, identity string, at time.Time) byoc.Enrollment {
@@ -39,6 +59,7 @@ func create(t *testing.T, store byoc.Store, e byoc.Enrollment) {
 func roundTrips(t *testing.T, store byoc.Store) {
 	ctx := context.Background()
 	want := enrollment("b1", "acme", "byoc-acme-b1", epoch)
+	want.Pool = "pool-1"
 	create(t, store, want)
 
 	got, err := store.Get(ctx, "b1")
@@ -138,7 +159,7 @@ func missingIsNotFound(t *testing.T, store byoc.Store) {
 }
 
 func same(a, b byoc.Enrollment) bool {
-	return a.ID == b.ID && a.Tenant == b.Tenant && a.Name == b.Name &&
+	return a.ID == b.ID && a.Tenant == b.Tenant && a.Name == b.Name && a.Pool == b.Pool &&
 		a.IdentityID == b.IdentityID && a.IdentityName == b.IdentityName &&
 		a.CreatedBy == b.CreatedBy && a.CreatedAt.Equal(b.CreatedAt) && a.RevokedAt.Equal(b.RevokedAt)
 }

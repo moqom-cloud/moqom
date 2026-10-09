@@ -21,6 +21,8 @@ import (
 	"os"
 
 	"google.golang.org/grpc/credentials"
+
+	"github.com/moqom-cloud/moqom/go/internal/pqtls"
 )
 
 // Environment variables read here, set by deploy/tools/join.sh.
@@ -75,13 +77,12 @@ func Credentials() (credentials.TransportCredentials, error) {
 		name = DefaultServerName
 	}
 
-	return credentials.NewTLS(&tls.Config{
+	return credentials.NewTLS(pqtls.Link(&tls.Config{
 		Certificates: []tls.Certificate{pair},
 		RootCAs:      pool,
 		// The name the certificate carries, which is not the host being dialled:
 		// through a port-forward that host is the loopback, and a certificate
 		// for 127.0.0.1 would be a certificate that says nothing.
 		ServerName: name,
-		MinVersion: tls.VersionTLS13,
-	}), nil
+	})), nil
 }

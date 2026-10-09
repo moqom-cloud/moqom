@@ -14,7 +14,7 @@ import (
 // members, each of whom every other can see. A broadcast's audience is
 // thousands, and adding each to the group would make every commit carry an
 // HPKE ciphertext per viewer and every join a commit. So viewers are not
-// members. Each posts an HPKE public key (ML-KEM-768, the suite's KEM); a group
+// members. Each posts an HPKE public key (ML-KEM-1024, the suite's KEM); a group
 // member — the committer, by the group's own rule — seals the epoch's SFrame
 // base key to each viewer that does not yet have it, and the viewer derives any
 // publisher's key from that base key and the key ID in the frame. The group
@@ -29,10 +29,10 @@ import (
 // sees. That is the trade a broadcast makes, and why anybody who may publish is
 // a member instead.
 
-// AudienceKeyBytes is the length of an ML-KEM-768 public key.
-const AudienceKeyBytes = 1184
+// AudienceKeyBytes is the length of an ML-KEM-1024 public key.
+const AudienceKeyBytes = 1568
 
-// maxEnvelopeBytes bounds one sealed epoch key: a 1,088-byte encapsulation, a
+// maxEnvelopeBytes bounds one sealed epoch key: a 1,568-byte encapsulation, a
 // 32-byte key with its 16-byte tag, and the framing.
 const maxEnvelopeBytes = 2048
 
@@ -186,5 +186,5 @@ func (s *Service) memberGroup(ctx context.Context, caller Caller) (Group, error)
 	if !member {
 		return Group{}, fmt.Errorf("%w: only a member of the group seals for its audience", ErrForbidden)
 	}
-	return s.store.Group(ctx, caller.Room)
+	return s.group(ctx, caller.Room)
 }

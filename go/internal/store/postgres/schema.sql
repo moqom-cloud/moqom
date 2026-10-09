@@ -264,3 +264,41 @@ ALTER TABLE moderation_log ADD COLUMN IF NOT EXISTS policy_change text NOT NULL 
 -- rooms from before the columns follow MoqomKit's default.
 ALTER TABLE rooms ADD COLUMN IF NOT EXISTS direct_paths text NOT NULL DEFAULT '';
 ALTER TABLE rooms ADD COLUMN IF NOT EXISTS max_direct_participants bigint NOT NULL DEFAULT 0;
+
+-- Private relay pools. A pool is never deleted, only marked so: it is the
+-- record of what a tenant ran and was billed for. Regions are a document
+-- rather than a table because they are only ever read and written with the
+-- pool, and a resize replaces them whole.
+CREATE TABLE IF NOT EXISTS relay_pools (
+    id          text        PRIMARY KEY,
+    tenant      text        NOT NULL,
+    name        text        NOT NULL,
+    regions     jsonb       NOT NULL DEFAULT '[]',
+    self_hosted boolean     NOT NULL DEFAULT false,
+    access      text        NOT NULL DEFAULT 'public',
+    state       text        NOT NULL,
+    created_at  timestamptz NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS relay_pools_by_tenant ON relay_pools (tenant, created_at, id);
+
+-- The relays that have attached to a pool, one row per relay ID, so a relay
+-- that reattaches replaces its row rather than adding a second address.
+CREATE TABLE IF NOT EXISTS pool_relays (
+    pool     text        NOT NULL REFERENCES relay_pools (id),
+    relay_id text        NOT NULL,
+    address  text        NOT NULL DEFAULT '',
+    region   text        NOT NULL DEFAULT '',
+    state    text        NOT NULL,
+    seen_at  timestamptz NOT NULL,
+
+    PRIMARY KEY (pool, relay_id)
+);
+
+-- A tenant with no row is on the shared fleet. pool is '' unless the mode is
+-- private.
+CREATE TABLE IF NOT EXISTS tenant_networks (
+    tenant text PRIMARY KEY,
+    mode   text NOT NULL,
+    pool   text NOT NULL DEFAULT ''
+);

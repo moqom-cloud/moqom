@@ -10,5 +10,9 @@ terraform {
       source  = "hashicorp/google"
       version = "~> 7.41"
     }
+    http = {
+      source  = "hashicorp/http"
+      version = "~> 3.4"
+    }
   }
 }

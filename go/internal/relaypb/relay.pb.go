@@ -717,7 +717,11 @@ type Hello struct {
 	// Sessions this relay is already serving, sent on reattach after a broken
 	// stream. Without it the control plane's view of who is where would be a
 	// guess until every session happened to change.
-	Existing      []*SessionState `protobuf:"bytes,4,rep,name=existing,proto3" json:"existing,omitempty"`
+	Existing []*SessionState `protobuf:"bytes,4,rep,name=existing,proto3" json:"existing,omitempty"`
+	// Where clients dial this relay, `host:port`. Sent by a relay in a private
+	// relay pool, whose address is handed out with every token minted for the
+	// pool's tenant; ignored from the shared fleet, which clients reach by name.
+	Address       string `protobuf:"bytes,5,opt,name=address,proto3" json:"address,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -780,6 +784,13 @@ func (x *Hello) GetExisting() []*SessionState {
 	return nil
 }
 
+func (x *Hello) GetAddress() string {
+	if x != nil {
+		return x.Address
+	}
+	return ""
+}
+
 type Welcome struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// Confirms the relay is registered and its sessions are accounted for.
@@ -802,8 +813,13 @@ type Welcome struct {
 	// request per room per interval; zero means never, which is only correct in a
 	// single-replica deployment.
 	SnapshotInterval *durationpb.Duration `protobuf:"bytes,3,opt,name=snapshot_interval,json=snapshotInterval,proto3" json:"snapshot_interval,omitempty"`
-	unknownFields    protoimpl.UnknownFields
-	sizeCache        protoimpl.SizeCache
+	// The relay pool this relay belongs to, or empty for the shared fleet. A
+	// relay admits only tokens whose `pool` claim equals this, so a shared relay
+	// refuses a private tenant's tokens and a pool relay refuses everyone
+	// else's (`wrong_pool`).
+	Pool          string `protobuf:"bytes,4,opt,name=pool,proto3" json:"pool,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *Welcome) Reset() {
@@ -855,6 +871,13 @@ func (x *Welcome) GetSnapshotInterval() *durationpb.Duration {
 		return x.SnapshotInterval
 	}
 	return nil
+}
+
+func (x *Welcome) GetPool() string {
+	if x != nil {
+		return x.Pool
+	}
+	return ""
 }
 
 // One session, as the relay sees it.
@@ -2122,8 +2145,15 @@ func (x *Heartbeat) GetSubscriptionCount() uint32 {
 // which is why the retiring key must stay in this list until the last token it
 // signed has expired.
 type VerificationKeys struct {
-	state         protoimpl.MessageState     `protogen:"open.v1"`
-	Keys          []*adminpb.VerificationKey `protobuf:"bytes,1,rep,name=keys,proto3" json:"keys,omitempty"`
+	state protoimpl.MessageState     `protogen:"open.v1"`
+	Keys  []*adminpb.VerificationKey `protobuf:"bytes,1,rep,name=keys,proto3" json:"keys,omitempty"`
+	// The keys tokens are sealed under (AES-256-GCM), each with the 8-byte key
+	// ID a sealed token names. A relay opens a token with these before verifying
+	// its signature. A relay that serves one tenant is sent only that tenant's.
+	SealKeys []*SealKey `protobuf:"bytes,2,rep,name=seal_keys,json=sealKeys,proto3" json:"seal_keys,omitempty"`
+	// Refuse a token that is not sealed. False only during the rollover, while
+	// tokens minted before sealing are still unexpired.
+	RequireSealed bool `protobuf:"varint,3,opt,name=require_sealed,json=requireSealed,proto3" json:"require_sealed,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -2161,6 +2191,73 @@ func (*VerificationKeys) Descriptor() ([]byte, []int) {
 func (x *VerificationKeys) GetKeys() []*adminpb.VerificationKey {
 	if x != nil {
 		return x.Keys
+	}
+	return nil
+}
+
+func (x *VerificationKeys) GetSealKeys() []*SealKey {
+	if x != nil {
+		return x.SealKeys
+	}
+	return nil
+}
+
+func (x *VerificationKeys) GetRequireSealed() bool {
+	if x != nil {
+		return x.RequireSealed
+	}
+	return false
+}
+
+// One AES-256-GCM token seal key.
+type SealKey struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	KeyId         []byte                 `protobuf:"bytes,1,opt,name=key_id,json=keyId,proto3" json:"key_id,omitempty"` // 8 bytes
+	Secret        []byte                 `protobuf:"bytes,2,opt,name=secret,proto3" json:"secret,omitempty"`            // 32 bytes
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *SealKey) Reset() {
+	*x = SealKey{}
+	mi := &file_moqom_relay_v1_relay_proto_msgTypes[25]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *SealKey) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*SealKey) ProtoMessage() {}
+
+func (x *SealKey) ProtoReflect() protoreflect.Message {
+	mi := &file_moqom_relay_v1_relay_proto_msgTypes[25]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use SealKey.ProtoReflect.Descriptor instead.
+func (*SealKey) Descriptor() ([]byte, []int) {
+	return file_moqom_relay_v1_relay_proto_rawDescGZIP(), []int{25}
+}
+
+func (x *SealKey) GetKeyId() []byte {
+	if x != nil {
+		return x.KeyId
+	}
+	return nil
+}
+
+func (x *SealKey) GetSecret() []byte {
+	if x != nil {
+		return x.Secret
 	}
 	return nil
 }
@@ -2206,16 +2303,18 @@ const file_moqom_relay_v1_relay_proto_rawDesc = "" +
 	"\rroom_snapshot\x18\x02 \x01(\v2\x1c.moqom.relay.v1.RoomSnapshotH\x00R\froomSnapshot\x129\n" +
 	"\tdirective\x18\x03 \x01(\v2\x19.moqom.relay.v1.DirectiveH\x00R\tdirective\x12O\n" +
 	"\x11verification_keys\x18\x04 \x01(\v2 .moqom.relay.v1.VerificationKeysH\x00R\x10verificationKeysB\x06\n" +
-	"\x04body\"\x8e\x01\n" +
+	"\x04body\"\xa8\x01\n" +
 	"\x05Hello\x12\x19\n" +
 	"\brelay_id\x18\x01 \x01(\tR\arelayId\x12\x16\n" +
 	"\x06region\x18\x02 \x01(\tR\x06region\x12\x18\n" +
 	"\aversion\x18\x03 \x01(\tR\aversion\x128\n" +
-	"\bexisting\x18\x04 \x03(\v2\x1c.moqom.relay.v1.SessionStateR\bexisting\"\xae\x01\n" +
+	"\bexisting\x18\x04 \x03(\v2\x1c.moqom.relay.v1.SessionStateR\bexisting\x12\x18\n" +
+	"\aaddress\x18\x05 \x01(\tR\aaddress\"\xc2\x01\n" +
 	"\aWelcome\x12*\n" +
 	"\x02at\x18\x01 \x01(\v2\x1a.google.protobuf.TimestampR\x02at\x12/\n" +
 	"\x05grace\x18\x02 \x01(\v2\x19.google.protobuf.DurationR\x05grace\x12F\n" +
-	"\x11snapshot_interval\x18\x03 \x01(\v2\x19.google.protobuf.DurationR\x10snapshotInterval\"\xa4\x03\n" +
+	"\x11snapshot_interval\x18\x03 \x01(\v2\x19.google.protobuf.DurationR\x10snapshotInterval\x12\x12\n" +
+	"\x04pool\x18\x04 \x01(\tR\x04pool\"\xa4\x03\n" +
 	"\fSessionState\x12\x1d\n" +
 	"\n" +
 	"session_id\x18\x01 \x01(\tR\tsessionId\x12\x16\n" +
@@ -2321,9 +2420,14 @@ const file_moqom_relay_v1_relay_proto_rawDesc = "" +
 	"\tHeartbeat\x12*\n" +
 	"\x02at\x18\x01 \x01(\v2\x1a.google.protobuf.TimestampR\x02at\x12#\n" +
 	"\rsession_count\x18\x02 \x01(\rR\fsessionCount\x12-\n" +
-	"\x12subscription_count\x18\x03 \x01(\rR\x11subscriptionCount\"G\n" +
+	"\x12subscription_count\x18\x03 \x01(\rR\x11subscriptionCount\"\xa4\x01\n" +
 	"\x10VerificationKeys\x123\n" +
-	"\x04keys\x18\x01 \x03(\v2\x1f.moqom.admin.v1.VerificationKeyR\x04keys2W\n" +
+	"\x04keys\x18\x01 \x03(\v2\x1f.moqom.admin.v1.VerificationKeyR\x04keys\x124\n" +
+	"\tseal_keys\x18\x02 \x03(\v2\x17.moqom.relay.v1.SealKeyR\bsealKeys\x12%\n" +
+	"\x0erequire_sealed\x18\x03 \x01(\bR\rrequireSealed\"8\n" +
+	"\aSealKey\x12\x15\n" +
+	"\x06key_id\x18\x01 \x01(\fR\x05keyId\x12\x16\n" +
+	"\x06secret\x18\x02 \x01(\fR\x06secret2W\n" +
 	"\tRelayLink\x12J\n" +
 	"\x06Attach\x12\x1c.moqom.relay.v1.RelayMessage\x1a\x1e.moqom.relay.v1.ControlMessage(\x010\x01B:Z8github.com/moqom-cloud/moqom/go/internal/relaypb;relaypbb\x06proto3"
 
@@ -2340,7 +2444,7 @@ func file_moqom_relay_v1_relay_proto_rawDescGZIP() []byte {
 }
 
 var file_moqom_relay_v1_relay_proto_enumTypes = make([]protoimpl.EnumInfo, 1)
-var file_moqom_relay_v1_relay_proto_msgTypes = make([]protoimpl.MessageInfo, 25)
+var file_moqom_relay_v1_relay_proto_msgTypes = make([]protoimpl.MessageInfo, 26)
 var file_moqom_relay_v1_relay_proto_goTypes = []any{
 	(SessionClosed_Cause)(0),        // 0: moqom.relay.v1.SessionClosed.Cause
 	(*RelayMessage)(nil),            // 1: moqom.relay.v1.RelayMessage
@@ -2368,15 +2472,16 @@ var file_moqom_relay_v1_relay_proto_goTypes = []any{
 	(*DirectiveResult)(nil),         // 23: moqom.relay.v1.DirectiveResult
 	(*Heartbeat)(nil),               // 24: moqom.relay.v1.Heartbeat
 	(*VerificationKeys)(nil),        // 25: moqom.relay.v1.VerificationKeys
-	(*timestamppb.Timestamp)(nil),   // 26: google.protobuf.Timestamp
-	(*durationpb.Duration)(nil),     // 27: google.protobuf.Duration
-	(*adminpb.Identity)(nil),        // 28: moqom.admin.v1.Identity
-	(*adminpb.Grants)(nil),          // 29: moqom.admin.v1.Grants
-	(*adminpb.DirectGrant)(nil),     // 30: moqom.admin.v1.DirectGrant
-	(adminpb.ModerationCode)(0),     // 31: moqom.admin.v1.ModerationCode
-	(adminpb.MediaKind)(0),          // 32: moqom.admin.v1.MediaKind
-	(*adminpb.ParticipantRef)(nil),  // 33: moqom.admin.v1.ParticipantRef
-	(*adminpb.VerificationKey)(nil), // 34: moqom.admin.v1.VerificationKey
+	(*SealKey)(nil),                 // 26: moqom.relay.v1.SealKey
+	(*timestamppb.Timestamp)(nil),   // 27: google.protobuf.Timestamp
+	(*durationpb.Duration)(nil),     // 28: google.protobuf.Duration
+	(*adminpb.Identity)(nil),        // 29: moqom.admin.v1.Identity
+	(*adminpb.Grants)(nil),          // 30: moqom.admin.v1.Grants
+	(*adminpb.DirectGrant)(nil),     // 31: moqom.admin.v1.DirectGrant
+	(adminpb.ModerationCode)(0),     // 32: moqom.admin.v1.ModerationCode
+	(adminpb.MediaKind)(0),          // 33: moqom.admin.v1.MediaKind
+	(*adminpb.ParticipantRef)(nil),  // 34: moqom.admin.v1.ParticipantRef
+	(*adminpb.VerificationKey)(nil), // 35: moqom.admin.v1.VerificationKey
 }
 var file_moqom_relay_v1_relay_proto_depIdxs = []int32{
 	7,  // 0: moqom.relay.v1.RelayMessage.hello:type_name -> moqom.relay.v1.Hello
@@ -2387,7 +2492,7 @@ var file_moqom_relay_v1_relay_proto_depIdxs = []int32{
 	24, // 5: moqom.relay.v1.RelayMessage.heartbeat:type_name -> moqom.relay.v1.Heartbeat
 	5,  // 6: moqom.relay.v1.RelayMessage.snapshot_request:type_name -> moqom.relay.v1.SnapshotRequest
 	2,  // 7: moqom.relay.v1.RelayMessage.census:type_name -> moqom.relay.v1.Census
-	26, // 8: moqom.relay.v1.Census.at:type_name -> google.protobuf.Timestamp
+	27, // 8: moqom.relay.v1.Census.at:type_name -> google.protobuf.Timestamp
 	3,  // 9: moqom.relay.v1.Census.tenants:type_name -> moqom.relay.v1.TenantCensus
 	4,  // 10: moqom.relay.v1.TenantCensus.places:type_name -> moqom.relay.v1.CensusPlace
 	8,  // 11: moqom.relay.v1.ControlMessage.welcome:type_name -> moqom.relay.v1.Welcome
@@ -2395,51 +2500,52 @@ var file_moqom_relay_v1_relay_proto_depIdxs = []int32{
 	17, // 13: moqom.relay.v1.ControlMessage.directive:type_name -> moqom.relay.v1.Directive
 	25, // 14: moqom.relay.v1.ControlMessage.verification_keys:type_name -> moqom.relay.v1.VerificationKeys
 	9,  // 15: moqom.relay.v1.Hello.existing:type_name -> moqom.relay.v1.SessionState
-	26, // 16: moqom.relay.v1.Welcome.at:type_name -> google.protobuf.Timestamp
-	27, // 17: moqom.relay.v1.Welcome.grace:type_name -> google.protobuf.Duration
-	27, // 18: moqom.relay.v1.Welcome.snapshot_interval:type_name -> google.protobuf.Duration
-	28, // 19: moqom.relay.v1.SessionState.identity:type_name -> moqom.admin.v1.Identity
-	29, // 20: moqom.relay.v1.SessionState.grants:type_name -> moqom.admin.v1.Grants
-	26, // 21: moqom.relay.v1.SessionState.opened_at:type_name -> google.protobuf.Timestamp
-	26, // 22: moqom.relay.v1.SessionState.token_expires_at:type_name -> google.protobuf.Timestamp
+	27, // 16: moqom.relay.v1.Welcome.at:type_name -> google.protobuf.Timestamp
+	28, // 17: moqom.relay.v1.Welcome.grace:type_name -> google.protobuf.Duration
+	28, // 18: moqom.relay.v1.Welcome.snapshot_interval:type_name -> google.protobuf.Duration
+	29, // 19: moqom.relay.v1.SessionState.identity:type_name -> moqom.admin.v1.Identity
+	30, // 20: moqom.relay.v1.SessionState.grants:type_name -> moqom.admin.v1.Grants
+	27, // 21: moqom.relay.v1.SessionState.opened_at:type_name -> google.protobuf.Timestamp
+	27, // 22: moqom.relay.v1.SessionState.token_expires_at:type_name -> google.protobuf.Timestamp
 	9,  // 23: moqom.relay.v1.SessionOpened.session:type_name -> moqom.relay.v1.SessionState
 	0,  // 24: moqom.relay.v1.SessionClosed.cause:type_name -> moqom.relay.v1.SessionClosed.Cause
-	26, // 25: moqom.relay.v1.SessionClosed.at:type_name -> google.protobuf.Timestamp
+	27, // 25: moqom.relay.v1.SessionClosed.at:type_name -> google.protobuf.Timestamp
 	14, // 26: moqom.relay.v1.RoomSnapshot.bans:type_name -> moqom.relay.v1.Ban
 	15, // 27: moqom.relay.v1.RoomSnapshot.mutes:type_name -> moqom.relay.v1.Mute
 	16, // 28: moqom.relay.v1.RoomSnapshot.grant_overrides:type_name -> moqom.relay.v1.GrantOverride
-	30, // 29: moqom.relay.v1.RoomSnapshot.direct:type_name -> moqom.admin.v1.DirectGrant
-	28, // 30: moqom.relay.v1.Ban.device:type_name -> moqom.admin.v1.Identity
-	26, // 31: moqom.relay.v1.Ban.expires_at:type_name -> google.protobuf.Timestamp
-	31, // 32: moqom.relay.v1.Ban.code:type_name -> moqom.admin.v1.ModerationCode
-	28, // 33: moqom.relay.v1.Mute.identity:type_name -> moqom.admin.v1.Identity
-	32, // 34: moqom.relay.v1.Mute.media:type_name -> moqom.admin.v1.MediaKind
-	26, // 35: moqom.relay.v1.Mute.expires_at:type_name -> google.protobuf.Timestamp
-	28, // 36: moqom.relay.v1.GrantOverride.identity:type_name -> moqom.admin.v1.Identity
-	29, // 37: moqom.relay.v1.GrantOverride.grants:type_name -> moqom.admin.v1.Grants
+	31, // 29: moqom.relay.v1.RoomSnapshot.direct:type_name -> moqom.admin.v1.DirectGrant
+	29, // 30: moqom.relay.v1.Ban.device:type_name -> moqom.admin.v1.Identity
+	27, // 31: moqom.relay.v1.Ban.expires_at:type_name -> google.protobuf.Timestamp
+	32, // 32: moqom.relay.v1.Ban.code:type_name -> moqom.admin.v1.ModerationCode
+	29, // 33: moqom.relay.v1.Mute.identity:type_name -> moqom.admin.v1.Identity
+	33, // 34: moqom.relay.v1.Mute.media:type_name -> moqom.admin.v1.MediaKind
+	27, // 35: moqom.relay.v1.Mute.expires_at:type_name -> google.protobuf.Timestamp
+	29, // 36: moqom.relay.v1.GrantOverride.identity:type_name -> moqom.admin.v1.Identity
+	30, // 37: moqom.relay.v1.GrantOverride.grants:type_name -> moqom.admin.v1.Grants
 	18, // 38: moqom.relay.v1.Directive.eject:type_name -> moqom.relay.v1.Eject
 	19, // 39: moqom.relay.v1.Directive.apply_mute:type_name -> moqom.relay.v1.ApplyMute
 	20, // 40: moqom.relay.v1.Directive.apply_grants:type_name -> moqom.relay.v1.ApplyGrants
 	21, // 41: moqom.relay.v1.Directive.close_room:type_name -> moqom.relay.v1.CloseRoom
 	22, // 42: moqom.relay.v1.Directive.update_ban:type_name -> moqom.relay.v1.UpdateBan
-	33, // 43: moqom.relay.v1.Eject.target:type_name -> moqom.admin.v1.ParticipantRef
-	31, // 44: moqom.relay.v1.Eject.code:type_name -> moqom.admin.v1.ModerationCode
-	33, // 45: moqom.relay.v1.ApplyMute.target:type_name -> moqom.admin.v1.ParticipantRef
-	32, // 46: moqom.relay.v1.ApplyMute.media:type_name -> moqom.admin.v1.MediaKind
-	26, // 47: moqom.relay.v1.ApplyMute.expires_at:type_name -> google.protobuf.Timestamp
-	33, // 48: moqom.relay.v1.ApplyGrants.target:type_name -> moqom.admin.v1.ParticipantRef
-	29, // 49: moqom.relay.v1.ApplyGrants.grants:type_name -> moqom.admin.v1.Grants
-	31, // 50: moqom.relay.v1.CloseRoom.code:type_name -> moqom.admin.v1.ModerationCode
+	34, // 43: moqom.relay.v1.Eject.target:type_name -> moqom.admin.v1.ParticipantRef
+	32, // 44: moqom.relay.v1.Eject.code:type_name -> moqom.admin.v1.ModerationCode
+	34, // 45: moqom.relay.v1.ApplyMute.target:type_name -> moqom.admin.v1.ParticipantRef
+	33, // 46: moqom.relay.v1.ApplyMute.media:type_name -> moqom.admin.v1.MediaKind
+	27, // 47: moqom.relay.v1.ApplyMute.expires_at:type_name -> google.protobuf.Timestamp
+	34, // 48: moqom.relay.v1.ApplyGrants.target:type_name -> moqom.admin.v1.ParticipantRef
+	30, // 49: moqom.relay.v1.ApplyGrants.grants:type_name -> moqom.admin.v1.Grants
+	32, // 50: moqom.relay.v1.CloseRoom.code:type_name -> moqom.admin.v1.ModerationCode
 	14, // 51: moqom.relay.v1.UpdateBan.ban:type_name -> moqom.relay.v1.Ban
-	26, // 52: moqom.relay.v1.Heartbeat.at:type_name -> google.protobuf.Timestamp
-	34, // 53: moqom.relay.v1.VerificationKeys.keys:type_name -> moqom.admin.v1.VerificationKey
-	1,  // 54: moqom.relay.v1.RelayLink.Attach:input_type -> moqom.relay.v1.RelayMessage
-	6,  // 55: moqom.relay.v1.RelayLink.Attach:output_type -> moqom.relay.v1.ControlMessage
-	55, // [55:56] is the sub-list for method output_type
-	54, // [54:55] is the sub-list for method input_type
-	54, // [54:54] is the sub-list for extension type_name
-	54, // [54:54] is the sub-list for extension extendee
-	0,  // [0:54] is the sub-list for field type_name
+	27, // 52: moqom.relay.v1.Heartbeat.at:type_name -> google.protobuf.Timestamp
+	35, // 53: moqom.relay.v1.VerificationKeys.keys:type_name -> moqom.admin.v1.VerificationKey
+	26, // 54: moqom.relay.v1.VerificationKeys.seal_keys:type_name -> moqom.relay.v1.SealKey
+	1,  // 55: moqom.relay.v1.RelayLink.Attach:input_type -> moqom.relay.v1.RelayMessage
+	6,  // 56: moqom.relay.v1.RelayLink.Attach:output_type -> moqom.relay.v1.ControlMessage
+	56, // [56:57] is the sub-list for method output_type
+	55, // [55:56] is the sub-list for method input_type
+	55, // [55:55] is the sub-list for extension type_name
+	55, // [55:55] is the sub-list for extension extendee
+	0,  // [0:55] is the sub-list for field type_name
 }
 
 func init() { file_moqom_relay_v1_relay_proto_init() }
@@ -2481,7 +2587,7 @@ func file_moqom_relay_v1_relay_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_moqom_relay_v1_relay_proto_rawDesc), len(file_moqom_relay_v1_relay_proto_rawDesc)),
 			NumEnums:      1,
-			NumMessages:   25,
+			NumMessages:   26,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

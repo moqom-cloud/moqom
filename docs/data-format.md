@@ -211,7 +211,7 @@ ciphertext, so a relay can read it and cannot change it. Codecs, bitrates,
 decoder configurations, mutes, invitations and everything added later are
 inside the ciphertext.
 
-**Every control entry is signed** by the control plane with [ML-DSA-65](https://csrc.nist.gov/pubs/fips/204/final), as
+**Every control entry is signed** by the control plane with [ML-DSA-87](https://csrc.nist.gov/pubs/fips/204/final), as
 object property `0x7F`: one byte of key ID length, the key ID, then the
 signature over `"moqom room log v1" ‖ 0 ‖ tenant ‖ 0 ‖ room ‖ 0 ‖ entry`.
 Clients apply only entries that verify against the control plane's published

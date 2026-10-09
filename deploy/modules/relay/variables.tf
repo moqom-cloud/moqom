@@ -220,7 +220,7 @@ variable "link_client_key_secret_id" {
 
 variable "ticket_keys_secret_id" {
   type        = string
-  description = "Secret Manager secret holding the fleet's direct-ticket keys, a JWK set of Ed25519 keys. Every relay in a fleet must hold the same set, or a participant on one relay can't verify a peer's ticket from another. Null issues no tickets, which keeps everyone on this tier off direct paths."
+  description = "Secret Manager secret holding the fleet's direct-ticket keys, a JWK set of ML-DSA-87 keys. Every relay in a fleet must hold the same set, or a participant on one relay can't verify a peer's ticket from another. Null issues no tickets, which keeps everyone on this tier off direct paths."
   default     = null
 }
 

@@ -1,0 +1,38 @@
+# The API edge's image: cmd/moqom-api-edge, which terminates post-quantum TLS
+# for api.moqom.cloud in front of the control plane.
+#
+# Same build context as Dockerfile, the parent of moqom/, moqom-go/ and
+# moqom-security/, for the same reason: the module's `replace`s point beside it.
+#
+#   docker build -f moqom/go/Dockerfile.api-edge -t moqom-api-edge .
+
+FROM golang:1.27-bookworm AS build
+
+WORKDIR /src
+
+COPY moqom/go/go.mod moqom/go/go.sum ./moqom/go/
+COPY moqom-go/go.mod moqom-go/go.sum ./moqom-go/
+COPY moqom-security/go ./moqom-security/go
+RUN cd moqom/go && GOWORK=off go mod download
+
+COPY moqom-go ./moqom-go
+COPY moqom/go ./moqom/go
+
+ARG VERSION=dev
+RUN cd moqom/go && \
+    GOWORK=off CGO_ENABLED=0 GOOS=linux \
+    go build -trimpath -ldflags="-s -w -X main.version=${VERSION}" \
+    -o /out/moqom-api-edge ./cmd/moqom-api-edge
+
+# Distroless static ships the CA roots the ACME client needs to reach Let's
+# Encrypt and Cloud Storage.
+FROM gcr.io/distroless/static-debian12:nonroot
+
+COPY --from=build /out/moqom-api-edge /moqom-api-edge
+
+# 8443 is TLS and 8000 is HTTP, behind the load balancer's 443 and 80: a
+# nonroot process cannot bind below 1024. 8080 is the probes.
+EXPOSE 8443 8000 8080
+
+USER nonroot:nonroot
+ENTRYPOINT ["/moqom-api-edge"]

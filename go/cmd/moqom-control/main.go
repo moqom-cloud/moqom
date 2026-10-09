@@ -11,7 +11,6 @@ package main
 
 import (
 	"context"
-	"crypto/ed25519"
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/base64"
@@ -23,6 +22,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"slices"
 	"strconv"
 	"strings"
 	"syscall"
@@ -34,12 +34,15 @@ import (
 
 	"golang.org/x/oauth2/google"
 
+	sectoken "github.com/moqom-cloud/moqom-security/go/token"
+
 	"github.com/moqom-cloud/moqom/go/internal/billing"
 	billingpg "github.com/moqom-cloud/moqom/go/internal/billing/postgres"
 	"github.com/moqom-cloud/moqom/go/internal/control"
 	"github.com/moqom-cloud/moqom/go/internal/listen"
 	"github.com/moqom-cloud/moqom/go/internal/mls"
 	mlspg "github.com/moqom-cloud/moqom/go/internal/mls/postgres"
+	"github.com/moqom-cloud/moqom/go/internal/pqtls"
 	"github.com/moqom-cloud/moqom/go/internal/recording"
 	recordingpg "github.com/moqom-cloud/moqom/go/internal/recording/postgres"
 	"github.com/moqom-cloud/moqom/go/internal/server"
@@ -77,7 +80,11 @@ func run() error {
 	if err != nil {
 		return err
 	}
-	accounts, err := serviceAccounts()
+	accounts, relayTenants, err := serviceAccounts()
+	if err != nil {
+		return err
+	}
+	sealKeys, err := sealKeys()
 	if err != nil {
 		return err
 	}
@@ -108,6 +115,9 @@ func run() error {
 		Issuer:   issuer,
 		Keys:     keys,
 		Clock:    clock,
+
+		SealKeys:    sealKeys,
+		SealTenants: relayTenants,
 	}
 	// The key audit is buffered in memory and written every few seconds; the
 	// last write happens on the way out, after the listeners have drained.
@@ -141,14 +151,17 @@ func run() error {
 	if config.Stun, err = stunEndpoint(); err != nil {
 		return err
 	}
+	if config.AppleSignIn, err = appleSignIn(backing, len(sealKeys) > 0); err != nil {
+		return err
+	}
 	instance, err := server.New(config)
 	if err != nil {
 		return err
 	}
 
-	// Billing rides on the join endpoint's public port, beside /join, so the
-	// deployment keeps exactly one internet-facing listener. Its own address is
-	// for a laptop running without a join endpoint.
+	// Billing rides on the public listener, so the deployment keeps exactly
+	// one internet-facing listener. Its own address is for a laptop running
+	// without one.
 	var billingRoutes http.Handler
 	if payments != nil {
 		billingRoutes = billing.CORS(payments.Handler(accounts), strings.Split(os.Getenv("MOQOM_BILLING_CORS_ORIGINS"), ","))
@@ -245,6 +258,7 @@ func run() error {
 	if config.Overlay != nil {
 		go reconcileRelays(reconciling, instance)
 	}
+	go instance.RunSealRefresh(reconciling)
 
 	// A second listener for the probes, on a port of its own.
 	//
@@ -268,34 +282,34 @@ func run() error {
 	slog.Info("health endpoint listening", "address", probes.Addr,
 		"liveness", server.LivenessPath, "readiness", server.ReadinessPath)
 
-	// A third listener, and the only one a phone ever reaches.
+	// A third listener, and the only one a phone or a customer's relay ever
+	// reaches.
 	//
 	// Off unless an address is given, because it is the one port here that faces
 	// the internet and a surface like that should be something a deployment
-	// turned on rather than something it inherited. See internal/server/join.go
-	// for what it serves and why exposing it does not expose the admin API.
+	// turned on rather than something it inherited. Nothing on it mints a token
+	// from a credential a device carries; see internal/server/public.go.
 	keyRoutes, err := keyDelivery(instance, backing, clock)
 	if err != nil {
 		return err
 	}
-	joins, err := joinEndpoint(instance, billingRoutes, keyRoutes)
+	public, err := publicEndpoint(instance, billingRoutes, keyRoutes)
 	if err != nil {
 		return err
 	}
-	if joins != nil {
+	if public != nil {
 		go func() {
-			err := serveJoins(joins)
+			err := servePublic(public)
 			if err != nil && !errors.Is(err, http.ErrServerClosed) {
 				// Fatal to the feature and not to the process. A control plane
-				// that cannot hand out device tokens is still running rooms for
-				// every session already connected, and killing it would take
-				// those down to fix the ones that cannot start.
-				slog.Error("join endpoint stopped", "error", err)
+				// that cannot deliver keys is still running rooms for every
+				// session already connected, and killing it would take those
+				// down to fix the ones that cannot start.
+				slog.Error("public listener stopped", "error", err)
 			}
 		}()
-		slog.Info("join endpoint listening", "address", joins.Addr,
-			"path", server.JoinPath, "creates rooms", joinCreatesRooms(),
-			"transport", joinTransport())
+		slog.Info("public listener listening", "address", public.Addr,
+			"transport", publicTransport())
 	}
 
 	stopped := make(chan error, 3)
@@ -322,8 +336,8 @@ func run() error {
 		shutdown, done := context.WithTimeout(context.Background(), 5*time.Second)
 		defer done()
 		_ = probes.Shutdown(shutdown)
-		if joins != nil {
-			_ = joins.Shutdown(shutdown)
+		if public != nil {
+			_ = public.Shutdown(shutdown)
 		}
 		if billingAPI != nil {
 			_ = billingAPI.Shutdown(shutdown)
@@ -364,8 +378,8 @@ func env(name, fallback string) string {
 	return fallback
 }
 
-// joinEndpoint builds the device-facing listener, or nil for a deployment that
-// has not asked for one.
+// publicEndpoint builds the internet-facing listener, or nil for a deployment
+// that has not asked for one.
 //
 // Its own port rather than a route on an existing one, because the three
 // listeners here need three different answers to "who may reach this". The gRPC
@@ -379,16 +393,16 @@ func env(name, fallback string) string {
 // which is already issued for this deployment and whose hash the clients already
 // pin. What it must not do is ask for one back. A client CA here would mean
 // every phone needed an issued certificate before it could ask for a token,
-// which is the bootstrapping problem this endpoint exists to solve.
-func joinEndpoint(instance *server.Server, billingRoutes, keyRoutes http.Handler) (*http.Server, error) {
-	address := os.Getenv("MOQOM_CONTROL_JOIN_ADDR")
+// which is the bootstrapping problem a certificate cannot solve.
+func publicEndpoint(instance *server.Server, billingRoutes, keyRoutes http.Handler) (*http.Server, error) {
+	address := os.Getenv("MOQOM_CONTROL_PUBLIC_ADDR")
 	if address == "" {
 		return nil, nil
 	}
 
 	endpoint := &http.Server{
 		Addr:    address,
-		Handler: instance.JoinHandler(joinCreatesRooms()),
+		Handler: instance.PublicHandler(),
 		// Short, because the work behind it is a signature and a row read. A
 		// request that has not finished sending its headers in five seconds is
 		// not a phone on a bad network, it is a socket being held open.
@@ -404,12 +418,14 @@ func joinEndpoint(instance *server.Server, billingRoutes, keyRoutes http.Handler
 	routes := http.NewServeMux()
 	// Annotated so an API key used on these routes is scoped, allowlisted and
 	// audited against the same trusted client address the billing routes use.
-	routes.Handle(server.JoinPath, billing.Annotate(endpoint.Handler))
 	// A child relay's credential for its parent, for relay service accounts
 	// only; see internal/server/relaylinktoken.go.
 	routes.Handle(server.RelayLinkPath, billing.Annotate(endpoint.Handler))
 	// A managed relay VM's overlay identity; see internal/server/overlay.go.
 	routes.Handle(server.RelayEnrollPath, billing.Annotate(endpoint.Handler))
+	// Apple sign-in for apps with no backend; see internal/server/apple.go.
+	routes.Handle(server.AppleSignInPath, billing.Annotate(endpoint.Handler))
+	routes.Handle(server.AppleTokenPath, billing.Annotate(endpoint.Handler))
 	live = billing.Annotate(live)
 	routes.Handle(server.LivePath, live)
 	routes.Handle(server.LiveStreamPath, live)
@@ -425,7 +441,13 @@ func joinEndpoint(instance *server.Server, billingRoutes, keyRoutes http.Handler
 	// port a phone can reach. The sync long poll extends the write timeout for
 	// itself.
 	routes.Handle(mls.PathPrefix, keyRoutes)
-	endpoint.Handler = routes
+	// The host third-party webhooks are sent to, which serves nothing else;
+	// see hooks.go.
+	stripeSenders, err := parseNetworks(os.Getenv("MOQOM_CONTROL_HOOKS_STRIPE_IPS"))
+	if err != nil {
+		return nil, fmt.Errorf("MOQOM_CONTROL_HOOKS_STRIPE_IPS: %w", err)
+	}
+	endpoint.Handler = hooksOnly(os.Getenv("MOQOM_CONTROL_HOOKS_HOST"), stripeSenders, billing.ClientAddress, routes)
 	if billingRoutes != nil {
 		routes.Handle("/v1/", billingRoutes)
 		// Signup makes several Stripe calls in a row, each allowed thirty seconds.
@@ -440,45 +462,33 @@ func joinEndpoint(instance *server.Server, billingRoutes, keyRoutes http.Handler
 		// without it. A credential travelling in a header over plaintext to an
 		// address on the internet is a credential anyone on the path collects,
 		// so the log line has to say which of the two this is -- see
-		// joinTransport, which is printed at startup.
+		// publicTransport, which is printed at startup.
 		return endpoint, nil
 	}
 
 	pair, err := tls.LoadX509KeyPair(certificate, key)
 	if err != nil {
-		return nil, fmt.Errorf("join endpoint certificate: %w", err)
+		return nil, fmt.Errorf("public listener certificate: %w", err)
 	}
-	endpoint.TLSConfig = &tls.Config{
+	endpoint.TLSConfig = pqtls.Public(&tls.Config{
 		Certificates: []tls.Certificate{pair},
-		MinVersion:   tls.VersionTLS12,
-	}
+	})
 	return endpoint, nil
 }
 
-// serveJoins starts the listener with whatever transport it was given.
-func serveJoins(endpoint *http.Server) error {
+// servePublic starts the listener with whatever transport it was given.
+func servePublic(endpoint *http.Server) error {
 	if endpoint.TLSConfig == nil {
 		return endpoint.ListenAndServe()
 	}
 	return endpoint.ListenAndServeTLS("", "")
 }
 
-func joinTransport() string {
+func publicTransport() string {
 	if os.Getenv("MOQOM_CONTROL_TLS_CERT") == "" || os.Getenv("MOQOM_CONTROL_TLS_KEY") == "" {
 		return "plaintext — do not expose"
 	}
 	return "tls, no client certificate"
-}
-
-// joinCreatesRooms decides whether a device naming an unknown room gets one.
-//
-// A knob because it is a real trade: on, somebody types a room name on a phone
-// and it works, which is the whole demo; off, the room has to be created through
-// the admin API first, and a credential that leaks cannot fill the store with
-// rooms. Default off, so a deployment that has not thought about it has the
-// safer half.
-func joinCreatesRooms() bool {
-	return envFlag("MOQOM_CONTROL_JOIN_CREATES_ROOMS")
 }
 
 // envFlag reads a boolean switch. Anything other than an explicit yes is no,
@@ -553,13 +563,10 @@ func transportCredentials() (credentials.TransportCredentials, string, error) {
 		return nil, "", fmt.Errorf("reading the server certificate: %w", err)
 	}
 
-	config := &tls.Config{
+	// Both ends are ours and both are current: TLS 1.3 and ML-KEM-1024 only.
+	config := pqtls.Link(&tls.Config{
 		Certificates: []tls.Certificate{pair},
-		// Both ends are ours and both are current. Nothing here has to talk to a
-		// client too old for 1.3, and saying so removes every downgrade and
-		// renegotiation question at once.
-		MinVersion: tls.VersionTLS13,
-	}
+	})
 	described := "tls"
 
 	if clientCA == "" {
@@ -593,11 +600,10 @@ func transportCredentials() (credentials.TransportCredentials, string, error) {
 //
 // MOQOM_CONTROL_SIGNING_KEYS is a comma-separated list, newest first: the first
 // signs, all of them verify. That ordering is what makes rotation a deployment
-// rather than an outage. Each entry is a base64url 32-byte seed, prefixed
-// `mldsa65:` for an ML-DSA-65 key or `ed25519:` (or nothing, as before the move)
-// for an Ed25519 one. Ed25519 entries only verify, so the first entry must be
-// ML-DSA-65: relays first, then prepend an `mldsa65:` key, then drop the Ed25519
-// entries once the last token they signed has expired.
+// rather than an outage. Each entry is `mldsa87:` and a base64url 32-byte
+// ML-DSA-87 seed. An `mldsa65:`, `ed25519:` or unprefixed entry, from before
+// the move, is skipped with a warning: tokens signed with those are no longer
+// accepted anywhere, and leaving one in the list must not stop the control plane.
 //
 // With none set, one is generated and its public half logged. Useful on a laptop and
 // wrong everywhere else, because tokens stop verifying at every restart -- so it says
@@ -622,8 +628,10 @@ func signingKeys() ([]token.Key, error) {
 			continue
 		}
 		kind, encoded, prefixed := strings.Cut(entry, ":")
-		if !prefixed {
-			kind, encoded = "ed25519", entry
+		if !prefixed || kind == "ed25519" || kind == "mldsa65" {
+			slog.Warn("skipping a signing key from before ML-DSA-87: its tokens are no longer accepted",
+				"kind", kind)
+			continue
 		}
 		seed, err := base64.RawURLEncoding.DecodeString(strings.TrimRight(encoded, "="))
 		if err != nil {
@@ -633,16 +641,10 @@ func signingKeys() ([]token.Key, error) {
 		// key cannot be published twice under different names as if it were two.
 		var key token.Key
 		switch kind {
-		case "mldsa65":
+		case "mldsa87":
 			key, err = token.KeyFromSeed(seed)
-		case "ed25519":
-			if len(seed) != ed25519.SeedSize {
-				return nil, fmt.Errorf("signing key is %d bytes, want a %d-byte seed", len(seed), ed25519.SeedSize)
-			}
-			public, _ := ed25519.NewKeyFromSeed(seed).Public().(ed25519.PublicKey)
-			key, err = token.LegacyEd25519(public)
 		default:
-			return nil, fmt.Errorf("signing key kind %q, want mldsa65 or ed25519", kind)
+			return nil, fmt.Errorf("signing key kind %q, want mldsa87", kind)
 		}
 		if err != nil {
 			return nil, err
@@ -654,7 +656,7 @@ func signingKeys() ([]token.Key, error) {
 	}
 	if !keys[0].CanSign() {
 		return nil, fmt.Errorf("the first MOQOM_CONTROL_SIGNING_KEYS entry is %s, which only verifies: "+
-			"prepend an mldsa65: key to sign with", keys[0].Algorithm)
+			"prepend an mldsa87: key to sign with", keys[0].Algorithm)
 	}
 	return keys, nil
 }
@@ -669,15 +671,18 @@ func signingKeys() ([]token.Key, error) {
 // per-account rate limits all want a table. What is not temporary is that the ceiling
 // is declared here -- an account's grants bound what it can ever mint, which is what
 // keeps a leaked integration key from becoming an owner of every room.
-func serviceAccounts() (server.Accounts, error) {
+//
+// It also returns the tenants that tenant-scoped relay accounts serve, whose
+// tokens are sealed with a key of their own.
+func serviceAccounts() (server.Accounts, []string, error) {
 	path := os.Getenv("MOQOM_CONTROL_ACCOUNTS")
 	if path == "" {
-		return nil, errors.New("MOQOM_CONTROL_ACCOUNTS is required: a path to the service account file")
+		return nil, nil, errors.New("MOQOM_CONTROL_ACCOUNTS is required: a path to the service account file")
 	}
 
 	contents, err := os.ReadFile(path)
 	if err != nil {
-		return nil, fmt.Errorf("reading service accounts: %w", err)
+		return nil, nil, fmt.Errorf("reading service accounts: %w", err)
 	}
 
 	var file struct {
@@ -691,36 +696,46 @@ func serviceAccounts() (server.Accounts, error) {
 			IsOwner    bool     `json:"is_owner"`
 			IsRelay    bool     `json:"is_relay"`
 			IsRecorder bool     `json:"is_recorder"`
+			Pool       string   `json:"pool"`
 		} `json:"accounts"`
 	}
 	if err := json.Unmarshal(contents, &file); err != nil {
-		return nil, fmt.Errorf("parsing service accounts: %w", err)
+		return nil, nil, fmt.Errorf("parsing service accounts: %w", err)
 	}
 
 	byCredential := map[string]server.ServiceAccount{}
+	var relayTenants []string
 	for _, entry := range file.Accounts {
 		if entry.Name == "" || entry.Credential == "" {
-			return nil, errors.New("every service account needs a name and a credential")
+			return nil, nil, errors.New("every service account needs a name and a credential")
+		}
+		// A pool is one tenant's, and its relays are sent only that tenant's
+		// keys and rooms; a relay serving every tenant cannot be in one.
+		if entry.Pool != "" && (!entry.IsRelay || entry.Tenant == "") {
+			return nil, nil, fmt.Errorf("account %s names pool %q but is not a relay scoped to a tenant", entry.Name, entry.Pool)
+		}
+		if entry.IsRelay && entry.Tenant != "" && !slices.Contains(relayTenants, entry.Tenant) {
+			relayTenants = append(relayTenants, entry.Tenant)
 		}
 		grants := control.Grants{IsOwner: entry.IsOwner}
 		if entry.Preset != "" {
 			expanded, ok := control.Preset(entry.Preset).Expand()
 			if !ok {
-				return nil, fmt.Errorf("account %s names an unknown preset %q", entry.Name, entry.Preset)
+				return nil, nil, fmt.Errorf("account %s names an unknown preset %q", entry.Name, entry.Preset)
 			}
 			grants.Moderation = expanded
 		}
 		for _, name := range entry.Moderation {
 			capability, ok := capabilityByName[name]
 			if !ok {
-				return nil, fmt.Errorf("account %s names an unknown capability %q", entry.Name, name)
+				return nil, nil, fmt.Errorf("account %s names an unknown capability %q", entry.Name, name)
 			}
 			grants.Moderation |= capability
 		}
 		for _, name := range entry.Publish {
 			scope, ok := publishByName[name]
 			if !ok {
-				return nil, fmt.Errorf("account %s names an unknown publish scope %q", entry.Name, name)
+				return nil, nil, fmt.Errorf("account %s names an unknown publish scope %q", entry.Name, name)
 			}
 			grants.Publish |= scope
 		}
@@ -730,14 +745,43 @@ func serviceAccounts() (server.Accounts, error) {
 			Grants:     grants,
 			IsRelay:    entry.IsRelay,
 			IsRecorder: entry.IsRecorder,
+			Pool:       entry.Pool,
 		}
 	}
 	if len(byCredential) == 0 {
-		return nil, errors.New("the service account file holds no accounts")
+		return nil, nil, errors.New("the service account file holds no accounts")
 	}
 
 	slog.Info("service accounts loaded", "count", len(byCredential))
-	return server.NewStaticAccounts(byCredential), nil
+	return server.NewStaticAccounts(byCredential), relayTenants, nil
+}
+
+// sealKeys reads MOQOM_CONTROL_SEAL_KEYS, a path to a JWK set of AES-256-GCM
+// keys ({"keys":[{"kty":"oct","alg":"A256GCM","kid":…,"k":…}]}), newest first.
+// The first seals every token minted; all of them open, which is how a key is
+// rotated: prepend the new one, and remove the old one fifteen minutes later.
+//
+// Unset mints tokens that are signed and not sealed, which is a laptop: every
+// relay still verifies them, and anybody holding one can read who it names.
+func sealKeys() ([]sectoken.SealKey, error) {
+	path := os.Getenv("MOQOM_CONTROL_SEAL_KEYS")
+	if path == "" {
+		slog.Warn("no MOQOM_CONTROL_SEAL_KEYS, so tokens are signed and not sealed")
+		return nil, nil
+	}
+	contents, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("reading seal keys: %w", err)
+	}
+	keys, err := sectoken.ParseSealKeySet(contents)
+	if err != nil {
+		return nil, fmt.Errorf("MOQOM_CONTROL_SEAL_KEYS: %w", err)
+	}
+	if len(keys) == 0 {
+		return nil, errors.New("MOQOM_CONTROL_SEAL_KEYS holds no keys")
+	}
+	slog.Info("tokens are sealed", "keys", len(keys), "sealing with", keys[0].KeyID())
+	return keys, nil
 }
 
 // billingService builds prepaid billing, or nil when MOQOM_BILLING is not "on".
@@ -747,7 +791,7 @@ func serviceAccounts() (server.Accounts, error) {
 // tenant in credit, and customers authenticate with the API keys billing issues.
 //
 //	MOQOM_BILLING=on
-//	MOQOM_BILLING_ADDR           a listener of its own; default is the join endpoint's port
+//	MOQOM_BILLING_ADDR           a listener of its own; default is the public listener's port
 //	MOQOM_BILLING_PUBLIC_URL     where checkout returns to (https://moqom.cloud)
 //	MOQOM_BILLING_CORS_ORIGINS   comma-separated origins allowed to call it from a browser
 //	MOQOM_STRIPE_SECRET_KEY      file path, not the key: environments leak
@@ -760,7 +804,19 @@ func serviceAccounts() (server.Accounts, error) {
 //	MOQOM_BILLING_EGRESS_PER_GIB negotiated egress cost in micro-dollars per GiB
 //	MOQOM_BILLING_DIRECT_FREE_MINUTES      direct participant-minutes free per tenant per month (default 1000)
 //	MOQOM_BILLING_DIRECT_FEE_PER_1000_MIN  direct fee in micro-dollars per 1,000 minutes past that (default 500000)
+//	MOQOM_BILLING_TRUSTED_PROXIES          comma-separated CIDRs whose last X-Forwarded-For entry is the
+//	                                       client: the cluster's pod range, where cmd/moqom-api-edge runs.
+//	                                       Read even with billing off, since the other public routes'
+//	                                       key allowlists use the same address.
 func billingService(backing store.Store) (*billing.Service, error) {
+	if raw := strings.TrimSpace(os.Getenv("MOQOM_BILLING_TRUSTED_PROXIES")); raw != "" {
+		proxies, err := billing.ParseNetworks(strings.Split(raw, ","))
+		if err != nil {
+			return nil, fmt.Errorf("MOQOM_BILLING_TRUSTED_PROXIES: %w", err)
+		}
+		billing.TrustProxies(proxies)
+		slog.Info("trusting X-Forwarded-For from", "proxies", raw)
+	}
 	if os.Getenv("MOQOM_BILLING") != "on" {
 		return nil, nil
 	}

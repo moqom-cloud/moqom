@@ -1,0 +1,189 @@
+// Private relay networks: relays that carry one tenant's traffic and nobody
+// else's.
+//
+// A pool is a set of relays that belongs to one tenant. Making the tenant
+// private confines it to the pool, and the confinement is not configuration
+// alone: every token minted for a private tenant names the pool in a sealed
+// `pool` claim, a pool relay refuses every token that does not name its pool,
+// and a shared relay refuses every token that names one. So an app pointed at
+// the wrong relay fails closed rather than falling back, and there is no path
+// from a private tenant onto the shared fleet -- not when the pool is full, and
+// not when it has no relays yet.
+//
+// Owner-only. A pool decides where every byte of the tenant's media goes and
+// what the tenant is billed for, which is not something a key issued to mint
+// tokens or read dashboards should be able to change.
+
+syntax = "proto3";
+
+package moqom.admin.v1;
+
+import "google/protobuf/timestamp.proto";
+
+option go_package = "github.com/moqom-cloud/moqom-go/admin/adminpb;adminpb";
+
+service RelayPools {
+  // Create a pool. MOQOM starts the dedicated relays in each region and the
+  // pool is `PROVISIONING` until every region has as many as it asked for; a
+  // `self_hosted` pool is `READY` at once and takes the relays enrolled into
+  // it.
+  rpc CreateRelayPool(CreateRelayPoolRequest) returns (RelayPool);
+
+  // One pool, with each relay's address and state.
+  rpc GetRelayPool(GetRelayPoolRequest) returns (RelayPool);
+
+  // Every pool in the tenant, deleted ones included, oldest first.
+  rpc ListRelayPools(ListRelayPoolsRequest) returns (ListRelayPoolsResponse);
+
+  // Set one region's relay count, adding the region if the pool has none
+  // there. Removed relays drain rather than stop.
+  rpc ResizeRelayPool(ResizeRelayPoolRequest) returns (RelayPool);
+
+  // Delete a pool. Refused while the tenant's network is private on it:
+  // return the tenant to the shared fleet, or move it to another pool, first.
+  rpc DeleteRelayPool(DeleteRelayPoolRequest) returns (RelayPool);
+
+  // How the pool is reached.
+  rpc SetRelayPoolAccess(SetRelayPoolAccessRequest) returns (RelayPool);
+
+  // Confine the tenant to a pool, or return it to the shared fleet. Takes
+  // effect at the next token minted; tokens already minted keep the network
+  // they were minted for until they expire.
+  rpc SetTenantNetwork(SetTenantNetworkRequest) returns (TenantNetwork);
+
+  rpc GetTenantNetwork(GetTenantNetworkRequest) returns (TenantNetwork);
+}
+
+// How a pool is reached.
+enum PoolAccess {
+  POOL_ACCESS_UNSPECIFIED = 0;
+  // Static public addresses, only this tenant's.
+  POOL_ACCESS_PUBLIC = 1;
+  // No public address. A Private Service Connect attachment the tenant
+  // creates an endpoint for in its own VPC.
+  POOL_ACCESS_PRIVATE_SERVICE_CONNECT = 2;
+  // No public address. Reachable only over the zero-trust overlay, by devices
+  // with an overlay identity the tenant enrolled.
+  POOL_ACCESS_OVERLAY = 3;
+}
+
+enum PoolState {
+  POOL_STATE_UNSPECIFIED = 0;
+  // Relays are starting. Tokens are not minted for a private tenant on a pool
+  // in this state, because there is nowhere for them to go.
+  POOL_STATE_PROVISIONING = 1;
+  POOL_STATE_READY = 2;
+  // Relays are finishing their sessions and taking no new ones.
+  POOL_STATE_DRAINING = 3;
+  // Gone. Kept so the record of what the tenant ran, and was billed for,
+  // outlives the relays.
+  POOL_STATE_DELETED = 4;
+}
+
+enum PoolRelayState {
+  POOL_RELAY_STATE_UNSPECIFIED = 0;
+  POOL_RELAY_STATE_STARTING = 1;
+  // Attached to the control plane and taking sessions.
+  POOL_RELAY_STATE_READY = 2;
+  POOL_RELAY_STATE_DRAINING = 3;
+}
+
+// How many relays a pool runs in one region.
+message PoolRegion {
+  // A MOQOM Cloud region, by its Google Cloud name: `us-west1`.
+  string region = 1;
+
+  // The relays to run. At least two for a pool MOQOM runs, so one can restart
+  // without dropping the region; at least one for a self-hosted pool.
+  uint32 relays = 2;
+
+  // The most relays autoscaling may add up to. Zero means `relays`, which is
+  // autoscaling off.
+  uint32 max_relays = 3;
+}
+
+// One relay in a pool.
+message PoolRelay {
+  // Where clients dial it, `host:port`. Static for the life of the pool.
+  string address = 1;
+  string region = 2;
+  PoolRelayState state = 3;
+}
+
+message RelayPool {
+  string id = 1;
+  string tenant = 2;
+  string name = 3;
+  repeated PoolRegion regions = 4;
+  // The tenant runs the relays, enrolled with `CreateRelayEnrollment`, rather
+  // than MOQOM.
+  bool self_hosted = 5;
+  PoolAccess access = 6;
+  PoolState state = 7;
+  repeated PoolRelay relays = 8;
+  google.protobuf.Timestamp created_at = 9;
+}
+
+message CreateRelayPoolRequest {
+  string tenant = 1;
+  // The tenant's label for the pool.
+  string name = 2;
+  // Required for a pool MOQOM runs. Optional for a self-hosted one, whose
+  // relays are wherever the tenant enrols them.
+  repeated PoolRegion regions = 3;
+  bool self_hosted = 4;
+}
+
+message GetRelayPoolRequest {
+  string tenant = 1;
+  string pool_id = 2;
+}
+
+message ListRelayPoolsRequest {
+  string tenant = 1;
+}
+
+message ListRelayPoolsResponse {
+  repeated RelayPool pools = 1;
+}
+
+message ResizeRelayPoolRequest {
+  string tenant = 1;
+  string pool_id = 2;
+  PoolRegion region = 3;
+}
+
+message DeleteRelayPoolRequest {
+  string tenant = 1;
+  string pool_id = 2;
+}
+
+message SetRelayPoolAccessRequest {
+  string tenant = 1;
+  string pool_id = 2;
+  PoolAccess access = 3;
+}
+
+enum NetworkMode {
+  NETWORK_MODE_UNSPECIFIED = 0;
+  // MOQOM Cloud's shared relay fleet. The default.
+  NETWORK_MODE_SHARED = 1;
+  // The tenant's own pool, and nothing else.
+  NETWORK_MODE_PRIVATE = 2;
+}
+
+// Which relays a tenant's tokens are good for.
+message TenantNetwork {
+  // The pool, for `PRIVATE`. Empty for `SHARED`.
+  string pool = 1;
+  NetworkMode mode = 2;
+}
+
+message SetTenantNetworkRequest {
+  string tenant = 1;
+  TenantNetwork network = 2;
+}
+
+message GetTenantNetworkRequest {
+  string tenant = 1;
+}

@@ -35,7 +35,7 @@ func TestAudience(t *testing.T) {
 	}
 
 	if _, err := service.JoinAudience(ctx, viewer, key[:32], nil, 0); !errors.Is(err, mls.ErrInvalid) {
-		t.Fatalf("a key that is not ML-KEM-768: %v", err)
+		t.Fatalf("a key that is not ML-KEM-1024: %v", err)
 	}
 	envelope, err := service.JoinAudience(ctx, viewer, key, nil, 0)
 	if err != nil || envelope != nil {
@@ -132,7 +132,7 @@ func TestAudienceHTTP(t *testing.T) {
 	}
 
 	groupID := []byte("group-1")
-	if code, _ := call("POST", "/mls/v1/group", "alice/a", map[string]any{"groupId": groupID, "cipherSuite": 0xf0aa}); code != http.StatusCreated {
+	if code, _ := call("POST", "/mls/v1/group", "alice/a", map[string]any{"groupId": groupID, "cipherSuite": 0xf0ac}); code != http.StatusCreated {
 		t.Fatalf("found: %d", code)
 	}
 	key := kemKey(t, mls.SuiteMLDSA)

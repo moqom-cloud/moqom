@@ -16,6 +16,7 @@ import (
 	"time"
 
 	adminpb "github.com/moqom-cloud/moqom-go/admin/adminpb"
+	sectoken "github.com/moqom-cloud/moqom-security/go/token"
 	"github.com/moqom-cloud/moqom/go/internal/control"
 	"github.com/moqom-cloud/moqom/go/internal/recorderpb"
 	"github.com/moqom-cloud/moqom/go/internal/store"
@@ -35,9 +36,9 @@ type Config struct {
 	// every token it verifies.
 	Issuer string
 
-	// Keys are the token keys. The first mints and must be ML-DSA-65; all of
-	// them verify, which is how Ed25519 keys stay readable until the last token
-	// they signed has expired.
+	// Keys are the token keys. The first mints; all of them verify, which is
+	// how a retired key stays readable until the last token it signed has
+	// expired.
 	//
 	// Ordered rather than a map so rotation is a deployment that prepends a key:
 	// the new one starts signing, the old one keeps verifying, and it is removed
@@ -91,6 +92,19 @@ type Config struct {
 	// address to offer. Unset, devices offer their own interface addresses
 	// unless an application names a STUN server itself.
 	Stun *control.StunEndpoint
+
+	// SealKeys seal every token minted, newest first; the first seals and all
+	// of them open. Empty mints tokens that are signed and not sealed.
+	SealKeys []sectoken.SealKey
+
+	// SealTenants are tenants known from configuration to run relays of their
+	// own, whose tokens are sealed with their own key. Tenants with customer
+	// relay enrolments are found without being listed.
+	SealTenants []string
+
+	// AppleSignIn turns on Apple sign-in hosted on the public listener. It
+	// needs SealKeys, which seal the enrollments it hands out.
+	AppleSignIn *AppleSignInConfig
 }
 
 // AudienceFilter decides whether a participant counts towards a room's totals.
@@ -136,6 +150,8 @@ type core struct {
 	recording *recordingCore
 	overlay   *OverlayConfig
 	stun      *control.StunEndpoint
+	sealer    *sealer
+	apple     *appleCore
 }
 
 // now is the wall-clock estimate, for the many call sites that only need one.
@@ -187,7 +203,7 @@ func New(config Config) (*Server, error) {
 	}
 
 	if len(config.Keys) == 0 || !config.Keys[0].CanSign() {
-		return nil, fmt.Errorf("the first token key must be an %s key that signs", token.AlgorithmMLDSA65)
+		return nil, fmt.Errorf("the first token key must be an %s key that signs", token.AlgorithmMLDSA87)
 	}
 	if config.Overlay != nil && config.Overlay.Identities == nil {
 		return nil, errors.New("the overlay needs its management API")
@@ -197,12 +213,26 @@ func New(config Config) (*Server, error) {
 		return nil, err
 	}
 
+	var sources []SealTenantSource
+	if config.Overlay != nil && config.Overlay.Enrollments != nil {
+		sources = append(sources, config.Overlay.Enrollments)
+	}
+	sources = append(sources, poolTenants{config.Store})
+	sealing := newSealer(config.SealKeys, config.SealTenants, sources, config.Clock.Now().At)
+	if config.AppleSignIn != nil && !sealing.enabled() {
+		return nil, errors.New("server: Apple sign-in needs seal keys")
+	}
+	verifier := token.NewVerifier(config.Issuer, config.Keys)
+	if sealing.enabled() {
+		verifier.SetSealKeys(sealing.current().shared, sealing.unsealedUntil())
+	}
+
 	return &Server{core: &core{
 		store:            config.Store,
 		accounts:         config.Accounts,
 		issuer:           config.Issuer,
 		keys:             config.Keys,
-		verifier:         token.NewVerifier(config.Issuer, config.Keys),
+		verifier:         verifier,
 		relays:           newRelayRegistry(),
 		bus:              newEventBus(),
 		dispatchTimeout:  config.DispatchTimeout,
@@ -215,8 +245,14 @@ func New(config Config) (*Server, error) {
 		recording:        recordings,
 		overlay:          config.Overlay,
 		stun:             config.Stun,
+		sealer:           sealing,
+		apple:            newAppleCore(config.AppleSignIn, func() time.Time { return config.Clock.Now().At }),
 	}}, nil
 }
+
+// RunSealRefresh keeps the tenants with relays of their own current, and the
+// keys every relay holds with them, until ctx ends.
+func (s *Server) RunSealRefresh(ctx context.Context) { s.core.runSealRefresh(ctx) }
 
 // Register attaches every service to a gRPC server.
 func (s *Server) Register(grpcServer grpc.ServiceRegistrar) {
@@ -224,6 +260,7 @@ func (s *Server) Register(grpcServer grpc.ServiceRegistrar) {
 	adminpb.RegisterModerationServer(grpcServer, &moderationService{core: s.core})
 	adminpb.RegisterTokensServer(grpcServer, &tokensService{core: s.core})
 	adminpb.RegisterEventsServer(grpcServer, &eventsService{core: s.core})
+	adminpb.RegisterRelayPoolsServer(grpcServer, &relayPoolsService{core: s.core})
 	registerRelayLink(grpcServer, s.core)
 	adminpb.RegisterRecordingsServer(grpcServer, &recordingsService{core: s.core})
 	if s.core.recording != nil {

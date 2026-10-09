@@ -7,8 +7,10 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/netip"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/moqom-cloud/moqom/go/internal/server"
@@ -280,24 +282,63 @@ var googleFrontEnds = []*net.IPNet{
 	{IP: net.IPv4(130, 211, 0, 0), Mask: net.CIDRMask(22, 32)},
 }
 
+// trustedProxies are the source ranges of MOQOM's own API edge
+// (cmd/moqom-api-edge), set once at startup by TrustProxies. Only the pod
+// range belongs here: anything that can open a connection from it can name
+// any client it likes.
+var trustedProxies atomic.Pointer[[]netip.Prefix]
+
+// TrustProxies believes the last X-Forwarded-For entry from these ranges,
+// which is where the edge writes the address it accepted the connection from.
+func TrustProxies(networks []netip.Prefix) { trustedProxies.Store(&networks) }
+
+func fromTrustedProxy(peer net.IP) bool {
+	networks := trustedProxies.Load()
+	if networks == nil {
+		return false
+	}
+	address, ok := netip.AddrFromSlice(peer)
+	if !ok {
+		return false
+	}
+	address = address.Unmap()
+	for _, network := range *networks {
+		if network.Contains(address) {
+			return true
+		}
+	}
+	return false
+}
+
 // clientAddress is who a per-address limit counts against. Behind Google's
 // balancer the peer is a proxy shared by every caller, and the balancer
 // appends "<client>, <balancer>" to whatever X-Forwarded-For the client sent,
-// so the second entry from the end is the one the client cannot forge.
+// so the second entry from the end is the one the client cannot forge. Behind
+// MOQOM's own edge it is the last entry, which the edge sets.
+func ClientAddress(r *http.Request) string { return clientAddress(r) }
+
 func clientAddress(r *http.Request) string {
 	host, _, err := net.SplitHostPort(r.RemoteAddr)
 	if err != nil {
 		host = r.RemoteAddr
 	}
 	peer := net.ParseIP(host)
-	if peer == nil || !(googleFrontEnds[0].Contains(peer) || googleFrontEnds[1].Contains(peer)) {
+	if peer == nil {
+		return host
+	}
+	from := 2
+	switch {
+	case fromTrustedProxy(peer):
+		from = 1
+	case googleFrontEnds[0].Contains(peer) || googleFrontEnds[1].Contains(peer):
+	default:
 		return host
 	}
 	hops := strings.Split(strings.Join(r.Header.Values("X-Forwarded-For"), ","), ",")
-	if len(hops) < 2 {
+	if len(hops) < from {
 		return host
 	}
-	if client := net.ParseIP(strings.TrimSpace(hops[len(hops)-2])); client != nil {
+	if client := net.ParseIP(strings.TrimSpace(hops[len(hops)-from])); client != nil {
 		return client.String()
 	}
 	return host

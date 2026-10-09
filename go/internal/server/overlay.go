@@ -155,6 +155,7 @@ func customerAccount(enrollment byoc.Enrollment) ServiceAccount {
 		IsRelay:    true,
 		RelayID:    id,
 		Enrollment: enrollment.ID,
+		Pool:       enrollment.Pool,
 	}
 }
 
@@ -193,6 +194,15 @@ func (e *enrollmentsService) Create(ctx context.Context, request *byocpb.CreateR
 	if name == "" || len(name) > 100 {
 		return nil, status.Error(codes.InvalidArgument, "a relay needs a name of at most 100 characters")
 	}
+	if request.GetPool() != "" {
+		pool, err := e.core.store.GetRelayPool(ctx, request.GetTenant(), request.GetPool())
+		if err != nil {
+			return nil, statusFor(err)
+		}
+		if !pool.Live() {
+			return nil, status.Errorf(codes.FailedPrecondition, "pool %s has been deleted", pool.ID)
+		}
+	}
 	settings := e.core.overlay
 	id := e.core.ids()
 	identityName := settings.CustomerPrefix + request.GetTenant() + "-" + id
@@ -207,7 +217,7 @@ func (e *enrollmentsService) Create(ctx context.Context, request *byocpb.CreateR
 		return nil, status.Error(codes.Unavailable, "could not create the overlay identity")
 	}
 	enrollment := byoc.Enrollment{
-		ID: id, Tenant: request.GetTenant(), Name: name,
+		ID: id, Tenant: request.GetTenant(), Name: name, Pool: request.GetPool(),
 		IdentityID: created.ID, IdentityName: created.Name,
 		CreatedBy: account.Name, CreatedAt: e.core.now(),
 	}
@@ -273,7 +283,7 @@ func (e *enrollmentsService) Revoke(ctx context.Context, request *byocpb.RevokeR
 
 func enrollmentToProto(e byoc.Enrollment) *byocpb.Enrollment {
 	wire := &byocpb.Enrollment{
-		Id: e.ID, Tenant: e.Tenant, Name: e.Name, IdentityName: e.IdentityName,
+		Id: e.ID, Tenant: e.Tenant, Name: e.Name, IdentityName: e.IdentityName, Pool: e.Pool,
 		CreatedBy: e.CreatedBy, CreatedAt: timestamppb.New(e.CreatedAt),
 	}
 	if !e.RevokedAt.IsZero() {
@@ -303,7 +313,7 @@ type RelayEnrollResponse struct {
 // is named after the instance, so an operator dials a relay by its VM name.
 // Asking again replaces the identity, which is how a VM that lost its
 // enrolled file, or a recreated VM reusing a name, gets a fresh one.
-func (s *Server) relayEnroll(limiter *joinLimiter) http.HandlerFunc {
+func (s *Server) relayEnroll(limiter *publicLimiter) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		settings := s.core.overlay
 		if settings == nil || settings.Instances == nil {

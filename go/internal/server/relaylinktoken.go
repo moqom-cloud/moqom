@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
-	"strings"
 	"time"
 
 	"github.com/moqom-cloud/moqom/go/internal/control"
@@ -23,8 +22,8 @@ import (
 //
 // The grant is worth not paying for, which decides where it can come from: a
 // signed claim, minted here and nowhere else, for relay service accounts only.
-// Not on the admin API, where a customer's backend could ask for it; not on
-// /join, which refuses relay credentials outright. And it is read-only: no
+// Not on the admin API, where a customer's backend could ask for it. And it is
+// read-only: no
 // publish rights and no powers, which the relay enforces as well by refusing a
 // link claim beside either, so holding one buys reading a room and nothing more.
 
@@ -67,7 +66,7 @@ const relayLinkLifetime = 5 * time.Minute
 // ceiling than a join backend.
 const howManyLinksPerMinute = 600
 
-func (s *Server) relayLink(limiter *joinLimiter) http.HandlerFunc {
+func (s *Server) relayLink(limiter *publicLimiter) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			http.Error(w, "POST a JSON body", http.StatusMethodNotAllowed)
@@ -84,7 +83,7 @@ func (s *Server) relayLink(limiter *joinLimiter) http.HandlerFunc {
 		}
 
 		var asked RelayLinkRequest
-		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, howBigAJoinRequestMayBe)).
+		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, howBigAPublicRequestMayBe)).
 			Decode(&asked); err != nil {
 			http.Error(w, "could not read the request", http.StatusBadRequest)
 			return
@@ -105,7 +104,7 @@ func (s *Server) relayLink(limiter *joinLimiter) http.HandlerFunc {
 			http.Error(w, "this relay account is scoped to another tenant", http.StatusForbidden)
 			return
 		}
-		device, err := boundDevice(JoinRequest{Device: asked.Device, Key: asked.Key})
+		device, err := boundDevice(asked.Key, asked.Device)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
@@ -132,20 +131,37 @@ func (s *Server) relayLink(limiter *joinLimiter) http.HandlerFunc {
 			Confirmation: token.Confirmation{Thumbprint: device},
 			Grant:        token.Scope{Room: asked.Room, Relay: true},
 		}
-		minted, expires, err := token.Mint(s.core.keys[0], claims, relayLinkLifetime, s.core.now())
+		// A private tenant's rooms stay inside its pool: a link is minted
+		// only for a relay of the pool, so a shared relay cannot read one by
+		// presenting a link a pool parent would accept.
+		relays, err := s.core.confine(r.Context(), &claims)
+		switch {
+		case errors.Is(err, control.ErrPoolNotReady):
+			http.Error(w, err.Error(), http.StatusConflict)
+			return
+		case err != nil:
+			http.Error(w, "could not read the tenant's network", http.StatusServiceUnavailable)
+			return
+		case claims.Pool != account.Pool:
+			http.Error(w, "this tenant's rooms are served only by its private relay pool", http.StatusForbidden)
+			return
+		}
+		minted, expires, err := s.core.mint(claims, relayLinkLifetime)
 		if err != nil {
 			http.Error(w, "could not mint the link credential", http.StatusInternalServerError)
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
 		w.Header().Set("Cache-Control", "no-store")
-		_ = json.NewEncoder(w).Encode(JoinResponse{
+		_ = json.NewEncoder(w).Encode(TokenResponse{
 			Token:     minted,
 			ExpiresAt: expires,
 			Room:      asked.Room,
 			Username:  RelaySubject,
+			Tenant:    asked.Tenant,
 			KeyID:     s.core.keys[0].ID,
 			Device:    device,
+			Relays:    relays,
 		})
 	}
 }
@@ -153,12 +169,8 @@ func (s *Server) relayLink(limiter *joinLimiter) http.HandlerFunc {
 // relayAccountFor reads the bearer credential off a request and accepts only a
 // relay service account.
 func (s *Server) relayAccountFor(r *http.Request) (ServiceAccount, error) {
-	header := r.Header.Get("Authorization")
-	credential := strings.TrimSpace(strings.TrimPrefix(header, "Bearer "))
-	if credential == header {
-		credential = strings.TrimSpace(strings.TrimPrefix(header, "bearer "))
-	}
-	if credential == "" || credential == header {
+	credential, ok := bearer(r)
+	if !ok {
 		return ServiceAccount{}, ErrNoSuchAccount
 	}
 	account, err := s.core.accounts.Lookup(r.Context(), credential)

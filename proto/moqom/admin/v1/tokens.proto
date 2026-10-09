@@ -29,6 +29,15 @@ service Tokens {
   // new key is published here, tokens start being signed with it, and the old
   // one is withdrawn once every token it signed has expired.
   rpc ListVerificationKeys(ListVerificationKeysRequest) returns (ListVerificationKeysResponse);
+
+  // Turn on, change or turn off Apple sign-in hosted by MOQOM for a tenant.
+  //
+  // For apps with no backend: the control plane's public listener checks App
+  // Attest and Sign in with Apple and mints for the rooms named here, with the
+  // publish rights named here and never moderation or ownership. It never
+  // creates a room. An owner key only.
+  rpc SetAppleSignIn(SetAppleSignInRequest) returns (AppleSignIn);
+  rpc GetAppleSignIn(GetAppleSignInRequest) returns (AppleSignIn);
 }
 
 message MintClientTokenRequest {
@@ -114,6 +123,12 @@ message MintClientTokenResponse {
   // What the token's room allows of direct paths, for the backend to hand to
   // the client with the token. Unset for a token that names no room.
   DirectGrant direct = 5;
+
+  // The relays a token for a private tenant must dial, as `host:port`: its
+  // relay pool's. Empty for the shared fleet, which is reached by its usual
+  // name. Every other relay refuses the token with `wrong_pool`, so a client
+  // given these dials one of them and nothing else.
+  repeated string relays = 6;
 }
 
 // How a token is tied to the holder.
@@ -139,9 +154,8 @@ message ListVerificationKeysRequest {
 message VerificationKey {
   string key_id = 1;
 
-  // The algorithm, as a JOSE identifier. `EdDSA` over Ed25519 today: small
-  // signatures, fast verification on a relay's hot path, and no curve
-  // parameters to get wrong.
+  // The algorithm, as a JOSE identifier: `ML-DSA-87`, the only one tokens
+  // are signed or verified with.
   string algorithm = 2;
 
   // The public key as a JWK.
@@ -160,4 +174,44 @@ message ListVerificationKeysResponse {
   // What binding this deployment issues. A client that wants to refuse bearer
   // tokens can find out here rather than by inspecting one.
   TokenBinding binding = 2;
+}
+
+message SetAppleSignInRequest {
+  string tenant = 1;
+
+  // The Apple team the apps are signed by. App Attest keys attested for any
+  // other team are refused.
+  string team_id = 2;
+
+  // The apps. Apple's identity token must name one as its audience. Empty
+  // turns Apple sign-in off for the tenant.
+  repeated string bundle_ids = 3;
+
+  // The existing rooms a signed-in person may be minted for.
+  repeated string rooms = 4;
+
+  // What they may publish there.
+  repeated PublishScope publish = 5;
+
+  // Accept App Attest keys from Apple's development environment, for builds
+  // run from Xcode. Leave off in production.
+  bool allow_development = 6;
+}
+
+message GetAppleSignInRequest {
+  string tenant = 1;
+}
+
+message AppleSignIn {
+  string tenant = 1;
+  string team_id = 2;
+  repeated string bundle_ids = 3;
+  repeated string rooms = 4;
+  repeated PublishScope publish = 5;
+  bool allow_development = 6;
+  google.protobuf.Timestamp updated_at = 7;
+
+  // Where devices sign in: the control plane's public listener.
+  string sign_in_path = 8;
+  string token_path = 9;
 }

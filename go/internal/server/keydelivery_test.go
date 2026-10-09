@@ -10,7 +10,6 @@ import (
 
 	"github.com/moqom-cloud/moqom/go/internal/control"
 	"github.com/moqom-cloud/moqom/go/internal/mls"
-	"github.com/moqom-cloud/moqom/go/internal/server"
 )
 
 // The delivery service is reached with the token a device joined with, and
@@ -18,12 +17,7 @@ import (
 func TestKeyDeliveryIsAuthenticatedByTheParticipantToken(t *testing.T) {
 	h := newHarness(t)
 	h.createRoom(t, "alice")
-	code, joined, body := ask(t, h.server.JoinHandler(false), joinKey, server.JoinRequest{
-		Tenant: tenant, Username: "alice", Room: roomName, Key: &deviceKey,
-	})
-	if code != http.StatusOK {
-		t.Fatalf("joining: %d %s", code, body)
-	}
+	joined := h.mintFor(t, "alice", roomName)
 
 	store := mls.NewMemory()
 	handler := h.server.KeyDeliveryHandler(mls.NewService(store, h.now))
@@ -40,14 +34,14 @@ func TestKeyDeliveryIsAuthenticatedByTheParticipantToken(t *testing.T) {
 	for name, credential := range map[string]string{
 		"no credential":          "",
 		"a backend key":          joinKey,
-		"a token with a bad sig": joined.Token[:len(joined.Token)-4] + "AAAA",
+		"a token with a bad sig": joined.GetToken()[:len(joined.GetToken())-4] + "AAAA",
 	} {
 		if got := sync(credential); got.Code != http.StatusUnauthorized {
 			t.Errorf("%s: %d, want 401", name, got.Code)
 		}
 	}
 
-	got := sync(joined.Token)
+	got := sync(joined.GetToken())
 	if got.Code != http.StatusOK {
 		t.Fatalf("sync with the participant token: %d %s", got.Code, got.Body)
 	}
@@ -69,8 +63,8 @@ func TestKeyDeliveryIsAuthenticatedByTheParticipantToken(t *testing.T) {
 
 	// A token that may publish is a member, not audience: it founds the group.
 	found := httptest.NewRequest(http.MethodPost, mls.PathPrefix+"group",
-		strings.NewReader(`{"groupId":"Z3JvdXAtMQ==","cipherSuite":61610}`))
-	found.Header.Set("Authorization", "Bearer "+joined.Token)
+		strings.NewReader(`{"groupId":"Z3JvdXAtMQ==","cipherSuite":61612}`))
+	found.Header.Set("Authorization", "Bearer "+joined.GetToken())
 	founded := httptest.NewRecorder()
 	handler.ServeHTTP(founded, found)
 	if founded.Code != http.StatusCreated {
@@ -85,7 +79,7 @@ func TestKeyDeliveryIsAuthenticatedByTheParticipantToken(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if got := sync(joined.Token); got.Code != http.StatusUnauthorized {
+	if got := sync(joined.GetToken()); got.Code != http.StatusUnauthorized {
 		t.Fatalf("a banned device synced: %d", got.Code)
 	}
 }

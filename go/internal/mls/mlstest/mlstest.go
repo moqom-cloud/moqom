@@ -82,10 +82,10 @@ func Run(t *testing.T, open func(t *testing.T) mls.Store) {
 		if _, err := store.Group(ctx, room); !errors.Is(err, mls.ErrNotFound) {
 			t.Fatalf("empty room has a group: %v", err)
 		}
-		if _, err := store.CreateGroup(ctx, room, []byte("g1"), mls.SuiteXWing, "alice/a", at); err != nil {
+		if _, err := store.CreateGroup(ctx, room, []byte("g1"), mls.SuiteMLDSA, "alice/a", at); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := store.CreateGroup(ctx, room, []byte("g2"), mls.SuiteXWing, "bob/b", at); !errors.Is(err, mls.ErrConflict) {
+		if _, err := store.CreateGroup(ctx, room, []byte("g2"), mls.SuiteMLDSA, "bob/b", at); !errors.Is(err, mls.ErrConflict) {
 			t.Fatalf("second founder: %v", err)
 		}
 
@@ -128,33 +128,35 @@ func Run(t *testing.T, open func(t *testing.T) mls.Store) {
 
 	t.Run("a group keeps the cipher suite it was founded in", func(t *testing.T) {
 		store := open(t)
-		if _, err := store.CreateGroup(ctx, room, []byte("g"), mls.SuiteX25519, "alice/a", at); err != nil {
+		// A store holds whatever suite it is given: rows from before the
+		// AES-128 suites were removed say 0x0001, and the service drops them.
+		legacy := mls.CipherSuite(0x0001)
+		if _, err := store.CreateGroup(ctx, room, []byte("g"), legacy, "alice/a", at); err != nil {
 			t.Fatal(err)
 		}
 		if _, err := store.AppendCommit(ctx, room, mls.Commit{GroupID: []byte("g"), Sender: "alice/a", Data: []byte("c")}, at); err != nil {
 			t.Fatal(err)
 		}
 		group, err := store.Group(ctx, room)
-		if err != nil || group.CipherSuite != mls.SuiteX25519 || group.Epoch != 1 {
+		if err != nil || group.CipherSuite != legacy || group.Epoch != 1 {
 			t.Fatalf("after a commit: %+v, %v", group, err)
 		}
-		// Refounded after a drop, in the other suite: the new group's suite,
-		// not the old one's.
+		// Refounded after a drop: the new group's suite, not the old one's.
 		if err := store.DropGroup(ctx, room, []byte("g")); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := store.CreateGroup(ctx, room, []byte("h"), mls.SuiteXWing, "bob/b", at); err != nil {
+		if _, err := store.CreateGroup(ctx, room, []byte("h"), mls.SuiteMLDSA, "bob/b", at); err != nil {
 			t.Fatal(err)
 		}
 		group, err = store.Group(ctx, room)
-		if err != nil || group.CipherSuite != mls.SuiteXWing {
+		if err != nil || group.CipherSuite != mls.SuiteMLDSA {
 			t.Fatalf("refounded: %+v, %v", group, err)
 		}
 	})
 
 	t.Run("a Welcome is only for the devices it names", func(t *testing.T) {
 		store := open(t)
-		_, _ = store.CreateGroup(ctx, room, []byte("g"), mls.SuiteXWing, "alice/a", at)
+		_, _ = store.CreateGroup(ctx, room, []byte("g"), mls.SuiteMLDSA, "alice/a", at)
 		_, err := store.AppendCommit(ctx, room, mls.Commit{
 			GroupID: []byte("g"), Epoch: 0, Sender: "alice/a", Data: []byte("c"),
 			Welcome: []byte("w"), Joiners: []string{"bob/b"},
@@ -182,7 +184,7 @@ func Run(t *testing.T, open func(t *testing.T) mls.Store) {
 
 	t.Run("a removed and re-added device ends up a member", func(t *testing.T) {
 		store := open(t)
-		_, _ = store.CreateGroup(ctx, room, []byte("g"), mls.SuiteXWing, "alice/a", at)
+		_, _ = store.CreateGroup(ctx, room, []byte("g"), mls.SuiteMLDSA, "alice/a", at)
 		_ = store.Touch(ctx, room, "bob/b", at)
 		_, err := store.AppendCommit(ctx, room, mls.Commit{
 			GroupID: []byte("g"), Epoch: 0, Sender: "alice/a", Data: []byte("c"),
@@ -201,7 +203,7 @@ func Run(t *testing.T, open func(t *testing.T) mls.Store) {
 
 	t.Run("dropping a group keeps sequence numbers rising and clears membership", func(t *testing.T) {
 		store := open(t)
-		_, _ = store.CreateGroup(ctx, room, []byte("g"), mls.SuiteXWing, "alice/a", at)
+		_, _ = store.CreateGroup(ctx, room, []byte("g"), mls.SuiteMLDSA, "alice/a", at)
 		_, _ = store.AppendCommit(ctx, room, mls.Commit{GroupID: []byte("g"), Sender: "alice/a", Data: []byte("c")}, at)
 		if err := store.DropGroup(ctx, room, []byte("not this one")); err != nil {
 			t.Fatal(err)
@@ -221,7 +223,7 @@ func Run(t *testing.T, open func(t *testing.T) mls.Store) {
 				t.Fatalf("%s still a member", entry.Device)
 			}
 		}
-		_, _ = store.CreateGroup(ctx, room, []byte("h"), mls.SuiteXWing, "bob/b", at)
+		_, _ = store.CreateGroup(ctx, room, []byte("h"), mls.SuiteMLDSA, "bob/b", at)
 		seq, err := store.AppendCommit(ctx, room, mls.Commit{GroupID: []byte("h"), Sender: "bob/b", Data: []byte("d")}, at)
 		if err != nil || seq <= 1 {
 			t.Fatalf("sequence after a drop: %d, %v", seq, err)
@@ -234,7 +236,7 @@ func Run(t *testing.T, open func(t *testing.T) mls.Store) {
 
 	t.Run("old messages are pruned and the cursor still rises", func(t *testing.T) {
 		store := open(t)
-		_, _ = store.CreateGroup(ctx, room, []byte("g"), mls.SuiteXWing, "alice/a", at)
+		_, _ = store.CreateGroup(ctx, room, []byte("g"), mls.SuiteMLDSA, "alice/a", at)
 		_, _ = store.AppendCommit(ctx, room, mls.Commit{GroupID: []byte("g"), Sender: "alice/a", Data: []byte("old")}, at)
 		later := at.Add(mls.MessageRetention + time.Second)
 		seq, err := store.AppendCommit(ctx, room, mls.Commit{

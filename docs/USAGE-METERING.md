@@ -227,8 +227,8 @@ link to watch unmetered.
   or has ended (410). The relay refuses an `rly` token with no room, and on a link it refuses
   `PUBLISH_NAMESPACE` and any read outside that room, backstage included, with `UNAUTHORIZED`.
 - **Bound to a key.** The minter requires `key` (a public [JWK](https://www.rfc-editor.org/rfc/rfc7517)) and binds the token to it with
-  `cnf.jkt`. The edge generates a P-256 key at startup, held only in memory, and on every link
-  presents an ES256 `MOQT-POP` proof with the token, made the same way as a client's
+  `cnf.jkt`. The edge generates an ML-DSA-87 key at startup, held only in memory, and on every link
+  presents an ML-DSA-87 `MOQT-POP` proof with the token, made the same way as a client's
   (`moqom-client`'s device key). It binds `ath` (the token's hash), `rel` (the SHA-256 of the
   parent's leaf certificate, which the edge reads off its own TLS connection) and a `jti` that
   the parent accepts only once. A parent with `MOQOM_RELAY_POSSESSION=required` refuses a link

@@ -15,6 +15,7 @@ import (
 	"context"
 	"encoding/base64"
 	"fmt"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -45,6 +46,8 @@ type Store struct {
 	byKey        map[idempotencyKey]int
 	events       []store.Event
 	sequences    map[roomKey]uint64
+	pools        map[string]control.RelayPool
+	networks     map[string]control.TenantNetwork
 
 	now func() time.Time
 	ids func() string
@@ -81,6 +84,8 @@ func New(now func() time.Time, ids func() string) *Store {
 		watchdogs:    map[roomKey][]control.Watchdog{},
 		byKey:        map[idempotencyKey]int{},
 		sequences:    map[roomKey]uint64{},
+		pools:        map[string]control.RelayPool{},
+		networks:     map[string]control.TenantNetwork{},
 		now:          now,
 		ids:          ids,
 	}
@@ -664,6 +669,124 @@ func (s *Store) ListEvents(_ context.Context, query store.EventQuery) ([]store.E
 		matched = matched[:query.Limit]
 	}
 	return matched, nil
+}
+
+// Relay pools.
+
+func (s *Store) CreateRelayPool(_ context.Context, pool control.RelayPool) (control.RelayPool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if _, exists := s.pools[pool.ID]; exists {
+		return control.RelayPool{}, fmt.Errorf("%w: relay pool %s", control.ErrAlreadyExists, pool.ID)
+	}
+	if pool.CreatedAt.IsZero() {
+		pool.CreatedAt = s.now()
+	}
+	pool.Regions = slices.Clone(pool.Regions)
+	pool.Relays = nil
+	s.pools[pool.ID] = pool
+	return clonePool(pool), nil
+}
+
+func (s *Store) GetRelayPool(_ context.Context, tenant, id string) (control.RelayPool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	pool, ok := s.pools[id]
+	if !ok || pool.Tenant != tenant {
+		return control.RelayPool{}, fmt.Errorf("%w: relay pool %s", store.ErrNotFound, id)
+	}
+	return clonePool(pool), nil
+}
+
+func (s *Store) ListRelayPools(_ context.Context, tenant string) ([]control.RelayPool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	pools := []control.RelayPool{}
+	for _, pool := range s.pools {
+		if pool.Tenant == tenant {
+			pools = append(pools, clonePool(pool))
+		}
+	}
+	sort.Slice(pools, func(i, j int) bool {
+		if !pools[i].CreatedAt.Equal(pools[j].CreatedAt) {
+			return pools[i].CreatedAt.Before(pools[j].CreatedAt)
+		}
+		return pools[i].ID < pools[j].ID
+	})
+	return pools, nil
+}
+
+func (s *Store) SaveRelayPool(_ context.Context, pool control.RelayPool) (control.RelayPool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	existing, ok := s.pools[pool.ID]
+	if !ok || existing.Tenant != pool.Tenant {
+		return control.RelayPool{}, fmt.Errorf("%w: relay pool %s", store.ErrNotFound, pool.ID)
+	}
+	existing.Name = pool.Name
+	existing.Regions = slices.Clone(pool.Regions)
+	existing.SelfHosted = pool.SelfHosted
+	existing.Access = pool.Access
+	existing.State = pool.State
+	s.pools[pool.ID] = existing
+	return clonePool(existing), nil
+}
+
+func (s *Store) PutPoolRelay(_ context.Context, tenant, id string, relay control.PoolRelay) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	pool, ok := s.pools[id]
+	if !ok || pool.Tenant != tenant {
+		return fmt.Errorf("%w: relay pool %s", store.ErrNotFound, id)
+	}
+	if relay.SeenAt.IsZero() {
+		relay.SeenAt = s.now()
+	}
+	relays := slices.DeleteFunc(slices.Clone(pool.Relays), func(existing control.PoolRelay) bool {
+		return existing.RelayID == relay.RelayID
+	})
+	pool.Relays = append(relays, relay)
+	sort.Slice(pool.Relays, func(i, j int) bool { return pool.Relays[i].RelayID < pool.Relays[j].RelayID })
+	s.pools[id] = pool
+	return nil
+}
+
+func (s *Store) PoolTenants(_ context.Context) ([]string, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	tenants := []string{}
+	for _, pool := range s.pools {
+		if pool.Live() && !slices.Contains(tenants, pool.Tenant) {
+			tenants = append(tenants, pool.Tenant)
+		}
+	}
+	sort.Strings(tenants)
+	return tenants, nil
+}
+
+func (s *Store) GetTenantNetwork(_ context.Context, tenant string) (control.TenantNetwork, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	network, ok := s.networks[tenant]
+	if !ok {
+		network = control.TenantNetwork{Tenant: tenant}
+	}
+	return network.Normalised(), nil
+}
+
+func (s *Store) SetTenantNetwork(_ context.Context, network control.TenantNetwork) (control.TenantNetwork, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	network = network.Normalised()
+	s.networks[network.Tenant] = network
+	return network, nil
+}
+
+func clonePool(pool control.RelayPool) control.RelayPool {
+	pool.Regions = slices.Clone(pool.Regions)
+	pool.Relays = slices.Clone(pool.Relays)
+	return pool
 }
 
 // Page tokens are opaque and encoded, so nobody builds one by hand and then
