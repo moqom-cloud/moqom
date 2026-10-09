@@ -8,7 +8,7 @@ Draft. We have contacted legal counsel to review this.
 | --- | --- | --- |
 | Tenant account: email, name, Stripe customer ID, API key hashes, ledger | **Controller** | Elliott Wave LLC |
 | Room participants: identity strings, room metadata, IP addresses, presence, moderation actions | **Processor** | The tenant who created the room |
-| Media (audio/video) | **Processor**, transient: relayed and not stored. With SFrame, MOQOM cannot read it | The tenant |
+| Media (audio/video) | **Processor**, transient: relayed and not stored. With [SFrame](https://www.rfc-editor.org/rfc/rfc9605), MOQOM cannot read it | The tenant |
 | Website visitors | Controller | Elliott Wave LLC. The sites use no third-party analytics, advertising trackers or font CDNs (per the site's draft privacy notice) |
 
 Elliott Wave LLC is established in the United States with no EU or UK
@@ -47,7 +47,7 @@ UK personal data is therefore transferred to the US.
 - **Onward to subprocessors**: Google Cloud and Stripe each offer SCCs in their
   own data processing terms. See [SUBPROCESSORS.md](SUBPROCESSORS.md).
 - **Transfer impact assessment**: Planned. Relevant facts: media is not stored;
-  with SFrame it is unreadable to MOQOM; stored personal data is minimal and IPs
+  with [SFrame](https://www.rfc-editor.org/rfc/rfc9605) it is unreadable to MOQOM; stored personal data is minimal and IPs
   are anonymised after 30 days.
 
 ## Records of processing (Art. 30)
@@ -74,7 +74,7 @@ UK personal data is therefore transferred to the US.
 | Categories of processing | Relaying real-time media; room and participant management; moderation (kick, ban, mute); usage metering |
 | Categories of data | Participant identity strings chosen by the tenant, room names and metadata, IP addresses (anonymised after 30 days), presence state, moderation actions, media in transit (not stored) |
 | Transfers | US; SCCs in the customer DPA |
-| Security measures | As above; SFrame end-to-end encryption available in the Swift SDK |
+| Security measures | As above; [SFrame](https://www.rfc-editor.org/rfc/rfc9605) end-to-end encryption available in the Swift SDK |
 
 ## Data subject rights
 

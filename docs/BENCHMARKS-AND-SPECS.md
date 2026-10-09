@@ -15,7 +15,7 @@ file. Measured on builds from August 2026; rerun before quoting externally.
 | Glass-to-glass latency, p95 | **70 ms** | same run, every frame delivered |
 | Fan-out, one relay, no loss | **6,000 subscribers at 5.46 Gbit/s** | 4 vCPU (GCP n2-standard-4), 4 sockets, 3.88 cores busy |
 | Relay efficiency | **~1.3–1.4 Gbit/s egress per vCPU** | consistent across synthetic and real-video runs |
-| SFrame cost | **54 µs** per 1080p keyframe | AES-256-GCM on device, against a 33 ms frame budget |
+| [SFrame](https://www.rfc-editor.org/rfc/rfc9605) cost | **54 µs** per 1080p keyframe | AES-256-GCM on device, against a 33 ms frame budget |
 
 \* Built to scale: a Rust media plane and a Go control plane, each scaling out
 horizontally. Measured in lab; pending load test (Oct 2026).
@@ -240,10 +240,10 @@ and both backend SDKs against the real Go control plane.
 
 | | |
 |---|---|
-| Protocol | IETF `draft-ietf-moq-transport-19`, own implementation in Rust and in Swift, written independently |
+| Protocol | IETF [`draft-ietf-moq-transport-19`](https://datatracker.ietf.org/doc/html/draft-ietf-moq-transport-19), own implementation in Rust and in Swift, written independently |
 | Control messages | All 18 in draft-19 |
 | Data plane | Object datagrams, subgroup streams, fetch streams with gap markers |
-| Carriers | Raw QUIC and WebTransport (HTTP/3) on **one UDP port** |
+| Carriers | Raw [QUIC](https://www.rfc-editor.org/rfc/rfc9000) and [WebTransport](https://datatracker.ietf.org/doc/draft-ietf-webtrans-http3/) (HTTP/3) on **one UDP port** |
 | QUIC stack | `quinn`, vendored unmodified and verified by `vendor/verify-quinn.sh` |
 | Relay forwarding | Subgroup streams. Datagram forwarding not yet carried |
 | Scale-out | `SO_REUSEPORT` sockets (`MOQOM_RELAY_SHARDS`); eBPF connection-ID steering in progress |
@@ -259,25 +259,25 @@ and both backend SDKs against the real Go control plane.
 | Unsubscribe | Last viewer leaving stops the upstream pull |
 | Publisher stop | `PUBLISH_DONE` to every viewer |
 | Quotas | Per device and per user, every session, subscription, announcement, watch and fetch |
-| Observability | Separate admin port (`MOQOM_RELAY_ADMIN_ADDR`, off by default): Prometheus, JSON snapshots of sessions, rooms and tracks, liveness and readiness, QUIC RTT, cwnd and loss, track-silence detection |
+| Observability | Separate admin port (`MOQOM_RELAY_ADMIN_ADDR`, off by default): Prometheus, JSON snapshots of sessions, rooms and tracks, liveness and readiness, [QUIC](https://www.rfc-editor.org/rfc/rfc9000) RTT, cwnd and loss, track-silence detection |
 
 ### Security
 
 | | |
 |---|---|
-| Transport | TLS 1.3, inherent in QUIC, on every media connection |
+| Transport | [TLS 1.3](https://www.rfc-editor.org/rfc/rfc8446), inherent in [QUIC](https://www.rfc-editor.org/rfc/rfc9000), on every media connection |
 | Tokens | ML-DSA-65-signed, tenant, room, grants and expiry checked against every namespace a request names |
 | Session lifetime | Bounded by the token; renewed in-session via `REQUEST_UPDATE`, no reconnect |
 | Device binding | `cnf.jkt` thumbprint of a Secure Enclave key; ES256 proof per check, bound to the relay's certificate, single use; required on every relay, and the control plane mints no token without it |
 | Revocation | A ban closes the open connection, not only the next join |
-| Media encryption | SFrame (RFC 9605) over MOQT, required in every room with no way to turn it off; AES-256-GCM (0x0005) by default, AES-128-GCM supported; payload-only, so relay caching and priority survive. Catalogs sealed by their publisher; the control log ML-DSA-65-signed |
-| E2EE key management | MLS (RFC 9420, simplified group) per room in `MLS_192_MLKEM768_AES256GCM_SHA384_MLDSA65` from draft-ietf-mls-pq-ciphersuites (private-use `0xF0AA`, the only founding suite), built in MoqomKit and the control plane; viewers outside the group are sealed each epoch's key over ML-KEM-768 (sender keys), rotated every five minutes while there is an audience |
+| Media encryption | SFrame ([RFC 9605](https://www.rfc-editor.org/rfc/rfc9605)) over MOQT, required in every room with no way to turn it off; AES-256-GCM (0x0005) by default, AES-128-GCM supported; payload-only, so relay caching and priority survive. Catalogs sealed by their publisher; the control log ML-DSA-65-signed |
+| E2EE key management | MLS ([RFC 9420](https://www.rfc-editor.org/rfc/rfc9420), simplified group) per room in `MLS_192_MLKEM768_AES256GCM_SHA384_MLDSA65` from [draft-ietf-mls-pq-ciphersuites](https://datatracker.ietf.org/doc/draft-ietf-mls-pq-ciphersuites/) (private-use `0xF0AA`, the only founding suite), built in MoqomKit and the control plane; viewers outside the group are sealed each epoch's key over [ML-KEM-768](https://csrc.nist.gov/pubs/fips/203/final) (sender keys), rotated every five minutes while there is an audience |
 
 ### Platforms
 
 | SDK | Floor | Notes |
 |---|---|---|
-| `MoqomKit` (Swift) | iOS, macOS, visionOS, tvOS 26; Swift 6 strict concurrency | Network.framework QUIC, VideoToolbox |
+| `MoqomKit` (Swift) | iOS, macOS, visionOS, tvOS 26; Swift 6 strict concurrency | Network.framework [QUIC](https://www.rfc-editor.org/rfc/rfc9000), VideoToolbox |
 | `moqom-go` | Go 1.23+ | gRPC admin API |
 | `moqom-rust` | Toolchain pinned in repo | gRPC admin API, no QUIC dependency |
 | `moqom-android` | — | Scoped, work ongoing, release planned October 2026 |
@@ -303,15 +303,15 @@ how fast, never how.
 
 ### Why MOQOM
 
-- **One protocol for calls and broadcast.** Built on the IETF's Media over QUIC Transport
-  (targeting `draft-ietf-moq-transport-19`): the stream that carries a two-person call also
+- **One protocol for calls and broadcast.** Built on the IETF's Media over [QUIC](https://www.rfc-editor.org/rfc/rfc9000) Transport
+  (targeting [`draft-ietf-moq-transport-19`](https://datatracker.ietf.org/doc/html/draft-ietf-moq-transport-19)): the stream that carries a two-person call also
   reaches an audience of thousands, without moving to a second product.
 - **Conversational latency, measured end to end.** 56–57 ms median glass-to-glass at 720p30
   (p95 70 ms), camera to screen on two iPhones.\*
 - **Broadcast scale on modest hardware.** 6,000 viewers on one 4-vCPU relay with zero loss
   (5.46 Gbit/s), the largest size tested.\*
-- **Encryption that costs almost nothing.** Per-frame end-to-end encryption (SFrame,
-  AES-256-GCM) at 54 µs per 1080p keyframe.\* TLS 1.3 on every connection, always.
+- **Encryption that costs almost nothing.** Per-frame end-to-end encryption ([SFrame](https://www.rfc-editor.org/rfc/rfc9605),
+  AES-256-GCM) at 54 µs per 1080p keyframe.\* [TLS 1.3](https://www.rfc-editor.org/rfc/rfc8446) on every connection, always.
 - **Tokens bound to the device.** A join token copied off one device does not work on another.
 - **Your relays or ours.** Self-host relays and pay only the platform fee.
 - **Prepaid, cost-plus, capped.** Capped 1¢ below Agora's list price per 1,000 minutes at every
@@ -328,7 +328,7 @@ how fast, never how.
 - **No independent audit yet.**
 - **Load test pending.** Every number above is from the lab; the load test is scheduled for
   October 2026.
-- **The protocol is still a draft.** Media over QUIC Transport is an IETF Internet-Draft, not
+- **The protocol is still a draft.** Media over [QUIC](https://www.rfc-editor.org/rfc/rfc9000) Transport is an IETF Internet-Draft, not
   yet an RFC. MOQOM targets draft-19; the IETF published draft-22 on 1 Oct 2026.
 - **End-to-end encryption is opt-in per room**, on Apple platforms today.
 
@@ -358,7 +358,7 @@ test.
 
 | | List price, video | Media encryption | Protocol |
 | --- | --- | --- | --- |
-| **MOQOM** | Prepaid cost-plus, capped per 1,000 min at $3.98 HD, $8.98 Full HD, $15.98 2K, $35.98 2K+ | TLS 1.3 always; SFrame E2EE (AES-256-GCM) opt-in per room | IETF MoQ Transport, draft-19 |
+| **MOQOM** | Prepaid cost-plus, capped per 1,000 min at $3.98 HD, $8.98 Full HD, $15.98 2K, $35.98 2K+ | [TLS 1.3](https://www.rfc-editor.org/rfc/rfc8446) always; [SFrame](https://www.rfc-editor.org/rfc/rfc9605) E2EE (AES-256-GCM) opt-in per room | IETF [MoQ Transport](https://datatracker.ietf.org/doc/draft-ietf-moq-transport/), draft-19 |
 | **Agora** | Per 1,000 min: $3.99 HD, $8.99 Full HD, $15.99 2K, $35.99 2K+; broadcast audience $1.99–$17.99 | Built-in media encryption opt-in; E2EE in beta (web, by request) | Agora SD-RTN™ |
 | **Tencent RTC** | Per 1,000 min: $3.99 HD, $8.99 Full HD, $15.99 2K, $35.99 4K; live audience $2.00–$18.00 | Built-in transport encryption by default; private payload encryption opt-in, not available with cloud recording or CDN relay | UDP-based Tencent protocol; WebRTC on web |
 | **AWS IVS Real-Time** | $0.072 per participant-hour (about $1.20 per 1,000 participant-minutes), North America, first 10,000 h, any resolution | Not stated on pages cited | Not stated on pages cited |
@@ -433,4 +433,4 @@ Cloudflare; no partnership is signed.
 - Cloudflare MoQ relay API, draft-14 and draft-16: https://blog.cloudflare.com/moq-relays/
 - Cloudflare Realtime: https://developers.cloudflare.com/realtime/
 - Cloudflare RealtimeKit: https://developers.cloudflare.com/realtime/realtimekit/
-- IETF MoQ Transport: https://datatracker.ietf.org/doc/draft-ietf-moq-transport/
+- IETF [MoQ Transport](https://datatracker.ietf.org/doc/draft-ietf-moq-transport/): https://datatracker.ietf.org/doc/draft-ietf-moq-transport/

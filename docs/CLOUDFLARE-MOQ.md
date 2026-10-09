@@ -6,7 +6,7 @@ as a beta.
 
 Use Cloudflare when you want free global distribution and can do without the features that only
 MOQOM's relays have (listed under [Limits](#limits)). Use MOQOM's relays, cloud or self-hosted,
-for everything else. They run the latest MoQ Transport draft and the full feature set.
+for everything else. They run the latest [MoQ Transport](https://datatracker.ietf.org/doc/draft-ietf-moq-transport/) draft and the full feature set.
 
 **In one minute:**
 
@@ -57,29 +57,29 @@ flowchart LR
 ```
 
 - **Media** goes between the app and Cloudflare's relay. MOQOM never sees it.
-- **Encryption.** With end-to-end encryption on, the SDK encrypts each payload with SFrame before
+- **Encryption.** With end-to-end encryption on, the SDK encrypts each payload with [SFrame](https://www.rfc-editor.org/rfc/rfc9605) before
   it leaves the device. Cloudflare relays ciphertext it can't read. Room keys come from MOQOM's
-  MLS key service, as they do on MOQOM relays.
-- **Draft version.** Cloudflare's production relays speak MoQ Transport draft-16; MOQOM's speak
+  [MLS](https://www.rfc-editor.org/rfc/rfc9420) key service, as they do on MOQOM relays.
+- **Draft version.** Cloudflare's production relays speak [MoQ Transport](https://datatracker.ietf.org/doc/draft-ietf-moq-transport/) draft-16; MOQOM's speak
   draft-22 and draft-19. The SDK uses a separate wire profile for Cloudflare and picks it from
   the endpoint. Nothing in your app changes between drafts.
 - **Authentication.** Cloudflare authenticates with its own tokens, not MOQOM's. Your backend
   creates them with your Cloudflare account. The SDK sends the token as the MoQ connection path
-  (`/<token>`), which is how Cloudflare expects it over raw QUIC. MOQOM's admission tickets and
+  (`/<token>`), which is how Cloudflare expects it over raw [QUIC](https://www.rfc-editor.org/rfc/rfc9000). MOQOM's admission tickets and
   device proofs are not sent to Cloudflare.
 - **Billing.** MOQOM can't see Cloudflare's traffic, so your backend reports usage to MOQOM, the
   same way a self-hosted relay does. See [Billing](#billing).
 
 ### Endpoints
 
-| Relay | Draft | ALPN over raw QUIC | MOQOM support |
+| Relay | Draft | ALPN over raw [QUIC](https://www.rfc-editor.org/rfc/rfc9000) | MOQOM support |
 | --- | --- | --- | --- |
 | `draft-16.cloudflare.mediaoverquic.com:443` | 16 | `moqt-16` | Yes |
 | `draft-14.cloudflare.mediaoverquic.com:443` | 14, no authentication | `moq-00` | No (legacy) |
 | `draft-18-interop.cloudflare.mediaoverquic.com:443` | 18, interop testing only | `moqt-18` | Added when Cloudflare deploys draft-18 globally |
 
 The ALPNs were checked with a QUIC handshake on 6 October 2026. Raw QUIC works, so apps don't
-need WebTransport to reach Cloudflare.
+need [WebTransport](https://datatracker.ietf.org/doc/draft-ietf-webtrans-http3/) to reach Cloudflare.
 
 ## Setup
 
@@ -123,7 +123,7 @@ Cloudflare's limits, as of October 2026:
   logs. Cloudflare plans in-band tokens (C4M, Privacy Pass) later.
 
 For end-to-end encrypted rooms, the app also needs a MOQOM participant token. It authenticates
-the device to MOQOM's MLS key service, as it does on MOQOM relays. So the app holds two tokens:
+the device to MOQOM's [MLS](https://www.rfc-editor.org/rfc/rfc9420) key service, as it does on MOQOM relays. So the app holds two tokens:
 Cloudflare's for media, and MOQOM's for room keys.
 
 ### 3. Point the SDK at Cloudflare
@@ -238,7 +238,7 @@ exist only on MOQOM's relays:
 | Feature | On Cloudflare | Why |
 | --- | --- | --- |
 | Publish and subscribe, by track or namespace | Yes | |
-| End-to-end encryption (SFrame, MLS room keys) | Yes | Payload-only; keys come from MOQOM |
+| End-to-end encryption ([SFrame](https://www.rfc-editor.org/rfc/rfc9605), [MLS](https://www.rfc-editor.org/rfc/rfc9420) room keys) | Yes | Payload-only; keys come from MOQOM |
 | Catch-up and late join from cache | No | No FETCH |
 | Pause, resume, priority changes on a subscription | No | No REQUEST_UPDATE |
 | Graceful relay migration | No | No GOAWAY |

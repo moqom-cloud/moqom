@@ -88,9 +88,9 @@ out the private core and asks for a small open engine that can only send.
 
 `moqom-publish` contains:
 
-- MoQ transport publisher over QUIC (quinn), draft-19 control messages.
+- MoQ transport publisher over [QUIC](https://www.rfc-editor.org/rfc/rfc9000) (quinn), draft-19 control messages.
 - Catalog publication and track naming.
-- SFrame encryption of every object, with keys from the join endpoint.
+- [SFrame](https://www.rfc-editor.org/rfc/rfc9605) encryption of every object, with keys from the join endpoint.
 - Token handling: device key, join, renewal.
 - Plain congestion control from quinn.
 

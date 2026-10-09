@@ -9,7 +9,7 @@ Only these are reachable from the internet:
 
 | Port | Service | Why public |
 | --- | --- | --- |
-| UDP/443 | Relays (QUIC, MOQT), us-west1 and us-west2 | The product |
+| UDP/443 | Relays ([QUIC](https://www.rfc-editor.org/rfc/rfc9000), MOQT), us-west1 and us-west2 | The product |
 | TCP/443 | HTTPS load balancer for the sites (and the API when it is fronted) | Websites |
 | TCP/8444 | Control-plane join endpoint (35.197.36.243) | Devices obtain credentials before they have any; requires no client certificate by design, bounded by device accounts |
 
@@ -36,20 +36,20 @@ on SSH, RDP, Postgres, MySQL, the Kubernetes API, kubelet or etcd ports.
 
 ## Transport encryption
 
-- QUIC (relays, clients): TLS 1.3 by protocol.
+- [QUIC](https://www.rfc-editor.org/rfc/rfc9000) (relays, clients): [TLS 1.3](https://www.rfc-editor.org/rfc/rfc8446) by protocol.
 - RelayLink (relay ↔ control plane gRPC): mutual TLS with a deployment CA,
   plus a per-relay bearer credential. No plaintext fallback.
 - Join endpoint: server TLS (same certificate), no client certificate.
 - HTTPS LB: MODERN profile, TLS ≥1.2.
 - Cloud SQL: Cloud SQL connector with IAM authentication; `ENCRYPTED_ONLY`.
-- Media: SFrame end-to-end where the client enables it (Swift SDK). Relays
+- Media: [SFrame](https://www.rfc-editor.org/rfc/rfc9605) end-to-end where the client enables it (Swift SDK). Relays
   forward ciphertext and hold no media keys.
 
 ### Post-quantum key exchange
 
 - Every TLS configuration in the Rust engine puts the hybrid group
-  X25519MLKEM768 (ML-KEM-768 combined with X25519) first, with plain X25519
-  second. That covers the relay listener (raw QUIC and WebTransport), the
+  [X25519MLKEM768](https://datatracker.ietf.org/doc/draft-ietf-tls-ecdhe-mlkem/) ([ML-KEM-768](https://csrc.nist.gov/pubs/fips/203/final) combined with X25519) first, with plain X25519
+  second. That covers the relay listener (raw [QUIC](https://www.rfc-editor.org/rfc/rfc9000) and [WebTransport](https://datatracker.ietf.org/doc/draft-ietf-webtrans-http3/)), the
   client SDK, relay-to-relay links, direct peer-to-peer paths, and the
   relay's and recorder's gRPC. For the relay listener and both ends of a
   direct path, tests complete real handshakes and check that the hybrid
@@ -68,7 +68,7 @@ on SSH, RDP, Postgres, MySQL, the Kubernetes API, kubelet or etcd ports.
   secp256r1, secp384r1, secp521r1` (after a GREASE value) to a rustls server
   with the engine's settings, so the hybrid group is chosen. Not yet checked
   on an iPhone, and not covered by automated tests.
-- End-to-end media keys come from MLS, not TLS. MoqomKit's default MLS suite
+- End-to-end media keys come from [MLS](https://www.rfc-editor.org/rfc/rfc9420), not TLS. MoqomKit's default MLS suite
   for new rooms uses the X-Wing hybrid KEM (ML-KEM-768 with X25519); see
   `docs/E2EE-KEY-MANAGEMENT.md` for what that does and doesn't
   cover.

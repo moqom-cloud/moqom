@@ -1058,9 +1058,9 @@ This is a *stronger* claim than a blanket one because it survives scrutiny, and 
 
 ### Key management needs two constructions, not one
 
-This is the technical consequence of the above and the largest gap in the plan as written. SFrame encrypts objects; it says nothing about key distribution, and the answer differs by group size.
+This is the technical consequence of the above and the largest gap in the plan as written. [SFrame](https://www.rfc-editor.org/rfc/rfc9605) encrypts objects; it says nothing about key distribution, and the answer differs by group size.
 
-- **Small rooms use MLS (RFC 9420).** Forward secrecy, post-compromise security, and membership changes are exactly what it is designed for. It realistically scales to thousands, which comfortably covers backstage, private rooms, and paid sessions.
+- **Small rooms use MLS ([RFC 9420](https://www.rfc-editor.org/rfc/rfc9420)).** Forward secrecy, post-compromise security, and membership changes are exactly what it is designed for. It realistically scales to thousands, which comfortably covers backstage, private rooms, and paid sessions.
 - **Anything larger uses a sender-key model.** The publisher generates a track key and the control plane distributes it to authorized subscribers, rotating on membership change where the membership is small enough for rotation to mean anything. Weaker post-compromise guarantees, and that limitation gets documented rather than obscured.
 
 Two constructions, one SFrame layer beneath both, and a clear rule about which applies where.
@@ -1116,7 +1116,7 @@ The cheap answer is already in the plan. Both platforms can push a room out as R
 
 ### Their tokens keep working
 
-Server-side integration is often harder to schedule than client work, because it sits in someone else's release train. So **accept their token format at the edge and translate internally**: a LiveKit JWT with video grants maps cleanly onto our scopes, and their existing token-minting service keeps running untouched. Same for emitting LiveKit-shaped webhooks, so their backend does not change on day one either. Migrate the token service later, as its own project, with nothing else depending on the timing.
+Server-side integration is often harder to schedule than client work, because it sits in someone else's release train. So **accept their token format at the edge and translate internally**: a LiveKit [JWT](https://www.rfc-editor.org/rfc/rfc7519) with video grants maps cleanly onto our scopes, and their existing token-minting service keeps running untouched. Same for emitting LiveKit-shaped webhooks, so their backend does not change on day one either. Migrate the token service later, as its own project, with nothing else depending on the timing.
 
 **The uid problem is worth calling out** because it is the exact pain that motivated string identity here. Agora identifies users by 32-bit integer, so every Agora customer maintains an int-to-username mapping somewhere. During migration we accept the integer and derive a deterministic string identity from it, then let them cut over to real usernames on their own schedule. The thing we designed to avoid becomes a compatibility shim with a defined end date.
 
@@ -1136,7 +1136,7 @@ Mostly one thing, and it lands in Phase 3. **The SDK API cannot be designed as a
 
 ## Protocol target
 
-Implement **`draft-ietf-moq-transport-19`** (July 2026, 149pp) directly, and negotiate version via ALPN — which is the sanctioned mechanism, settled by moq-wg PR #499 removing version negotiation from SETUP entirely. Drafts use `moqt-NN`; the final RFC will use bare `moqt`.
+Implement **[`draft-ietf-moq-transport-19`](https://datatracker.ietf.org/doc/html/draft-ietf-moq-transport-19)** (July 2026, 149pp) directly, and negotiate version via ALPN — which is the sanctioned mechanism, settled by moq-wg PR #499 removing version negotiation from SETUP entirely. Drafts use `moqt-NN`; the final RFC will use bare `moqt`.
 
 This matters because there is no single "MOQT" today. Verified on the wire in July 2026: Cloudflare's production relay speaks **`moqt-16`** and rejects everything else, with a `draft-18-interop` endpoint live alongside it. `moq-dev/moq` implements **moq-lite**, which despite the name is a different protocol rather than a subset — string namespaces instead of tuples, no subgroups, and media timestamps pulled into the transport. And `moq-net` demonstrates that one binary can speak moq-lite 03–05 plus `moqt-14` through `moqt-19` behind a single API.
 
@@ -1203,7 +1203,7 @@ track     = "video/hd"
 
 This removes the whole class of bugs that comes from appending a device ID to a user ID (separator collisions, ambiguous parsing when usernames contain the delimiter, no way to scope authorization to just the user portion).
 
-**3. Device identity is a keypair, not a string** — this is the more elegant solution you were open to. `draft-ietf-moq-c4m-01` §3.1.1 binds a Common Access Token to a device via the `cnf` claim carrying a JWK Thumbprint (`jkt`), with DPoP proofs preventing token theft and replay. Each device generates a non-exportable P-256 key in the Secure Enclave or Android Keystore at install. The device field in the namespace is derived from that thumbprint.
+**3. Device identity is a keypair, not a string** — this is the more elegant solution you were open to. [`draft-ietf-moq-c4m-01`](https://datatracker.ietf.org/doc/html/draft-ietf-moq-c4m-01) §3.1.1 binds a Common Access Token to a device via the `cnf` claim carrying a [JWK](https://www.rfc-editor.org/rfc/rfc7517) Thumbprint (`jkt`), with [DPoP](https://www.rfc-editor.org/rfc/rfc9449) proofs preventing token theft and replay. Each device generates a non-exportable P-256 key in the Secure Enclave or Android Keystore at install. The device field in the namespace is derived from that thumbprint.
 
 The result: one logical user, N devices, one credential per device, and revoking a single lost phone means revoking one `jkt` rather than rotating the user's identity.
 
@@ -1220,7 +1220,7 @@ The relay enforces this structurally without parsing strings. Use `moqt-reval` s
 
 ### The differentiator: E2EE that does not break the relay
 
-`draft-ietf-moq-secure-objects-01` (adopted WG document, July 2026) layers SFrame (RFC 9605) over MOQT objects, and the crucial property is that **encryption covers only the payload**. Group ID, Object ID, Publisher Priority, and the track name stay visible to relays *and* are cryptographically authenticated as AAD.
+[`draft-ietf-moq-secure-objects-01`](https://datatracker.ietf.org/doc/html/draft-ietf-moq-secure-objects-01) (adopted WG document, July 2026) layers SFrame ([RFC 9605](https://www.rfc-editor.org/rfc/rfc9605)) over MOQT objects, and the crucial property is that **encryption covers only the payload**. Group ID, Object ID, Publisher Priority, and the track name stay visible to relays *and* are cryptographically authenticated as AAD.
 
 That means caching, deduplication, and priority scheduling all survive end-to-end encryption intact — the relay's cache key is the Full Object ID, which it can still read. And because Publisher Priority is in the AAD, a relay can schedule on it but cannot silently downgrade a competitor's stream. **Priority becomes tamper-evident.** No WebRTC SFU can make this claim; there, E2EE via SFrame costs you server-side quality adaptation.
 
@@ -1229,17 +1229,17 @@ Implementation notes that matter:
 - Track authentication-failure rates **across all subscribers of a track** as a malicious-relay detection signal.
 - Enable the **Padding Property (0x32)** against traffic analysis — object sizes and track names remain analyzable otherwise.
 - Don't aggregate large spans into single objects. Authentication needs the whole object, so a 6-second aggregate adds 6 seconds of latency.
-- Start with application-managed per-track `track_base_key`. MLS group keying (`draft-jennings-moq-mocha-mls-keying-00`) is a -00 individual draft with a TODO security section; add it when membership-change forward secrecy actually matters.
+- Start with application-managed per-track `track_base_key`. [MLS](https://www.rfc-editor.org/rfc/rfc9420) group keying (`draft-jennings-moq-mocha-mls-keying-00`) is a -00 individual draft with a TODO security section; add it when membership-change forward secrecy actually matters.
 
 **Caveat on timeline:** secure-objects is adopted but has **no chartered milestone**, unlike transport (Dec 2026) and Privacy Pass (Mar 2027). It is implementable today against its test vectors, but don't plan around an RFC number arriving predictably.
 
 ### Privacy Pass: viewers we cannot track
 
-`draft-ietf-moq-privacy-pass-auth-03`, chartered for March 2027. Unlinkable tokens mean the relay can verify a viewer is entitled to watch without learning who they are or correlating them across streams. "Our relays cannot build your viewing history, and that is cryptographically true rather than a policy promise" is a claim no competitor can make.
+[`draft-ietf-moq-privacy-pass-auth-03`](https://datatracker.ietf.org/doc/html/draft-ietf-moq-privacy-pass-auth-03), chartered for March 2027. Unlinkable tokens mean the relay can verify a viewer is entitled to watch without learning who they are or correlating them across streams. "Our relays cannot build your viewing history, and that is cryptographically true rather than a policy promise" is a claim no competitor can make.
 
 Use the draft's **reverse flow**: bootstrap with a publicly verifiable Blind RSA token (0x0002) from an external issuer, then have the relay act as its own reverse issuer handing out cheap privately verifiable tokens in `SERVER_SETUP`. Continuous re-authorization rides on `REQUEST_UPDATE` carrying both a fresh token and a request for the next one, so long sessions never round-trip to the origin issuer.
 
-Watch **ARC (0xE5AC)** — Anonymous Rate-Limited Credentials carry a presentation limit while staying unlinkable between presentations. That is the credential-sharing answer that doesn't require viewer tracking. Still early (`draft-ietf-privacypass-arc-protocol-01`).
+Watch **ARC (0xE5AC)** — Anonymous Rate-Limited Credentials carry a presentation limit while staying unlinkable between presentations. That is the credential-sharing answer that doesn't require viewer tracking. Still early ([`draft-ietf-privacypass-arc-protocol-01`](https://datatracker.ietf.org/doc/html/draft-ietf-privacypass-arc-protocol-01)).
 
 Note the draft's Security Considerations section is currently a TODO stub. We write that analysis ourselves.
 
@@ -1267,11 +1267,11 @@ Specific defences, each mapped to a named attack:
 - **Rapid subscribe/cancel churn** — explicitly analogous to HTTP/2 Rapid Reset (CVE-2023-44487). Rate-track per session, throttle new bidi stream grants, and terminate sessions with high churn and no useful data transfer.
 - **`REQUEST_UPDATE` flooding.** Coalesce pending updates per subscription (transport §10.9): 100 queued priority changes need only the final value applied. Cheap fix, kills a whole class.
 - **Slow subscribers** — the nastiest one, because relays MUST NOT reorder or drop objects on a multi-object stream, so the only bound on buffering is resetting the stream. The defence is itself a denial of service. Design explicit buffer caps with live-edge skip-ahead rather than discovering this under load.
-- **Bound every peer-drivable queue.** Both confirmed quiche CVEs (CVE-2026-12707, CVE-2025-7054) were unbounded queues and loops in connection-ID and path-migration handling, not cryptographic failures. quiche implemented RFC 9000 §9.3 correctly and still shipped a DoS because the *application-facing event queue* was unbounded. Fuzz the CID and migration state machine specifically.
+- **Bound every peer-drivable queue.** Both confirmed quiche CVEs (CVE-2026-12707, CVE-2025-7054) were unbounded queues and loops in connection-ID and path-migration handling, not cryptographic failures. quiche implemented [RFC 9000](https://www.rfc-editor.org/rfc/rfc9000) §9.3 correctly and still shipped a DoS because the *application-facing event queue* was unbounded. Fuzz the CID and migration state machine specifically.
 
 ### Token hardening beyond DPoP
 
-- **`jti` replay cache must be shared across relay nodes.** A node-local cache is trivially bypassed by replaying against a different edge. This is load-bearing, because the DPoP proof binds to the action and track, not to the QUIC connection — so a captured proof is replayable within the freshness window without it.
+- **`jti` replay cache must be shared across relay nodes.** A node-local cache is trivially bypassed by replaying against a different edge. This is load-bearing, because the [DPoP](https://www.rfc-editor.org/rfc/rfc9449) proof binds to the action and track, not to the [QUIC](https://www.rfc-editor.org/rfc/rfc9000) connection — so a captured proof is replayable within the freshness window without it.
 - **`moqt-reval` fails closed by spec:** a relay that cannot revalidate MUST reject tokens carrying the claim. Use it for continuous enforcement (issue tokens valid for hours, cap ongoing stream authorization at ~300s), plus a small bounded deny-list of revoked `jkt` thumbprints for compromised devices. Do not build a general CRL.
 - **Push signed JWKS bundles to relays**, don't have relays pull on cache-miss — that creates a thundering herd at rotation and makes the issuer a hard dependency from every edge. Sign the bundle with an offline root key. Overlap key validity for at least 2× max token lifetime.
 - **Bind audience to a relay cluster, not a hostname** — anycast and failover break hostname binding.
@@ -1279,7 +1279,7 @@ Specific defences, each mapped to a named attack:
 
 ### Certificates
 
-Use **WebPKI certificates for browser clients**. WebTransport's `serverCertificateHashes` escape hatch caps total certificate validity at **two weeks** and forbids RSA, which makes automated rotation mandatory production infrastructure where a missed rotation is a total outage. Reserve it for development and LAN devices.
+Use **WebPKI certificates for browser clients**. [WebTransport](https://datatracker.ietf.org/doc/draft-ietf-webtrans-http3/)'s `serverCertificateHashes` escape hatch caps total certificate validity at **two weeks** and forbids RSA, which makes automated rotation mandatory production infrastructure where a missed rotation is a total outage. Reserve it for development and LAN devices.
 
 Relay-to-relay uses a **private CA** with short-lived certificates. In native SDKs, if we pin at all: pin to intermediate rather than leaf, always ship a backup pin for a not-yet-deployed key, and include an expiry after which the pin fails *open* so a stale client degrades to normal validation instead of bricking.
 
@@ -1413,7 +1413,7 @@ Participants, subscriptions, and relay sessions are all soft state layered on th
 
 Treating (1) as (3) is the bug being guarded against here.
 
-**QUIC removes most of case one before we write any recovery code.** A WiFi-to-cellular handoff does not drop a QUIC connection — the connection ID survives the address change, so the session continues across a new five-tuple. In a WebRTC or TCP stack that same handoff is a disconnect requiring full renegotiation. The `sharding` and `deploy-gcp` todos already carry the pieces that keep this working (a migrating client must land on the correct shard, and the load balancer stays out of the media path), so the main work is *testing* migration under real handoffs rather than building for it.
+**[QUIC](https://www.rfc-editor.org/rfc/rfc9000) removes most of case one before we write any recovery code.** A WiFi-to-cellular handoff does not drop a QUIC connection — the connection ID survives the address change, so the session continues across a new five-tuple. In a WebRTC or TCP stack that same handoff is a disconnect requiring full renegotiation. The `sharding` and `deploy-gcp` todos already carry the pieces that keep this working (a migrating client must land on the correct shard, and the load balancer stays out of the media path), so the main work is *testing* migration under real handoffs rather than building for it.
 
 **Subscriptions outlive the publisher's connection.** When a publisher's session drops, the relay holds their namespace announcement for a grace window rather than tearing it down. Viewers keep their existing subscriptions and simply receive no new objects; nobody gets `SUBSCRIBE_DONE`, nobody has to rediscover the room. When the publisher returns within the window they resume under the same namespace and objects start flowing again — the audience never re-subscribed. Only when the window expires does the relay withdraw the announcement.
 
@@ -1669,7 +1669,7 @@ This is the counterintuitive part, and it's the core of the architecture. Loss r
 - Direct: a lost packet costs ~200ms of head-of-line delay.
 - Relayed (publisher → 10ms → relay A → 150ms backbone → relay B → 20ms → viewer): the same loss on the viewer's access link is repaired by relay B in ~20ms.
 
-Two conditions must hold, and both do in practice. Loss concentrates on short access hops — Uber's QUIC deployment found their proxy 50ms farther from devices than the cloud LB still delivered a 15% p99 improvement, concluding "the last-mile cellular hop is the main bottleneck." And end-to-end RTT must substantially exceed hop RTT, true for any distant viewer.
+Two conditions must hold, and both do in practice. Loss concentrates on short access hops — Uber's [QUIC](https://www.rfc-editor.org/rfc/rfc9000) deployment found their proxy 50ms farther from devices than the cloud LB still delivered a 15% p99 improvement, concluding "the last-mile cellular hop is the main bottleneck." And end-to-end RTT must substantially exceed hop RTT, true for any distant viewer.
 
 `draft-yang-masque-dgram-retrans-01` states the mechanism precisely and gives the tuning rule: set the hop retransmit limit to `floor(RTT_e2e / RTT_hop)` so a loss is repaired locally *before* the end-to-end connection notices. The underrated half is that this **hides loss from the end-to-end congestion controller**, preventing a spurious window collapse on a long fat path. Measured gains from ART (ICNP 2023) over 20–100ms paths: p50 3.2ms, p95 32.8ms, p99 78.5ms reduction in recovery latency — concentrated exactly in the tail where rebuffering comes from.
 
@@ -1780,7 +1780,7 @@ Pushing a room out to YouTube or Twitch is a frequent creator-platform ask and l
 
 Worth splitting into three, because the answer differs for each.
 
-**MOQT wire messages — fixed, and we would not want to change them anyway.** The layouts are set by draft-19 and departing from them means we no longer speak MOQT. Even setting interop aside, a vtable-based encoding would be the wrong choice here: it prepends offset tables, so an object header that costs 4–8 bytes as varints becomes tens of bytes, and reading it means an indirection rather than a sequential byte scan. At one object per frame per track that adds wire bytes and cache misses to buy nothing. QUIC varints are already the right encoding.
+**MOQT wire messages — fixed, and we would not want to change them anyway.** The layouts are set by draft-19 and departing from them means we no longer speak MOQT. Even setting interop aside, a vtable-based encoding would be the wrong choice here: it prepends offset tables, so an object header that costs 4–8 bytes as varints becomes tens of bytes, and reading it means an indirection rather than a sequential byte scan. At one object per frame per track that adds wire bytes and cache misses to buy nothing. [QUIC](https://www.rfc-editor.org/rfc/rfc9000) varints are already the right encoding.
 
 **Media payloads — nothing to serialize.** These are HEVC/AV1 bitstreams. They pass through the relay opaquely and go straight to a hardware decoder.
 
@@ -1860,7 +1860,7 @@ forced by something specific rather than chosen.
 | --- | --- | --- |
 | `moqom-swift` | Apache-2.0 | SwiftPM resolves a git dependency by looking for `Package.swift` at the repository *root* and cannot be pointed at a subdirectory, so a nested package is not consumable by URL at all. Verified, not assumed. |
 | `moqom-go` | Apache-2.0 | A Go import path is a URL. `go get` resolves a module by fetching its path, so a module named `github.com/moqom-cloud/moqom-go` must be published from a repository of that name. |
-| `moqom-rust` | Apache-2.0 | Not forced by Cargo, which resolves published crates wherever they were written. Forced by the engine's `[patch.crates-io]`, which applies to a whole workspace: staying inside it would put a QUIC stack in the dependency graph of every backend that only wants to change somebody's grants. |
+| `moqom-rust` | Apache-2.0 | Not forced by Cargo, which resolves published crates wherever they were written. Forced by the engine's `[patch.crates-io]`, which applies to a whole workspace: staying inside it would put a [QUIC](https://www.rfc-editor.org/rfc/rfc9000) stack in the dependency graph of every backend that only wants to change somebody's grants. |
 | `moqom-engine` | Mixed | Not forced by a tool. The media path shares no code and no build with the control plane, so the split follows a line the architecture had already drawn — and it keeps the BUSL relay in one place rather than spread across the tree. |
 | `moqom-obs` | GPL-2.0-or-later | An OBS plugin links `libobs` and is a combined work under the GPL, so its source must be public and GPL-licensed. This repo is private and its control-plane half is BUSL-1.1. |
 
@@ -1981,9 +1981,9 @@ Two workstreams run in parallel from day one because they are not engineering an
 
 **Category 1 — we write it.** Everything in the media and protocol path: MOQT, the relay, the media pipeline, the event bus, the control plane, every client SDK. This is the product. Anything we outsource here is a ceiling on how fast, how tolerant, and how debuggable MOQOM can be.
 
-**Category 2 — cryptography.** `rustls` for the TLS 1.3 handshake, `aws-lc-rs` for primitives. This is a security exception, not a convenience one. Hand-rolling a TLS 1.3 key schedule, AEAD, or X.509 path validation is the single most reliable way to turn "more secure than WebRTC" into a false claim, and constant-time correctness is not something we can test our way into.
+**Category 2 — cryptography.** `rustls` for the [TLS 1.3](https://www.rfc-editor.org/rfc/rfc8446) handshake, `aws-lc-rs` for primitives. This is a security exception, not a convenience one. Hand-rolling a TLS 1.3 key schedule, AEAD, or X.509 path validation is the single most reliable way to turn "more secure than WebRTC" into a false claim, and constant-time correctness is not something we can test our way into.
 
-**Category 3 — the QUIC transport.** `quinn`, vendored unmodified and extended rather than forked. Reasoning below, because this is the one place the default rule loses and it is worth being explicit about why.
+**Category 3 — the [QUIC](https://www.rfc-editor.org/rfc/rfc9000) transport.** `quinn`, vendored unmodified and extended rather than forked. Reasoning below, because this is the one place the default rule loses and it is worth being explicit about why.
 
 Small pure-utility crates (`bytes`, `thiserror`, `tracing`) are fine. Anything that owns state, a thread, or a protocol is not.
 
@@ -1993,18 +1993,18 @@ Small pure-utility crates (`bytes`, `thiserror`, `tracing`) are fine. Anything t
 
 **Forking is a different thing and we rejected it.** Worth recording why, because the question will come back.
 
-On the IP argument specifically: forking does not create ownable IP. quinn is MIT OR Apache-2.0, so a fork is still their code — copyright stays with the quinn authors, we would hold copyright only on our diffs, and attribution obligations travel with it. What a fork actually confers is the obligation to ship our own security fixes. The defensible IP in this project is the from-scratch MOQT implementation, the relay behaviour, the identity model, the visionOS capture and MV-HEVC pipeline, the agent plane, and the congestion controller below — none of which get stronger by carrying a QUIC fork alongside them.
+On the IP argument specifically: forking does not create ownable IP. quinn is MIT OR Apache-2.0, so a fork is still their code — copyright stays with the quinn authors, we would hold copyright only on our diffs, and attribution obligations travel with it. What a fork actually confers is the obligation to ship our own security fixes. The defensible IP in this project is the from-scratch MOQT implementation, the relay behaviour, the identity model, the visionOS capture and MV-HEVC pipeline, the agent plane, and the congestion controller below — none of which get stronger by carrying a [QUIC](https://www.rfc-editor.org/rfc/rfc9000) fork alongside them.
 
 The four technical arguments for forking each turned out weaker than they look:
 
-- **Stream priority is not actually a gap.** MOQT's publisher priority is 8-bit; quinn's `set_priority(i32)` has billions of levels, so the mapping is trivial. What quinn lacks is RFC 9218's `incremental` flag governing whether equal-priority streams round-robin or complete sequentially — and for media, sequential completion is arguably *better*, since one whole frame beats three frames at 60%.
-- **`RESET_STREAM_AT` needs an application-level equivalent regardless.** Browsers cannot reach it: WebTransport exposes `WritableStream.abort()`, which maps to plain `RESET_STREAM`. Building our network-tolerance story on a transport frame web clients cannot send would exclude them from it. Once the MOQT-layer mechanism exists — and it must — the frame becomes an optimization, not a capability only a fork can provide.
+- **Stream priority is not actually a gap.** MOQT's publisher priority is 8-bit; quinn's `set_priority(i32)` has billions of levels, so the mapping is trivial. What quinn lacks is [RFC 9218](https://www.rfc-editor.org/rfc/rfc9218)'s `incremental` flag governing whether equal-priority streams round-robin or complete sequentially — and for media, sequential completion is arguably *better*, since one whole frame beats three frames at 60%.
+- **`RESET_STREAM_AT` needs an application-level equivalent regardless.** Browsers cannot reach it: [WebTransport](https://datatracker.ietf.org/doc/draft-ietf-webtrans-http3/) exposes `WritableStream.abort()`, which maps to plain `RESET_STREAM`. Building our network-tolerance story on a transport frame web clients cannot send would exclude them from it. Once the MOQT-layer mechanism exists — and it must — the frame becomes an optimization, not a capability only a fork can provide.
 - **Multi-core does not require a fork.** `Endpoint::new` takes a plain `UdpSocket`, so we bind N sockets with `SO_REUSEPORT`, run N independent endpoints, and steer by connection ID with eBPF. Each endpoint owns its own connection map, so nothing is shared. quinn issue #1576 is about scaling a *single* endpoint, which we simply do not need.
 - **CID layout does not require a fork.** The `ConnectionIdGenerator` trait is exactly that hook; `moq-native` ships a QUIC-LB server-ID generator through it in about 25 lines.
 
 Against that, forking carries a permanent cost: we inherit every future QUIC security fix. quinn 0.11.11 was a remote memory-exhaustion fix in the stream assembler (GHSA-4w2j-m93h-cj5j), and after a fork nobody ships those to us.
 
-**On the "experimental" concern.** Only `Bbr` carries that warning. `Cubic` is RFC 8312 and is the default; `NewReno` is plain RFC 9002. So the exposure is one opt-in feature we can decline. Note also what a fork would actually achieve here: if we fork and use quinn's BBR, we then own an experimental BBR. Forking transfers responsibility for immature code, it does not confer maturity. The real answer is `moqom-cc` below.
+**On the "experimental" concern.** Only `Bbr` carries that warning. `Cubic` is [RFC 8312](https://www.rfc-editor.org/rfc/rfc8312) and is the default; `NewReno` is plain [RFC 9002](https://www.rfc-editor.org/rfc/rfc9002). So the exposure is one opt-in feature we can decline. Note also what a fork would actually achieve here: if we fork and use quinn's BBR, we then own an experimental BBR. Forking transfers responsibility for immature code, it does not confer maturity. The real answer is `moqom-cc` below.
 
 **quiche remains the fallback.** It has BBRv3 in Cloudflare production, native RFC 9218 priorities, and first-class multi-socket sharding in `tokio-quiche`. quinn wins on WebTransport — `web-transport-quinn` has 653k downloads against `web-transport-quiche`'s 14.2k, and its `Session::raw()` wraps a bare QUIC connection in the same `Session` type as a real WebTransport session, so relay session code is written once. Both are maintained in lockstep from `moq-dev/web-transport`.
 
@@ -2036,14 +2036,14 @@ A 3 Mbps stream at 60fps averages about 6,250 bytes per frame. On a 100 Mbps lin
 Where the bytes actually are, though, is the part that redirects the effort:
 
 - **Protocol overhead is already negligible.** A MOQT object header is 4–8 bytes on a 6 KB frame — about 0.1%. There is nothing to win here, and this is why a vtable-based encoding on the wire would have been a mistake.
-- **QUIC, UDP, and IP headers** run ~4% at typical MTU. Marginal, and largely fixed.
+- **[QUIC](https://www.rfc-editor.org/rfc/rfc9000), UDP, and IP headers** run ~4% at typical MTU. Marginal, and largely fixed.
 - **The video bitstream is ~99% of the bytes.** This is the only term worth attacking.
 
 Which makes the answer concrete: **a better codec is the byte optimization.** AV1 delivers roughly 30% fewer bytes than HEVC at equal quality, so on a constrained uplink it is directly worth tens of milliseconds of serialization delay — and it independently sidesteps the HEVC patent-pool exposure noted in the licensing decision. Two unrelated arguments landing on the same choice is usually a sign it is the right one. Beyond the codec: never retransmit content whose deadline has passed, and do not spend bytes on FEC when the loss estimate does not justify it.
 
 ### The head-of-line objection has an answer: datagrams
 
-RTP over UDP has no head-of-line blocking, and QUIC streams do have it *within* a stream, so a lossy subgroup can stall objects queued behind it. I previously framed this as a place we simply lose. That was wrong — **draft-19 carries objects over QUIC datagrams**, which have exactly RTP's no-HOL property.
+RTP over UDP has no head-of-line blocking, and [QUIC](https://www.rfc-editor.org/rfc/rfc9000) streams do have it *within* a stream, so a lossy subgroup can stall objects queued behind it. I previously framed this as a place we simply lose. That was wrong — **draft-19 carries objects over QUIC datagrams**, which have exactly RTP's no-HOL property.
 
 So the mapping is the lever: **datagrams for small, latency-critical objects (audio, small frames), streams for large objects where ordered delivery and flow control earn their keep.** Done deliberately, we match RTP's behaviour where it matters and keep QUIC's advantages elsewhere. Done carelessly — everything on streams — we are slower than the incumbent. This is a design decision with a real latency consequence and it belongs in `moqom-proto`'s object-to-transport mapping from the start.
 
@@ -2051,7 +2051,7 @@ So the mapping is the lever: **datagrams for small, latency-critical objects (au
 
 **1. Scale without a protocol change — this is the big one.** WebRTC to a million viewers means transcoding to HLS or LL-HLS and living with 2–6 seconds, or an SFU cascade that gets expensive fast. MoQ holds sub-second at any audience size. The honest framing is that this is a win over *HLS*, not over WebRTC — but it is the win that matters commercially, because it is the discontinuity every creator platform currently lives with.
 
-**2. Time to first frame.** WebRTC needs ICE gathering, STUN or TURN, a DTLS handshake, and an SDP exchange before a single frame moves — typically 500ms to 2s. QUIC does 1-RTT, or 0-RTT on resumption, with no SDP at all. **Target under 200ms to first frame, versus a second or more.** This is the most visible latency to an actual user, it is trivially measurable, and it is a several-fold improvement rather than a marginal one.
+**2. Time to first frame.** WebRTC needs ICE gathering, [STUN](https://www.rfc-editor.org/rfc/rfc8489) or TURN, a DTLS handshake, and an SDP exchange before a single frame moves — typically 500ms to 2s. [QUIC](https://www.rfc-editor.org/rfc/rfc9000) does 1-RTT, or 0-RTT on resumption, with no SDP at all. **Target under 200ms to first frame, versus a second or more.** This is the most visible latency to an actual user, it is trivially measurable, and it is a several-fold improvement rather than a marginal one.
 
 **3. Network change resilience.** A WiFi-to-cellular handoff is an ICE restart in WebRTC — hundreds of milliseconds to seconds of interruption. Under QUIC the connection ID survives and the stream does not break at all. **Target: zero dropped frames across a handoff.**
 
@@ -2234,11 +2234,11 @@ What `moqom-cc` knows that a generic controller cannot:
 - **A latency objective, not a throughput objective.** The goal is to minimize glass-to-glass latency subject to delivering the base layer, which is a different optimization than filling the pipe.
 - **ECN.** quinn's UDP layer already carries ECN codepoints, giving a congestion signal ahead of loss rather than after it.
 
-**Build order matters, because congestion control is easy to get catastrophically wrong.** Ship the vertical slice on stock Cubic. Build the lossy-link harness. Only then develop `moqom-cc` against it, A/B-ing against Cubic and BBR behind the same trait. Two failure modes to watch for explicitly: unfairness to competing TCP and QUIC flows, which makes us a bad internet citizen and eventually someone's incident, and the congestion-collapse spiral Cloudflare documented in their own QUIC stack. A controller that wins our benchmark by starving everything else on the link is not a win.
+**Build order matters, because congestion control is easy to get catastrophically wrong.** Ship the vertical slice on stock Cubic. Build the lossy-link harness. Only then develop `moqom-cc` against it, A/B-ing against Cubic and BBR behind the same trait. Two failure modes to watch for explicitly: unfairness to competing TCP and [QUIC](https://www.rfc-editor.org/rfc/rfc9000) flows, which makes us a bad internet citizen and eventually someone's incident, and the congestion-collapse spiral Cloudflare documented in their own QUIC stack. A controller that wins our benchmark by starving everything else on the link is not a win.
 
 ## Key decisions and their consequences
 
-**One UDP port serves both client types.** A single rustls `ServerConfig` lists our MOQT ALPN plus `h3`; dispatch after the handshake on the negotiated protocol. Browsers get WebTransport, native clients get raw QUIC, and both land on the same session type so the relay's session logic is written once.
+**One UDP port serves both client types.** A single rustls `ServerConfig` lists our MOQT ALPN plus `h3`; dispatch after the handshake on the negotiated protocol. Browsers get [WebTransport](https://datatracker.ietf.org/doc/draft-ietf-webtrans-http3/), native clients get raw [QUIC](https://www.rfc-editor.org/rfc/rfc9000), and both land on the same session type so the relay's session logic is written once.
 
 **Stale-media drops happen at the MOQT layer, not the transport layer.** Draft-19 §11.4.3 wants `RESET_STREAM_AT` so a receiver learns which subgroup was dropped rather than inferring it from timers. No Rust QUIC library implements it, and browsers cannot send it at all. So we build the equivalent in `moqom-proto`: reset the subgroup stream with plain `RESET_STREAM`, and carry an explicit drop notification (track, group, subgroup, final object ID) on the control stream. Every client gets identical semantics, and if `RESET_STREAM_AT` later lands upstream it becomes a native-client optimization behind the same API.
 
@@ -2260,13 +2260,13 @@ Two related things to parameterize rather than hard-code, for the same reason: *
 
 ### The constraint that shapes everything
 
-**GCP has no equivalent to AWS NLB's QUIC Connection-ID routing, and no global anycast load balancer that carries UDP.** Passthrough Network Load Balancers are the only UDP option and they are strictly regional. Global forwarding rules — the ones that get a real global anycast IP — exist only for HTTP(S) and TCP/SSL proxies. The global external *proxy* NLB is definitively TCP-only.
+**GCP has no equivalent to AWS NLB's [QUIC](https://www.rfc-editor.org/rfc/rfc9000) Connection-ID routing, and no global anycast load balancer that carries UDP.** Passthrough Network Load Balancers are the only UDP option and they are strictly regional. Global forwarding rules — the ones that get a real global anycast IP — exist only for HTTP(S) and TCP/SSL proxies. The global external *proxy* NLB is definitively TCP-only.
 
 Every passthrough NLB affinity mode hashes on source IP. So a phone moving from Wi-Fi to cellular gets rehashed to a different backend and the QUIC connection dies — **connection migration works perfectly at the protocol level and is defeated by the L4 hash beneath it.** Even `CLIENT_IP` (2-tuple) only survives port changes, not network changes.
 
 ### The answer: keep the load balancer out of the media path
 
-Clients connect **directly to a specific relay**, at a stable address handed out by the control plane. No rehashing element sits in the path, so a network change triggers ordinary QUIC path validation against the same IP and port and simply works.
+Clients connect **directly to a specific relay**, at a stable address handed out by the control plane. No rehashing element sits in the path, so a network change triggers ordinary [QUIC](https://www.rfc-editor.org/rfc/rfc9000) path validation against the same IP and port and simply works.
 
 ```
 Client ──HTTPS/H3──► Global external ALB (Premium anycast) ──► director service
@@ -2288,12 +2288,12 @@ This is not a workaround — it is what every production low-latency UDP service
 
 **A Premium-tier passthrough NLB VIP is still anycast from Google's global PoPs.** Backends are regional, but ingress is not: a client in Tokyo hitting a `us-central1` relay enters Google's network in Tokyo and crosses the Pacific on Google's backbone rather than public transit. Call it anycast ingress, unicast backend. Use Premium everywhere on the media path; that *is* the "get on the backbone at the edge" product.
 
-**MoQ needs one UDP port, not a range** — and this is a real structural advantage over WebRTC on Kubernetes. The reason SFUs are forced into `hostNetwork` (losing NetworkPolicy, service discovery, and multi-pod-per-node) is the 10,000-port ICE range, and Kubernetes has no UDP port-range support. A MoQ relay multiplexes everything over QUIC streams on a single port, so we use **`hostPort`** Agones-style, keep pod network isolation and sidecars, and run multiple relay pods per node.
+**MoQ needs one UDP port, not a range** — and this is a real structural advantage over WebRTC on Kubernetes. The reason SFUs are forced into `hostNetwork` (losing NetworkPolicy, service discovery, and multi-pod-per-node) is the 10,000-port ICE range, and Kubernetes has no UDP port-range support. A MoQ relay multiplexes everything over [QUIC](https://www.rfc-editor.org/rfc/rfc9000) streams on a single port, so we use **`hostPort`** Agones-style, keep pod network isolation and sidecars, and run multiple relay pods per node.
 
 ### Traps to design around, not discover
 
 - **Direct Server Return breaks naive UDP servers.** A passthrough NLB doesn't rewrite packets, so a server replying from its own address gets its responses dropped by clients. The relay must use `recvmsg`/`sendmsg` with `IP_PKTINFO` to recover the real destination and reuse it as the source. Required wherever an NLB fronts us.
-- **There is no UDP health check protocol on GCP.** Valid protocols are HTTP(S), HTTP/2, gRPC, SSL, and TCP — nothing else. We run a TCP health endpoint beside the QUIC listener, and it **must reflect real UDP-path health** (last successful datagram, upstream subscription state, socket buffer pressure), otherwise we route traffic to relays whose media path is dead but whose HTTP port answers. Allow probes from `35.191.0.0/16` and `130.211.0.0/22`.
+- **There is no UDP health check protocol on GCP.** Valid protocols are HTTP(S), HTTP/2, gRPC, SSL, and TCP — nothing else. We run a TCP health endpoint beside the [QUIC](https://www.rfc-editor.org/rfc/rfc9000) listener, and it **must reflect real UDP-path health** (last successful datagram, upstream subscription state, socket buffer pressure), otherwise we route traffic to relays whose media path is dead but whose HTTP port answers. Allow probes from `35.191.0.0/16` and `130.211.0.0/22`.
 - **Cloud DNS has no latency-based routing policy.** Only `GEO` (static geography-to-region map), `WRR`, and `FAILOVER`. Route 53 has latency-based routing; Cloud DNS does not. This is why we build a director service rather than steering with DNS — and the director can steer on measured RTT, relay capacity, *and* which relays already hold the requested namespace, which DNS could never do.
 - **GKE Gateway API does not support UDPRoute.** HTTPRoute only, still, despite upstream Gateway API promoting UDPRoute to GA in 1.6.0 and Google saying it was "on the roadmap" in 2022. Don't plan around it.
 - **Cloud Run cannot serve UDP** and never could. Fine for the control plane and director, useless for relays.
@@ -2321,7 +2321,7 @@ unchanged.
 
 **An NLB in the media path, which contradicts the section above.** The design
 says clients connect straight to a relay address the director hands out,
-precisely so no rehashing element can break QUIC connection migration. The
+precisely so no rehashing element can break [QUIC](https://www.rfc-editor.org/rfc/rfc9000) connection migration. The
 shipped version puts a passthrough NLB in front with `CLIENT_IP` affinity, which
 survives a NAT port rebinding and *does not* survive a genuine wifi-to-cellular
 move — the exact failure the direct-connect design was avoiding. The Terraform
@@ -2373,7 +2373,7 @@ A relay-only vendor must interoperate with arbitrary third-party clients. That c
 1. **The encoder feedback loop is impossible for them.** `moqom-cc`'s bandwidth estimate reaches our encoder and changes what gets produced. Cloudflare ships no encoder, so their relay can only drop what already arrived. Adapting at the source beats discarding at the edge, and this is the single largest structural advantage we have. It is already the `encoder-feedback` todo.
 2. **Co-designed subgroup layout.** Our encoder picks temporal SVC structure, LTR placement, and subgroup boundaries to match exactly what our relay's scheduler sheds under congestion. A generic relay must work with whatever GOP structure shows up and can only make generic decisions about it.
 3. **Real glass-to-glass measurement.** We own both the capture timestamp and the display timestamp, so we can optimize the number that actually matters. Cloudflare can only see relay ingress to relay egress. You cannot tune a congestion controller against a metric you cannot observe, so this gates how good `moqom-cc` can ever get — for us and for them.
-4. **Authentication that requires hardware.** CAT plus DPoP bound to a Secure Enclave key needs a client that holds the key. A relay CDN cannot mandate that of arbitrary clients, which is precisely why theirs has no auth.
+4. **Authentication that requires hardware.** CAT plus [DPoP](https://www.rfc-editor.org/rfc/rfc9449) bound to a Secure Enclave key needs a client that holds the key. A relay CDN cannot mandate that of arbitrary clients, which is precisely why theirs has no auth.
 5. **E2EE needs key distribution in the client.** Secure objects is inert without a client that fetches and rotates track keys.
 6. **Protocol velocity.** Controlling both ends means we ship draft-19 today and can ship extensions ahead of the working group. Cloudflare tracks the drafts actively but is pulled back by a long tail of third-party clients they don't control — which is why they run separate hostnames per draft rather than one multi-version relay. Our floor rises with every client release; theirs rises when the slowest integrator upgrades.
 7. **Client-side relay selection.** Our client can race candidate relays, measure, and migrate mid-session. Theirs is whatever the customer happened to write.
@@ -2421,7 +2421,7 @@ The honest summary: **build as though we are competing, structure as though we m
 
 ## Events and clustering: no NATS
 
-**MOQOM is already a pub/sub system.** MOQT is publish/subscribe over QUIC with fan-out, caching for late joiners, deduplication, and priority — which is most of what a message bus does. Adding NATS means running a second pub/sub system next to the one we are building, and it would sit on the critical path of the thing we are trying to make fastest.
+**MOQOM is already a pub/sub system.** MOQT is publish/subscribe over [QUIC](https://www.rfc-editor.org/rfc/rfc9000) with fan-out, caching for late joiners, deduplication, and priority — which is most of what a message bus does. Adding NATS means running a second pub/sub system next to the one we are building, and it would sit on the critical path of the thing we are trying to make fastest.
 
 Split events by whether they need durability, because that is the only axis on which the answer differs.
 
@@ -2443,7 +2443,7 @@ That splits the work cleanly, and the split is the design.
 
 ### The relay measures the network; the client measures the media
 
-The relay knows things no client can: true QUIC round-trip time, congestion window, retransmissions, how many subscribers a track fanned out to, whether a cache answered a fetch or missed. It knows nothing about frames, because objects are opaque to it and, under E2EE, encrypted.
+The relay knows things no client can: true [QUIC](https://www.rfc-editor.org/rfc/rfc9000) round-trip time, congestion window, retransmissions, how many subscribers a track fanned out to, whether a cache answered a fetch or missed. It knows nothing about frames, because objects are opaque to it and, under E2EE, encrypted.
 
 The client knows the other half: whether a keyframe arrived, whether a frame decoded, how long the jitter buffer held, how much the encoder dropped before anything reached the network. Nothing on the server can see an encoder drop — those frames never became packets.
 
@@ -2456,7 +2456,7 @@ The relay exposes an **admin surface on a separate port**, off by default and en
 - `/metrics` — Prometheus text exposition. Counters, gauges, and histograms with **fixed, low-cardinality labels only**. No usernames, no room IDs, no track names. The rule is not stylistic: a label whose values grow with traffic turns a time-series database into an outage, and it is always the room ID that does it.
 - `/healthz` and `/readyz` — separated on purpose. Draining flips readiness so the load balancer stops sending new connections while liveness stays true, because a relay finishing its existing sessions is healthy and killing it would drop them.
 - `/sessions`, `/rooms` and `/tracks` — JSON snapshots, where the per-session, per-room and per-track detail lives. This is the pressure valve: the questions that genuinely need high cardinality get answered by a point-in-time query rather than by retaining a million series forever.
-- `/tracks` earns its place by answering the one question no transport signal can. A publisher whose camera freezes or whose encoder wedges keeps a healthy QUIC connection — it answers PINGs, its RTT is fine, its announcement stands — and the viewer is looking at a still picture. `silent_ms` per track is the only evidence, and naming the track is the point, which is exactly why it cannot be a metric: a series per track is a series per participant per rung. `/metrics` carries the population instead, as `moqom_relay_tracks_silent{ge="1|5|30"}`, cumulative so one comparison makes an alert.
+- `/tracks` earns its place by answering the one question no transport signal can. A publisher whose camera freezes or whose encoder wedges keeps a healthy [QUIC](https://www.rfc-editor.org/rfc/rfc9000) connection — it answers PINGs, its RTT is fine, its announcement stands — and the viewer is looking at a still picture. `silent_ms` per track is the only evidence, and naming the track is the point, which is exactly why it cannot be a metric: a series per track is a series per participant per rung. `/metrics` carries the population instead, as `moqom_relay_tracks_silent{ge="1|5|30"}`, cumulative so one comparison makes an alert.
 
 Round-trip time is sampled per session by polling the QUIC connection on a timer, not derived from anything above the transport, because `quinn` already maintains the estimate the congestion controller runs on and a second estimate would disagree with the first.
 
@@ -2468,7 +2468,7 @@ One type at one instant because the comparison is the diagnosis. "The link says 
 
 **Quality is five buckets, not a percentage.** A percentage invites an application to render a precision the underlying signals do not have. Loss dominates because loss is what a viewer sees; the congestion state can only lower the result and only by one level, floored above `bad`, because a controller backing off on a link that is delivering everything is the mechanism working rather than a fault — and an indicator that fires on every normal probe cycle is one that gets ignored on the day it is right.
 
-**The client has no round-trip time and does not invent one.** `Network.framework` does not surface a QUIC RTT estimate. The client reports the one-way delay gradient it does measure, and the relay reports true RTT for the same session. Pairing the two is the supported way to answer "them or me".
+**The client has no round-trip time and does not invent one.** `Network.framework` does not surface a [QUIC](https://www.rfc-editor.org/rfc/rfc9000) RTT estimate. The client reports the one-way delay gradient it does measure, and the relay reports true RTT for the same session. Pairing the two is the supported way to answer "them or me".
 
 **Per-participant quality uses that participant's own loss**, not the room aggregate. The aggregate spans every subscription, so one cohost on a failing connection would otherwise pull every tile's indicator down and point the viewer at their own network instead of at the person actually in trouble.
 
@@ -2522,7 +2522,7 @@ Two workloads are genuinely not.
 
 **Cohost recommendation.** Audience overlap is a bipartite walk — the people who watched A, and what else they watched — and past collaboration outcomes form a real graph over creators. This is already the plan's position, that cohost matching is a recommender problem rather than an agent one, and that the accuracy comes from the interaction flywheel.
 
-**Ban evasion.** Not currently in this plan and it should be. Identity is device-bound through DPoP thumbprints and bans are enforced per participant, which makes "banned user returns on a new device" the obvious next move. Detecting it is a reachability question — every account connected to a banned one through any path of shared devices, addresses, or payment instruments — with no fixed depth, which is precisely the query SQL is bad at and GQL is built for.
+**Ban evasion.** Not currently in this plan and it should be. Identity is device-bound through [DPoP](https://www.rfc-editor.org/rfc/rfc9449) thumbprints and bans are enforced per participant, which makes "banned user returns on a new device" the obvious next move. Detecting it is a reachability question — every account connected to a banned one through any path of shared devices, addresses, or payment instruments — with no fixed depth, which is precisely the query SQL is bad at and GQL is built for.
 
 Neither needs a graph *database*. BigQuery declares property graphs over tables you already have and queries them in GQL, so the graph is a view of the warehouse rather than a copy of it. That avoids the failure mode where the graph and the tables disagree and nobody can say which is right, and it avoids operating a fifth stateful system for two queries. A dedicated engine becomes worth reconsidering only if traversal moves onto the serving path under a latency budget — and note that the retrieval half of recommendation is Qdrant's job, which is a different shape of problem from traversal and is already scoped that way.
 
@@ -2670,7 +2670,7 @@ The gotchas they found, which we would otherwise rediscover:
 
 This is where the native plugin earns its cost. `obs_encoder_update()` applies at the next frame — about 16ms at 60fps — gated on `OBS_ENCODER_CAP_DYN_BITRATE`. Meanwhile **OBS's own dynamic bitrate infers bandwidth from how long a blocking socket write takes**, because RTMP over TCP gives it nothing better, with a 200ms queue trigger, a 4-second ramp, and a hard cap at the starting bitrate.
 
-We have real RTT, real loss and ECN, and real congestion-window and pacing telemetry from QUIC. So: leave OBS's dynamic bitrate off, run `moqom-cc` against the transport's actual state, and drive the result back through `obs_encoder_update`. That is the same encoder feedback loop we build for our own SDKs, extended to the tool creators already use — and it is strictly better than what any RTMP or WHIP path can offer. Rate-limit updates to around 200ms and read-modify-write the settings object rather than replacing it.
+We have real RTT, real loss and ECN, and real congestion-window and pacing telemetry from [QUIC](https://www.rfc-editor.org/rfc/rfc9000). So: leave OBS's dynamic bitrate off, run `moqom-cc` against the transport's actual state, and drive the result back through `obs_encoder_update`. That is the same encoder feedback loop we build for our own SDKs, extended to the tool creators already use — and it is strictly better than what any RTMP or WHIP path can offer. Rate-limit updates to around 200ms and read-modify-write the settings object rather than replacing it.
 
 Two smaller wins: implement `get_congestion` so the OBS UI's connection-quality indicator reflects our transport, and use `obs_output_add_packet_callback`'s `encoder_packet_time` (composition, encode-request, encode-complete, interleave timestamps) for free end-to-end latency telemetry that nobody else instruments.
 
@@ -2766,7 +2766,7 @@ getUserMedia / getDisplayMedia
   -> moqom-client (WASM) -> WebTransport
 ```
 
-Two Safari releases closed the last gaps: **26.0** shipped `AudioEncoder`/`AudioDecoder` (16.4 had been video-only) and **26.4** shipped WebTransport, taking it to Baseline in March 2026.
+Two Safari releases closed the last gaps: **26.0** shipped `AudioEncoder`/`AudioDecoder` (16.4 had been video-only) and **26.4** shipped [WebTransport](https://datatracker.ietf.org/doc/draft-ietf-webtrans-http3/), taking it to Baseline in March 2026.
 
 The viewer is the same path in reverse, with `VideoFrame` going to WebGPU via `importExternalTexture()` — it samples the decoder's native YUV planes with no copy and no intermediate RGBA pass. Compile `moqom-client` to WASM rather than maintaining a second TypeScript protocol implementation.
 
@@ -2784,7 +2784,7 @@ OBS already owns desktop *broadcasting*, so this is not that. The desktop app is
 
 ### The media path is the decision that matters
 
-The naive build wraps the web SDK in Electron and ships. That works immediately and is a legitimate first release, but it inherits Chromium's WebTransport stack, which means **no `moqom-cc`, no raw QUIC ALPN, no connection-migration control, and a weaker encoder feedback loop** — that is, it gives up the differentiators the rest of the plan exists to build.
+The naive build wraps the web SDK in Electron and ships. That works immediately and is a legitimate first release, but it inherits Chromium's [WebTransport](https://datatracker.ietf.org/doc/draft-ietf-webtrans-http3/) stack, which means **no `moqom-cc`, no raw [QUIC](https://www.rfc-editor.org/rfc/rfc9000) ALPN, no connection-migration control, and a weaker encoder feedback loop** — that is, it gives up the differentiators the rest of the plan exists to build.
 
 The better split, and it is cleaner than it first appears:
 
@@ -2853,7 +2853,7 @@ These are not decoration. They do four jobs, and the second one is the reason to
 
 - **iOS** — Swift 6 with strict concurrency enabled, since data-race safety at compile time is the whole point of the language mode and an SDK that cannot be used from it is already dated. SwiftUI with `@Observable`, Swift Testing rather than XCTest, SPM distribution. **The SDK surface should be async-first**: `AsyncSequence` for event streams, `async` functions for operations, with the delegate callbacks kept as an escape hatch rather than the primary interface.
 - **Android** — Kotlin with coroutines and `Flow`, Jetpack Compose, Material 3. One tension to note honestly: **CameraX is the modern recommended API but hands out CPU-usage buffers that break the zero-copy path**, so the sample must use Camera2 with `AImageReader` for capture. That is a place where the idiomatic choice and the fast choice disagree, and the sample should show the fast one with a comment explaining why.
-- **Web** — TypeScript in strict mode, Vite, React 19, WebGPU and WebCodecs and WebTransport directly rather than behind a polyfill that hides what is happening.
+- **Web** — TypeScript in strict mode, Vite, React 19, WebGPU and WebCodecs and [WebTransport](https://datatracker.ietf.org/doc/draft-ietf-webtrans-http3/) directly rather than behind a polyfill that hides what is happening.
 
 ### AR and scene effects
 
@@ -3040,7 +3040,7 @@ Whatever gets built, four constraints are not negotiable, and they are what a na
 ## Risks
 
 - **The wire format is not frozen.** Draft-19 expires January 2027 and publication is targeted for December 2026. Keep `moqom-proto` versioned behind ALPN and budget for one or two churn cycles.
-- **Congestion control is the hardest thing in the plan and the easiest to get wrong.** `moqom-cc` is our biggest differentiator and our biggest technical risk — a controller can win a benchmark by starving every other flow on the link, or spiral into collapse under loss. Ship on stock Cubic, build the harness first, and treat fairness against competing TCP and QUIC flows as a release gate rather than a nice-to-have. quinn's own BBR is v1 and marked experimental, so it is a comparison baseline, not a fallback.
+- **Congestion control is the hardest thing in the plan and the easiest to get wrong.** `moqom-cc` is our biggest differentiator and our biggest technical risk — a controller can win a benchmark by starving every other flow on the link, or spiral into collapse under loss. Ship on stock Cubic, build the harness first, and treat fairness against competing TCP and [QUIC](https://www.rfc-editor.org/rfc/rfc9000) flows as a release gate rather than a nice-to-have. quinn's own BBR is v1 and marked experimental, so it is a comparison baseline, not a fallback.
 - **quinn 0.12 is a pending breaking change.** `main` has carried the version bump for months. Keep the `Transport` trait boundary clean so the upgrade touches one crate.
 - Building draft-19 from scratch means no interop partner on day one. The conformance harness is not optional — it is how we know we're right.
 - **The scaling story is now measured rather than inferred, and the per-host ceiling is lower than the per-core figure suggests.** A four-core relay on GCP with the load generated from other hosts sustains about 1,400 subscribers per core, flat from 1,000 subscribers to 3,500, every object delivered to everybody — which sits inside the 1,000-2,000 that `draft-evens-moq-bench` reports and retires the doubt the earlier Mac figure of ~160 created. That one was a shared loopback, not the relay. Two cautions replace it. The cliff is sharp: 3,500 works and 4,000 sheds 33,571 subgroups with a 5.5-second p50, so fleets must be sized to stay left of it rather than to approach it. And the relay peaked at 3.4 of 4 cores while failing, because one quinn endpoint on one socket cannot spread across a host — so per-host capacity is capped by a single endpoint rather than by the machine, and `sharding` is worth more than any other performance item outstanding. Quote per-core with that ceiling attached, and remember every subscriber in the sweep took 0.98 Mbit/s; a 720p viewer is two and a half times heavier.
@@ -3058,7 +3058,7 @@ Whatever gets built, four constraints are not negotiable, and they are what a na
 - **The native OBS plugin is blocked on someone else's pull request.** Until #12911 merges into OBS 33 and users upgrade, a plugin-registered service can't appear in the Stream settings UI without a forked OBS build. That is outside our control, which is the strongest argument for WHIP carrying the OBS story indefinitely rather than provisionally.
 - **On-device neural effects are oversold across the industry.** No vendor demonstrably ships real-time full-frame neural re-render in a live mobile broadcast pipeline in 2026. Benchmark any such claim on our own thermally-loaded pipeline with encode running before believing it, and keep the server-side derived-track path as the honest answer for heavy re-renders.
 - **Cloudflare's footprint is the one advantage we cannot engineer around.** 330+ cities against our handful of regions, and the multi-hop latency argument depends on a short last hop. Everything else about their MoQ offering is beatable — no clients, no encoder, no rooms, no agents, no FETCH — but if a customer's binding constraint is glass-to-glass latency in a region we don't serve, we lose that deal until we build there or ship the dialect. Track this as an explicit sales-loss reason so expansion is driven by data rather than anxiety.
-- **They are moving faster than a twelve-version gap would suggest.** Production is at draft-16 with draft-18 in active development, and they are productizing — a provisioning API and JWT auth appeared recently. The window where we are meaningfully ahead on protocol is real but not indefinite, and the durable moat is the client stack rather than the draft number.
+- **They are moving faster than a twelve-version gap would suggest.** Production is at draft-16 with draft-18 in active development, and they are productizing — a provisioning API and [JWT](https://www.rfc-editor.org/rfc/rfc7519) auth appeared recently. The window where we are meaningfully ahead on protocol is real but not indefinite, and the durable moat is the client stack rather than the draft number.
 - **Cloudflare's own documentation is unreliable on protocol version.** Their public docs still describe draft-07 months after production moved to draft-16. Verify against the ALPN handshake, never the docs, and re-verify before any interop work starts.
 - **Compatibility adapters are a permanent maintenance liability chasing a moving target.** Agora and LiveKit will keep shipping API changes, and every one of them is a bug report against us that we did not cause and cannot prevent. Worse, an adapter caps the experience at whatever their abstraction expresses — a customer who never leaves the shim never sees what we are actually better at. Treat adapters explicitly as an *on-ramp with an off-ramp*: version-pin the surface, publish the compatibility matrix, and make the native API visibly better so migrating off the shim is the obvious next step rather than an indefinite parking spot.
 - **Recording is the feature most likely to be quietly unprofitable.** The marginal cost of ingesting a recording is near zero, which makes it easy to enable generously, but storage accumulates forever and egress is billed on every playback. Platforms discover this a year in, when the only remedies left — imposing retention on existing recordings, or repricing — are both support events. Set a finite default retention and lifecycle tiering at design time, and model the unit economics of a heavy tenant before the feature ships rather than after.
@@ -3070,8 +3070,8 @@ Terms used above that are worth spelling out:
 
 **Control plane vs data plane.** The data plane is the relay: it moves media packets and nothing else, and every microsecond in it matters. The control plane is the ordinary web service beside it that handles accounts, tenants, API keys, device registration, token issuance, the stream directory, usage metering, and webhooks. It never touches media. Splitting them is why Go is fine for one and Rust is required for the other — a 5ms control-plane response is invisible, a 5ms relay stall is a dropped frame.
 
-**CAT — Common Access Token.** A bearer token, same idea as a JWT, but encoded as CBOR instead of JSON, so it's a compact binary blob rather than base64 text. It matters here because `draft-ietf-moq-c4m-01` is the MoQ working group's authorization scheme and it's built on CAT with a MOQT-specific `moqt` claim that says, in structured form, "this token may PUBLISH to namespace `(acme, u, alice, iphone-3f9a)` and SUBSCRIBE to anything under `(acme, u, *)`." The relay enforces that directly. Default is deny: once a token is present, every action is blocked unless the claim explicitly allows it.
+**CAT — Common Access Token.** A bearer token, same idea as a [JWT](https://www.rfc-editor.org/rfc/rfc7519), but encoded as CBOR instead of JSON, so it's a compact binary blob rather than base64 text. It matters here because [`draft-ietf-moq-c4m-01`](https://datatracker.ietf.org/doc/html/draft-ietf-moq-c4m-01) is the MoQ working group's authorization scheme and it's built on CAT with a MOQT-specific `moqt` claim that says, in structured form, "this token may PUBLISH to namespace `(acme, u, alice, iphone-3f9a)` and SUBSCRIBE to anything under `(acme, u, *)`." The relay enforces that directly. Default is deny: once a token is present, every action is blocked unless the claim explicitly allows it.
 
-**DPoP — Demonstrating Proof of Possession.** Ordinary bearer tokens have one flaw: anyone holding the bytes can use them. DPoP fixes that by binding the token to a key the client holds privately. At install, each device generates a P-256 keypair in the Secure Enclave or Android Keystore, where the private key cannot be extracted. The token carries a `cnf` claim containing the JWK Thumbprint (`jkt`) — a hash of that device's public key. To use the token, the client signs a fresh proof with the private key, and the relay checks the signature against the thumbprint. A token stolen off the wire or out of a log is useless without the hardware key.
+**[DPoP](https://www.rfc-editor.org/rfc/rfc9449) — Demonstrating Proof of Possession.** Ordinary bearer tokens have one flaw: anyone holding the bytes can use them. DPoP fixes that by binding the token to a key the client holds privately. At install, each device generates a P-256 keypair in the Secure Enclave or Android Keystore, where the private key cannot be extracted. The token carries a `cnf` claim containing the [JWK](https://www.rfc-editor.org/rfc/rfc7517) Thumbprint (`jkt`) — a hash of that device's public key. To use the token, the client signs a fresh proof with the private key, and the relay checks the signature against the thumbprint. A token stolen off the wire or out of a log is useless without the hardware key.
 
 **Why this answers the multi-device question.** The username never changes shape and never gets a device ID appended. One user, one string ID, N devices, each with its own hardware-bound credential and its own namespace tuple field. Losing a phone means revoking one thumbprint rather than rotating the user's identity or invalidating their other sessions.

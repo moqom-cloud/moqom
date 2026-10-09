@@ -45,7 +45,7 @@ bytes there are, and a record ends when they run out.
 
 A **field** is a key followed by a payload.
 
-The **key** is a QUIC variable-length integer (RFC 9000 §16) holding:
+The **key** is a QUIC variable-length integer ([RFC 9000](https://www.rfc-editor.org/rfc/rfc9000) §16) holding:
 
 ```
 tag << 2 | wireType
@@ -95,7 +95,7 @@ encodes no value at all.
 
 ### Integer range
 
-The varints are QUIC's, so they carry **62 bits**, not 64. Signed varints are
+The varints are [QUIC](https://www.rfc-editor.org/rfc/rfc9000)'s, so they carry **62 bits**, not 64. Signed varints are
 zigzagged and so carry 61 bits and a sign.
 
 This is inherited deliberately. Encoding integers exactly as MOQT does means an
@@ -202,7 +202,7 @@ Each track that uses this format documents its own tags alongside its types.
 | `.control` | room control log | JSON, to be moved; every entry signed (below) |
 | catalog | per-publisher track list | JSON, to be moved; sealed end to end (below) |
 
-**The catalog is sealed** with the publisher's SFrame key, like the media it
+**The catalog is sealed** with the publisher's [SFrame](https://www.rfc-editor.org/rfc/rfc9605) key, like the media it
 describes. Its disclosure travels beside it as object property `0x7D`, JSON in
 the catalog's own shape holding only the version, the SFrame key ID, the locale,
 and each track's name, kind and video geometry: what the relay tiers usage on
@@ -211,7 +211,7 @@ ciphertext, so a relay can read it and cannot change it. Codecs, bitrates,
 decoder configurations, mutes, invitations and everything added later are
 inside the ciphertext.
 
-**Every control entry is signed** by the control plane with ML-DSA-65, as
+**Every control entry is signed** by the control plane with [ML-DSA-65](https://csrc.nist.gov/pubs/fips/204/final), as
 object property `0x7F`: one byte of key ID length, the key ID, then the
 signature over `"moqom room log v1" ‖ 0 ‖ tenant ‖ 0 ‖ room ‖ 0 ‖ entry`.
 Clients apply only entries that verify against the control plane's published

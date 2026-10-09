@@ -65,14 +65,14 @@ recording is ever enabled.
 
 ## Lawful intercept and law-enforcement requests
 
-MOQOM cannot produce media it does not store, and cannot decrypt SFrame media.
+MOQOM cannot produce media it does not store, and cannot decrypt [SFrame](https://www.rfc-editor.org/rfc/rfc9605) media.
 Requests for stored data (account, logs) need valid legal process. Record each
 request; notify the affected tenant unless prohibited. A published policy is
 Planned.
 
 ## Export controls
 
-The SDKs use standard cryptography (TLS, SFrame) and are published as open
+The SDKs use standard cryptography (TLS, [SFrame](https://www.rfc-editor.org/rfc/rfc9605)) and are published as open
 source. Publicly available encryption source code is generally outside the US
 EAR (§734.3(b)(3), §742.15(b)). The private relay and any binary distribution
 may need classification (likely 5D002 with a mass-market or License Exception

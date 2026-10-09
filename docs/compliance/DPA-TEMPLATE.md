@@ -50,7 +50,7 @@ h) inform Customer if, in its opinion, an instruction infringes data
 
 The Service relays real-time audio and video and **does not record or store
 media** unless Customer configures recording to a storage bucket Customer
-controls. Where Customer's clients enable SFrame end-to-end encryption, MOQOM
+controls. Where Customer's clients enable [SFrame](https://www.rfc-editor.org/rfc/rfc9605) end-to-end encryption, MOQOM
 cannot access media content.
 
 ## 5. Subprocessors
@@ -148,8 +148,8 @@ SCCs govern over both.
 
 Summarised from MOQOM's control catalog (`docs/compliance/README.md`):
 
-- **Encryption**: TLS 1.3 (QUIC) and TLS ≥1.2 in transit; mutual TLS between
-  MOQOM components; AES-256 at rest; optional SFrame end-to-end media encryption.
+- **Encryption**: [TLS 1.3](https://www.rfc-editor.org/rfc/rfc8446) ([QUIC](https://www.rfc-editor.org/rfc/rfc9000)) and TLS ≥1.2 in transit; mutual TLS between
+  MOQOM components; AES-256 at rest; optional [SFrame](https://www.rfc-editor.org/rfc/rfc9605) end-to-end media encryption.
 - **Access control**: a single administrator with MFA; workload identities
   without long-lived keys; least-privilege service accounts; tenant-scoped,
   hashed API keys.

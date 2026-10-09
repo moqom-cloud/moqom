@@ -9,8 +9,8 @@ mechanism, that one may not.
 
 Every room requires end-to-end encryption, and a room keys itself when the app
 has given `DeviceCredentials` a `keyDelivery` and has not called
-`useEncryption`. Devices that may publish, and agents, agree an MLS group per
-room; each epoch's exporter becomes the SFrame base key. Viewers are not
+`useEncryption`. Devices that may publish, and agents, agree an [MLS](https://www.rfc-editor.org/rfc/rfc9420) group per
+room; each epoch's exporter becomes the [SFrame](https://www.rfc-editor.org/rfc/rfc9605) base key. Viewers are not
 members: the committer seals each epoch's base key to them (sender keys,
 below). The control plane orders handshake messages, stores public key
 packages and viewers' public keys, and holds sealed envelopes. It never sees an
@@ -20,8 +20,8 @@ epoch secret, an exporter, or an SFrame key.
 
 | File | What |
 | --- | --- |
-| `MLSCipherSuite.swift` | Three suites on CryptoKit: the founding suite `0xF0AA` (ML-KEM-768, AES-256-GCM, SHA-384, ML-DSA-65), and `0xF0A1` (X-Wing, AES-128-GCM, SHA-256, Ed25519) and `0x0001` (X25519, AES-128-GCM, SHA-256, Ed25519) for groups already founded in them; labelled KDF, SignWithLabel, EncryptWithLabel. See "Cipher suites" below. |
-| `MLSKeySchedule.swift` | RFC 9420 §8 epoch schedule, exporter, and the RFC 9605 §5.2 bridge. |
+| `MLSCipherSuite.swift` | Three suites on CryptoKit: the founding suite `0xF0AA` ([ML-KEM-768](https://csrc.nist.gov/pubs/fips/203/final), AES-256-GCM, SHA-384, [ML-DSA-65](https://csrc.nist.gov/pubs/fips/204/final)), and `0xF0A1` (X-Wing, AES-128-GCM, SHA-256, Ed25519) and `0x0001` (X25519, AES-128-GCM, SHA-256, Ed25519) for groups already founded in them; labelled KDF, SignWithLabel, EncryptWithLabel. See "Cipher suites" below. |
+| `MLSKeySchedule.swift` | [RFC 9420](https://www.rfc-editor.org/rfc/rfc9420) §8 epoch schedule, exporter, and the [RFC 9605](https://www.rfc-editor.org/rfc/rfc9605) §5.2 bridge. |
 | `MLSGroup.swift` | KeyPackages, Welcome, Add/Remove commits, roster, epoch authenticator. |
 | `MLSDelivery.swift` | `MLSDeliveryService` protocol and `HTTPMLSDelivery` (pinned like `TokenService`). |
 | `ManagedRoomKeys.swift` | The actor that runs a room's membership: sync loop, committer rule, key installation, agent disclosure, sealing to the audience and rotating for it. |
@@ -36,23 +36,23 @@ crypto-basics (RefHash, ExpandWithLabel, DeriveSecret, DeriveTreeSecret,
 SignWithLabel, EncryptWithLabel), key-schedule (every epoch, every secret, the
 exporter), and deserialization (variable-length vector headers). Tree math,
 secret tree, tree validation, transcript hashes, welcome and message vectors do
-not apply: there is no ratchet tree, no secret tree (SFrame derives per-sender
+not apply: there is no ratchet tree, no secret tree ([SFrame](https://www.rfc-editor.org/rfc/rfc9605) derives per-sender
 keys itself), and the framing is our own. The working group publishes these
 vectors for suite `0x0001` only. For the hybrid suite,
-`MLSHybridSuiteTests` checks CryptoKit's X-Wing HPKE against the HPKE working
+`MLSHybridSuiteTests` checks CryptoKit's X-Wing [HPKE](https://www.rfc-editor.org/rfc/rfc9180) against the HPKE working
 group's vector for KEM `0x647a` with HKDF-SHA256 (`hpkewg/hpke-pq`
 `test-vectors.json`). That vector uses ChaCha20-Poly1305; none is published
-with AES-128-GCM. For `0xF0AA`, `MLSPostQuantumSuiteTests` checks the ML-KEM-768
-HPKE and ML-DSA-65 signatures against Go's `crypto/hpke` and `crypto/mldsa`, and
+with AES-128-GCM. For `0xF0AA`, `MLSPostQuantumSuiteTests` checks the [ML-KEM-768](https://csrc.nist.gov/pubs/fips/203/final)
+HPKE and [ML-DSA-65](https://csrc.nist.gov/pubs/fips/204/final) signatures against Go's `crypto/hpke` and `crypto/mldsa`, and
 the SHA-384 key schedule passes the working group's suite 7 vectors.
 
 ### Cipher suites
 
 | Value | Name | Source |
 | --- | --- | --- |
-| `0xF0AA` (the only suite new groups are founded in) | `MLS_192_MLKEM768_AES256GCM_SHA384_MLDSA65` | draft-ietf-mls-pq-ciphersuites: HPKE over ML-KEM-768 (FIPS 203), HKDF-SHA384, AES-256-GCM, ML-DSA-65 (FIPS 204) |
+| `0xF0AA` (the only suite new groups are founded in) | `MLS_192_MLKEM768_AES256GCM_SHA384_MLDSA65` | [draft-ietf-mls-pq-ciphersuites](https://datatracker.ietf.org/doc/draft-ietf-mls-pq-ciphersuites/): [HPKE](https://www.rfc-editor.org/rfc/rfc9180) over ML-KEM-768 ([FIPS 203](https://csrc.nist.gov/pubs/fips/203/final)), HKDF-SHA384, AES-256-GCM, ML-DSA-65 ([FIPS 204](https://csrc.nist.gov/pubs/fips/204/final)) |
 | `0xF0A1` | `MLS_128_MLKEM768X25519_AES128GCM_SHA256_Ed25519` | draft-ietf-mls-pq-ciphersuites-06, suite "TBD1": HPKE KEM `0x647a` (X-Wing), HKDF-SHA256, AES-128-GCM, Ed25519 |
-| `0x0001` | `MLS_128_DHKEMX25519_AES128GCM_SHA256_Ed25519` | RFC 9420 |
+| `0x0001` | `MLS_128_DHKEMX25519_AES128GCM_SHA256_Ed25519` | [RFC 9420](https://www.rfc-editor.org/rfc/rfc9420) |
 
 `0xF0AA` and `0xF0A1` are private-use values (RFC 9420 §17.1,
 `0xF000`–`0xFFFF`) because the draft's values are still TBD. When IANA assigns
@@ -72,7 +72,7 @@ working until they are dropped.
 Every secret MLS sends is HPKE-sealed to ML-KEM-768: commit secrets to leaf
 keys, and joiner secrets to init keys. Key packages, commits and GroupInfo are
 signed with ML-DSA-65. Everything derived from an epoch inherits that, which
-covers the exporter, the SFrame base key and per-sender keys, the key sealed to
+covers the exporter, the [SFrame](https://www.rfc-editor.org/rfc/rfc9605) base key and per-sender keys, the key sealed to
 viewers (also over ML-KEM-768, whatever the group's suite), and the key for
 sealed direct-mode candidate offers. Media is protected by AES-256-GCM under
 those keys. Participant tokens and the room control log are ML-DSA-65 too.
@@ -81,7 +81,7 @@ those keys. Participant tokens and the room control log are ML-DSA-65 too.
 possession proofs. The enclave holds ML-DSA-65 keys from OS 26 (`SecureEnclave.MLDSA65`), so moving proofs is ours to do, not a hardware limit. Direct tickets
 are EdDSA (Ed25519) JWTs. A quantum attacker could forge these, but only while
 they are being checked; forging one later does not decrypt recorded traffic.
-TLS and QUIC to the relay and control plane are outside this document.
+TLS and [QUIC](https://www.rfc-editor.org/rfc/rfc9000) to the relay and control plane are outside this document.
 
 **Sizes.** An ML-KEM-768 public key is 1,184 bytes and an encapsulation 1,088;
 an ML-DSA-65 public key is 1,952 bytes and a signature 3,309. A key package is
@@ -99,10 +99,10 @@ suite the build does not implement is not joined.
 ### Where the group protocol departs from RFC 9420
 
 - **Flat member list, no ratchet tree.** The committer seals the commit secret
-  to every member's leaf key with HPKE. Linear per commit; fine for calls of a
+  to every member's leaf key with [HPKE](https://www.rfc-editor.org/rfc/rfc9180). Linear per commit; fine for calls of a
   few hundred, which is the scope of this construction.
 - **Own TLS-style encoding** for KeyPackage, Commit and Welcome. Not
-  interoperable with other MLS stacks, and not claimed to be.
+  interoperable with other [MLS](https://www.rfc-editor.org/rfc/rfc9420) stacks, and not claimed to be.
 - **No standalone proposals.** Add and Remove ride inside the commit that
   applies them. Update is an empty commit, which refreshes the committer's leaf.
 - **No PSKs, no external commits, no secret tree, no application messages.**
@@ -115,7 +115,7 @@ suite the build does not implement is not joined.
 
 `base_key = MLS-Exporter("SFrame 1.0 Base Key", "", AEAD.Nk)` per epoch.
 `KID = (leaf_index << 4) | (epoch % 16)`; sender separation is by KID through
-SFrame's own key derivation, so every member can derive every sender key in its
+[SFrame](https://www.rfc-editor.org/rfc/rfc9605)'s own key derivation, so every member can derive every sender key in its
 epoch (§5.2's stated limitation: members can forge each other's media).
 Receivers drop an old epoch's keys before its low bits wrap.
 
@@ -139,7 +139,7 @@ A device whose token carries `moqt.pub == 0` and is not an agent is a viewer.
 The key service refuses it key packages and founding (`Caller.Viewer`), and
 MoqomKit runs `AudienceKeys` for it instead of `ManagedRoomKeys`:
 
-- The viewer makes an ML-KEM-768 key pair per session, keeps the private half
+- The viewer makes an [ML-KEM-768](https://csrc.nist.gov/pubs/fips/203/final) key pair per session, keeps the private half
   in memory, and posts the public half with every long poll
   (`POST /mls/v1/audience`), which is also its heartbeat.
 - A member's sync reports `audience` (viewers heard from within 30 s) and
@@ -148,7 +148,7 @@ MoqomKit runs `AudienceKeys` for it instead of `ManagedRoomKeys`:
 - The rank-0 committer asks for the work, seals
   `MLS-Exporter("SFrame 1.0 Base Key")` to each with
   `EncryptWithLabel(pk, "MOQOM audience key", groupID ‖ epoch, base_key)` over
-  ML-KEM-768 HPKE, and posts up to 512 envelopes per request. The service
+  ML-KEM-768 [HPKE](https://www.rfc-editor.org/rfc/rfc9180), and posts up to 512 envelopes per request. The service
   refuses envelopes for any epoch but the current one.
 - The viewer installs a `SFrameReceiver` resolver: for a KID whose low four bits
   match a held epoch, `SFrameKey(keyID: kid, baseKey: base)`. It keeps the
@@ -200,7 +200,7 @@ relay is stateless and ordering needs one writer per room).
 
 | Route | Body → reply |
 | --- | --- |
-| `PUT /mls/v1/keypackages` | `{keyPackages, lastResort}` → 204. Replaces the device's set; identity must equal the caller; signatures checked (ML-DSA-65 with `crypto/mldsa`, or Ed25519); every package in one known suite, keys the suite's length, ML-KEM keys checked with `crypto/mlkem`. 403 for a viewer. |
+| `PUT /mls/v1/keypackages` | `{keyPackages, lastResort}` → 204. Replaces the device's set; identity must equal the caller; signatures checked ([ML-DSA-65](https://csrc.nist.gov/pubs/fips/204/final) with `crypto/mldsa`, or Ed25519); every package in one known suite, keys the suite's length, ML-KEM keys checked with `crypto/mlkem`. 403 for a viewer. |
 | `POST /mls/v1/keypackages/claim` | `{device}` → `{keyPackage}`. Caller must be a member; target must be pending. One-time first, then the never-consumed last resort. 409 if the package is not in the group's suite (it is still consumed). |
 | `GET /mls/v1/sync?after=&wait=` | Long poll ≤ 25 s → `{group: {id, epoch, cipherSuite}, messages, members, pending, cursor, audience, audienceWaiting}`. Welcomes only to their recipients; the audience counts only to members. |
 | `POST /mls/v1/group` | `{groupId, cipherSuite}` → 201, or 409 if a group exists, or 400 for any suite but `0xF0AA`. 403 for a viewer. |
@@ -233,7 +233,7 @@ losing this state costs each live room one re-founding and nothing else.
   hosted rooms.
 - A ratchet tree (logarithmic commits), PSKs, external commits, cross-stack
   interop.
-- Per-sender signatures on media (SFrame does not provide them).
+- Per-sender signatures on media ([SFrame](https://www.rfc-editor.org/rfc/rfc9605) does not provide them).
 - Clients other than Apple.
 
 ## Deploy

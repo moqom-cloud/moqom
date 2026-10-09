@@ -30,7 +30,7 @@ Three credentials with three holders, none of which can stand in for another:
 | Credential | Held by | Lifetime | Can do |
 |---|---|---|---|
 | API key `mqk_<id>_<secret>` | Customer backend, or an agent with a scoped key | Until revoked, rotated or its optional expiry | Admin API for one tenant, within its kind; mint tokens |
-| Join token (JWS) | One device | ≤15 min, default 10 | Join one room with the stated grants |
+| Join token ([JWS](https://www.rfc-editor.org/rfc/rfc7515)) | One device | ≤15 min, default 10 | Join one room with the stated grants |
 | Device key (P-256) | Secure Enclave | Device life | Prove the token was issued to this device |
 
 ## 1. API keys
@@ -193,10 +193,10 @@ Reasoning:
 
 - **Asymmetric signing.** Relays hold public keys only. A compromised relay can
   verify tokens and cannot mint one.
-- **Algorithm pinned.** The classic JWT forgeries are `alg: none` and HMAC
+- **Algorithm pinned.** The classic [JWT](https://www.rfc-editor.org/rfc/rfc7519) forgeries are `alg: none` and HMAC
   verified with the public key as the secret. Only EdDSA is accepted, so
-  neither applies (RFC 8725 §3.1).
-- **Explicit type.** `typ: MOQT` stops a JWS minted for something else from
+  neither applies ([RFC 8725](https://www.rfc-editor.org/rfc/rfc8725) §3.1).
+- **Explicit type.** `typ: MOQT` stops a [JWS](https://www.rfc-editor.org/rfc/rfc7515) minted for something else from
   being replayed at a relay (RFC 8725 §3.11).
 - **Signature before claims.** Nothing in an unverified token is read.
 - **Strict decoding.** Unknown claims and unknown capability bits are refused,
@@ -254,7 +254,7 @@ Reasoning:
 
 Residual: a restarted relay forgets which proofs it has seen, so a proof
 captured and never delivered could be replayed at that relay within its
-token's remaining minutes. Capturing one requires breaking TLS 1.3, which
+token's remaining minutes. Capturing one requires breaking [TLS 1.3](https://www.rfc-editor.org/rfc/rfc8446), which
 exposes the session anyway.
 
 ## 4. What an attacker gets
@@ -301,19 +301,19 @@ ISO 27001 certified; status is in `docs/compliance/`.
 | SOC 2 TSC | CC6.1 logical access | Per-tenant keys, key kinds, scoped tokens | Implemented |
 | SOC 2 TSC | CC6.2, CC6.3 provisioning and removal | Revocable keys, rotation overlap | Implemented |
 | SOC 2 TSC | CC6.6 boundary protection | Relays verify signatures; admin API refuses relay keys | Implemented |
-| SOC 2 TSC | CC6.7 transmission | TLS 1.3 every hop; E2EE by default | Implemented |
+| SOC 2 TSC | CC6.7 transmission | [TLS 1.3](https://www.rfc-editor.org/rfc/rfc8446) every hop; E2EE by default | Implemented |
 | SOC 2 TSC | CC6.1 least privilege | `mint` and `readonly` keys; expiry; IP allowlists | Implemented |
 | SOC 2 TSC | CC7.2 monitoring | Metrics for bad signatures, replays, wrong-key proofs; per-key audit log of every use and outcome; leaked-key revocation | Implemented |
 | ISO 27001:2022 | A.5.17 authentication information | Peppered hashes, shown once, leak-detectable prefix, automatic revocation on public leak | Implemented |
 | ISO 27001:2022 | A.8.5 secure authentication | Short-lived signed tokens bound to a hardware key | Implemented |
-| ISO 27001:2022 | A.8.24 cryptography | Ed25519, ECDSA P-256, SHA-256, AES-256-GCM (SFrame) | Implemented |
+| ISO 27001:2022 | A.8.24 cryptography | Ed25519, ECDSA P-256, SHA-256, AES-256-GCM ([SFrame](https://www.rfc-editor.org/rfc/rfc9605)) | Implemented |
 | ISO 27001:2022 | A.8.15 logging | Auth failures counted by cause; key-use audit (key, tenant, operation, source, outcome, time), 400-day retention, tenant-readable | Implemented |
 | OWASP API Top 10 2023 | API1 object-level authorisation | Tenant and room in the signed scope | Implemented |
 | OWASP API Top 10 2023 | API2 broken authentication | Pinned algorithm, short life, possession proof | Implemented |
 | OWASP API Top 10 2023 | API4 resource consumption | Proof size cap, bounded replay set, credit gate, per-key rate limits (per replica) | Implemented |
 | OWASP API Top 10 2023 | API5 function-level authorisation | Key kinds; capability bitmask enforced at relay | Implemented |
-| RFC 8725 | §3.1 algorithm verification, §3.11 explicit typing | `alg` pinned, `typ: MOQT` | Implemented |
-| RFC 9449, RFC 7638 | Sender-constrained tokens, JWK thumbprint | `cnf.jkt` plus ES256 proof, one per session | Implemented |
+| [RFC 8725](https://www.rfc-editor.org/rfc/rfc8725) | §3.1 algorithm verification, §3.11 explicit typing | `alg` pinned, `typ: MOQT` | Implemented |
+| [RFC 9449](https://www.rfc-editor.org/rfc/rfc9449), [RFC 7638](https://www.rfc-editor.org/rfc/rfc7638) | Sender-constrained tokens, [JWK](https://www.rfc-editor.org/rfc/rfc7517) thumbprint | `cnf.jkt` plus ES256 proof, one per session | Implemented |
 | NIST SP 800-57 | Key management and rotation | Key sets with overlap, derived IDs; versioned pepper in Secret Manager with rehash on use | Implemented |
 | GDPR Art. 25, 32 | Minimisation, security of processing | Token carries a username only; E2EE by default | Implemented |
 | PCI DSS v4.0 | Cardholder data | Stripe Checkout takes cards; MOQOM never sees a card number (SAQ A) | By design |

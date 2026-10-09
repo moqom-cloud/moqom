@@ -68,7 +68,7 @@ marketing sites are out of scope except where they collect signups.
 | CC6.4 Physical access | Inherited from Google Cloud (data centres) | VEN-2 | Inherited |
 | CC6.5 Disposal | Retention sweep; Google media sanitisation (inherited) | DAT-7 | Planned (code ready) |
 | CC6.6 External threats | Firewall allowlist check, private nodes, TLS | NET-1..4 | **Partial**: ssh/rdp open |
-| CC6.7 Data in transit | TLS 1.2+/1.3, ENCRYPTED_ONLY SQL, SFrame | DAT-2, DAT-3 | Implemented |
+| CC6.7 Data in transit | TLS 1.2+/1.3, ENCRYPTED_ONLY SQL, [SFrame](https://www.rfc-editor.org/rfc/rfc9605) | DAT-2, DAT-3 | Implemented |
 | CC6.8 Malicious software | Distroless images, image scanning, dependency scanning | VUL-1, VUL-3 | Planned |
 
 ## CC7 System operations

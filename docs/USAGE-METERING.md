@@ -226,7 +226,7 @@ link to watch unmetered.
 - **One room per link.** The minter requires `room` and refuses a room that doesn't exist (404)
   or has ended (410). The relay refuses an `rly` token with no room, and on a link it refuses
   `PUBLISH_NAMESPACE` and any read outside that room, backstage included, with `UNAUTHORIZED`.
-- **Bound to a key.** The minter requires `key` (a public JWK) and binds the token to it with
+- **Bound to a key.** The minter requires `key` (a public [JWK](https://www.rfc-editor.org/rfc/rfc7517)) and binds the token to it with
   `cnf.jkt`. The edge generates a P-256 key at startup, held only in memory, and on every link
   presents an ES256 `MOQT-POP` proof with the token, made the same way as a client's
   (`moqom-client`'s device key). It binds `ath` (the token's hash), `rel` (the SHA-256 of the

@@ -213,7 +213,7 @@ and video geometry), and archives the sealed catalog and the signed control log
 beside the media.
 
 That archive cannot be opened later by anyone, the tenant included: the keys
-are per MLS epoch, held only by the group's members, and gone when the epoch
+are per [MLS](https://www.rfc-editor.org/rfc/rfc9420) epoch, held only by the group's members, and gone when the epoch
 ends. A tenant that needs plaintext — a recording it can play, or a classifier
 that has to see the picture — runs an **agent** instead: MoqomKit's `RoomAgent`,
 on the tenant's own machines. It joins as a member of the group under the

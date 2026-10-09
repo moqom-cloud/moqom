@@ -1,6 +1,6 @@
 # MOQOM
 
-**Media Over QUIC Orchestration Mesh**: a relay, a control plane, and client
+**Media Over [QUIC](https://www.rfc-editor.org/rfc/rfc9000) Orchestration Mesh**: a relay, a control plane, and client
 SDKs for iOS, Android, web, and desktop.
 
 Targets [`draft-ietf-moq-transport-19`](https://datatracker.ietf.org/doc/draft-ietf-moq-transport/).
@@ -47,7 +47,7 @@ environment variable that overrides it.
 
 **Media moves.** `moqom-proto` covers the object model, every control message in
 draft-19, and the whole data plane. `moqom-transport` accepts sessions over both
-QUIC and WebTransport on one UDP port, and `moqom-relay` speaks MOQT over them:
+[QUIC](https://www.rfc-editor.org/rfc/rfc9000) and [WebTransport](https://datatracker.ietf.org/doc/draft-ietf-webtrans-http3/) on one UDP port, and `moqom-relay` speaks MOQT over them:
 setup, namespace announcement and withdrawal, prefix watching, subscription, and
 subgroup fan-out with alias rewriting. History is retained and fetchable, which
 is what makes a reconnection survivable, and caching is a tee off the forward
@@ -75,7 +75,7 @@ closing a room travel the same way. Those tests are `#[ignore]`d because they
 need a Go toolchain, and `tools/interop.sh` is what runs them, along with the
 check that the two SDKs and the server agree about what a capability bit means —
 and about what a device thumbprint is, which is a committed fixture rather than a
-running process: the Swift client writes proofs and RFC 7638 vectors, the relay
+running process: the Swift client writes proofs and [RFC 7638](https://www.rfc-editor.org/rfc/rfc7638) vectors, the relay
 verifies the proofs, and this server recomputes the thumbprints, so the three
 cannot drift without one of them failing.
 
@@ -85,7 +85,7 @@ Postgres store is written and reachable with `MOQOM_CONTROL_STORE=postgres`,
 against Cloud SQL as the runtime's own Google identity, so there is no password
 to configure, store, or rotate — but it is the choice rather than the default,
 and a default that loses the moderation log is the one that will be running
-somewhere. Tokens are ML-DSA-65 over JSON rather than CAT/CWT's CBOR and COSE,
+somewhere. Tokens are [ML-DSA-65](https://csrc.nist.gov/pubs/fips/204/final) over JSON rather than CAT/CWT's CBOR and COSE,
 which is an encoding away from the target and no longer a binding away from it:
 `cnf.jkt` is derived from a key the device sends at join, held in its Secure
 Enclave, the control plane mints no token without one, and every relay makes every
@@ -166,7 +166,7 @@ that name. It is still developed against this one — the control plane's tests
 drive it against a real server over bufconn, which is worth considerably more
 than a mirror's CI — through `go.work` and a sibling checkout.
 
-**Rust, for symmetry and to keep QUIC out of a backend.** Cargo imposes no such
+**Rust, for symmetry and to keep [QUIC](https://www.rfc-editor.org/rfc/rfc9000) out of a backend.** Cargo imposes no such
 constraint, but the engine's workspace patches `crates.io` to a vendored quinn,
 and a patch applies to a whole workspace. Being a separate workspace is what
 keeps a QUIC stack out of the dependency graph of a backend that only wants to

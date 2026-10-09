@@ -53,9 +53,9 @@ compensating control and an expiry date.
 | Where | Requirement | Implementation |
 | --- | --- | --- |
 | At rest | AES-256 or provider equivalent | Google default encryption on Cloud SQL, GCS, disks and Secret Manager. CMEK optional; GKE Secrets CMEK not enabled (GKE-005, INFO) |
-| In transit, external | TLS 1.2 minimum, TLS 1.3 preferred | QUIC (TLS 1.3); HTTPS LB SSL policy MODERN, min 1.2 |
+| In transit, external | TLS 1.2 minimum, [TLS 1.3](https://www.rfc-editor.org/rfc/rfc8446) preferred | [QUIC](https://www.rfc-editor.org/rfc/rfc9000) (TLS 1.3); HTTPS LB SSL policy MODERN, min 1.2 |
 | In transit, internal | TLS, mutual where both ends are ours | RelayLink mTLS; Cloud SQL ENCRYPTED_ONLY via the connector |
-| Media | End-to-end where the client enables it | SFrame (RFC 9605) in the Swift SDK |
+| Media | End-to-end where the client enables it | SFrame ([RFC 9605](https://www.rfc-editor.org/rfc/rfc9605)) in the Swift SDK |
 | Passwords and API keys at rest | One-way hash | API keys: SHA-256 of a 256-bit random secret (no salt needed at that entropy) |
 | Prohibited | SSLv3, TLS 1.0/1.1, RC4, 3DES, MD5/SHA-1 for signatures, home-grown cryptography | Enforced by SSL policy (NET-004) and code review |
 
@@ -65,7 +65,7 @@ compensating control and an expiry date.
 | --- | --- | --- | --- |
 | Token signing keys (`MOQOM_CONTROL_SIGNING_KEYS`) | Secret Manager → Kubernetes Secret | 12 months, or on suspicion; multiple keys supported so rotation has no downtime | Owner |
 | RelayLink CA, relay and admin certificates | Secret Manager | Certificates ≤ 12 months; CA ≤ 5 years | Owner (`tools/relay-certificate.sh`) |
-| Relay TLS certificate (QUIC) | Secret Manager | Before expiry | Owner |
+| Relay TLS certificate ([QUIC](https://www.rfc-editor.org/rfc/rfc9000)) | Secret Manager | Before expiry | Owner |
 | Relay bearer credentials | Secret Manager | 12 months, or on suspicion | Owner |
 | Stripe restricted key, webhook secret | Secret Manager | 12 months, or on suspicion | Owner |
 | Customer API keys | Hash in Cloud SQL | Customer-controlled; revocable | Customer |

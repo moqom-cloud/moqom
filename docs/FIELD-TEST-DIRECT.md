@@ -6,13 +6,13 @@ in CI can say. This test measures it before any site quotes a rate.
 ## What decides it
 
 A direct path opens when each side's NAT keeps one public port for one socket, whoever it sends
-to (endpoint-independent mapping). Then the address the relay's STUN responder reports is one the
+to (endpoint-independent mapping). Then the address the relay's [STUN](https://www.rfc-editor.org/rfc/rfc8489) responder reports is one the
 peer can reach. A symmetric NAT gives a new port per destination, so the call stays on the relay.
 IPv6 usually has no NAT at all, only a stateful firewall, which simultaneous probes get through.
 
 ## Step 1: classify each network
 
-`moqom-nat-probe` (in `moqom-engine/moqom-loadgen`) asks several STUN servers from one socket per
+`moqom-nat-probe` (in `moqom-engine/moqom-loadgen`) asks several [STUN](https://www.rfc-editor.org/rfc/rfc8489) servers from one socket per
 address family and says which case the network is. It needs servers on at least two addresses.
 
 ```sh
@@ -34,7 +34,7 @@ cellular also run step 2 on the phone itself.
 
 ## Step 2: real calls
 
-After the relays are deployed with STUN and IPv6 (`deploy/`, not yet applied), place a 1:1 call
+After the relays are deployed with [STUN](https://www.rfc-editor.org/rfc/rfc8489) and IPv6 (`deploy/`, not yet applied), place a 1:1 call
 between two iPhones for each pair of network types above, and record whether it went direct, on
 which family, and how long it took. Each pair also covers the reverse direction.
 

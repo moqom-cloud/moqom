@@ -20,14 +20,14 @@ Two different attacks matter, and they need different defences:
 
 | What | Algorithm | Notes |
 | --- | --- | --- |
-| Room keys (MLS key agreement) | ML-KEM-768 (FIPS 203) | Suite `MLS_192_MLKEM768_AES256GCM_SHA384_MLDSA65` (0xF0AA), the only suite for new groups |
-| Group membership (MLS signatures) | ML-DSA-65 (FIPS 204) | Key packages, commits and Welcomes |
-| Audience keys for broadcasts | HPKE over ML-KEM-768 | Each epoch's SFrame base key sealed to each viewer |
+| Room keys ([MLS](https://www.rfc-editor.org/rfc/rfc9420) key agreement) | ML-KEM-768 ([FIPS 203](https://csrc.nist.gov/pubs/fips/203/final)) | Suite `MLS_192_MLKEM768_AES256GCM_SHA384_MLDSA65` (0xF0AA), the only suite for new groups |
+| Group membership (MLS signatures) | ML-DSA-65 ([FIPS 204](https://csrc.nist.gov/pubs/fips/204/final)) | Key packages, commits and Welcomes |
+| Audience keys for broadcasts | [HPKE](https://www.rfc-editor.org/rfc/rfc9180) over ML-KEM-768 | Each epoch's [SFrame](https://www.rfc-editor.org/rfc/rfc9605) base key sealed to each viewer |
 | Media | SFrame with AES-256-GCM (RFC 9605) | Symmetric; Grover's algorithm halves the strength to 128 bits, which stays out of reach |
 | Join tokens | ML-DSA-65 (JOSE `alg` `ML-DSA-65`) | Ed25519 accepted for verification only, during the rollover |
 | Device proofs | ML-DSA-65 key in the Secure Enclave | Software key where there is no enclave; ES256 accepted from SDKs released before October 2026 |
 | Room control log | ML-DSA-65 | Signed by the control plane |
-| Transport (QUIC, TLS 1.3) | X25519MLKEM768 hybrid key exchange | Preferred by the relay; the certificate signature is still classical, see below |
+| Transport ([QUIC](https://www.rfc-editor.org/rfc/rfc9000), [TLS 1.3](https://www.rfc-editor.org/rfc/rfc8446)) | [X25519MLKEM768](https://datatracker.ietf.org/doc/draft-ietf-tls-ecdhe-mlkem/) hybrid key exchange | Preferred by the relay; the certificate signature is still classical, see below |
 
 ## What is still classical, and why that's acceptable
 
@@ -40,10 +40,10 @@ even a relay impersonated with a future quantum computer would forward ciphertex
 read. We move to ML-DSA certificates when they're issued and supported.
 
 **Rollover verification.** Relays still verify Ed25519 tokens and ES256 device proofs from older
-SDKs. New SDKs only create ML-DSA-65 keys and tokens. Verification of the classical forms ends
+SDKs. New SDKs only create [ML-DSA-65](https://csrc.nist.gov/pubs/fips/204/final) keys and tokens. Verification of the classical forms ends
 when the last supported SDK that creates them is retired.
 
-**Legacy MLS suites.** Groups founded before the switch under X-Wing (0xF0A1) or RFC 9420's
+**Legacy MLS suites.** Groups founded before the switch under X-Wing (0xF0A1) or [RFC 9420](https://www.rfc-editor.org/rfc/rfc9420)'s
 suite 1 (0x0001) can still be read; no new group uses them. The Rust library can't seal or open
 under X-Wing.
 
@@ -53,8 +53,8 @@ ML-DSA is much larger than ECDSA, and every limit was checked for it:
 
 | Item | Size | Limit |
 | --- | --- | --- |
-| ML-DSA-65 signature | 3,309 bytes | |
-| ML-DSA-65 public key, as a JWK | about 2.7 KB | |
+| [ML-DSA-65](https://csrc.nist.gov/pubs/fips/204/final) signature | 3,309 bytes | |
+| ML-DSA-65 public key, as a [JWK](https://www.rfc-editor.org/rfc/rfc7517) | about 2.7 KB | |
 | Device proof | 8,194 bytes (ES256: 506) | 16 KiB in all three libraries |
 | Join token | at most 8 KiB | |
 | `POST /join` body | | 16 KiB, raised from 4 KiB |

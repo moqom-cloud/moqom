@@ -1,7 +1,7 @@
 # MOQOM compliance program
 
 Elliott Wave LLC ("elliottwave.studio lab") operates MOQOM: real-time video and
-audio rooms over QUIC (MOQT, draft-ietf-moq-transport-19), with SFrame
+audio rooms over [QUIC](https://www.rfc-editor.org/rfc/rfc9000) (MOQT, [draft-ietf-moq-transport-19](https://datatracker.ietf.org/doc/html/draft-ietf-moq-transport-19)), with [SFrame](https://www.rfc-editor.org/rfc/rfc9605)
 end-to-end encryption available in the Swift SDK and moderation in the control
 plane. The company has one owner and one employee, Elliott, who holds every
 role below.
@@ -104,7 +104,7 @@ IDs are referenced from every other document. "Check" names the rule in
 | --- | --- | --- | --- | --- | --- |
 | NET-1 | Private GKE nodes, Workload Identity, Cloud SQL on private IP only | Automated | Implemented | GKE-001/003, SQL-004 | Pass |
 | NET-2 | Only intended ports reachable from the internet (UDP/443, TCP/443, TCP/8444) | Automated | **Planned**: `default-allow-ssh`, `-rdp`, `-icmp` open to 0.0.0.0/0 | NET-001, NET-003 | **Fail (CRITICAL)** |
-| NET-3 | TLS 1.2+ with the MODERN profile on HTTPS load balancers; QUIC is TLS 1.3 | Automated | Implemented | NET-004 | Pass |
+| NET-3 | TLS 1.2+ with the MODERN profile on HTTPS load balancers; [QUIC](https://www.rfc-editor.org/rfc/rfc9000) is [TLS 1.3](https://www.rfc-editor.org/rfc/rfc8446) | Automated | Implemented | NET-004 | Pass |
 | NET-4 | GKE control-plane endpoint restricted to authorized networks | Automated | **Planned** | GKE-002 | **Fail** |
 | NET-5 | Firewall change alert | Automated | Planned (code ready) | — | — |
 | NET-6 | Edge DDoS and WAF (Cloudflare or Cloud Armor) | — | Planned | — | — |
@@ -117,8 +117,8 @@ IDs are referenced from every other document. "Check" names the rule in
 | ID | Control | Automation | Status | Verified |
 | --- | --- | --- | --- | --- |
 | DAT-1 | Encryption at rest (Google-managed AES-256) | Automated (Google) | Implemented | — |
-| DAT-2 | Encryption in transit: QUIC/TLS 1.3, mTLS on RelayLink, Cloud SQL `ENCRYPTED_ONLY` | Automated | Implemented | SQL-005 Pass |
-| DAT-3 | End-to-end media encryption (SFrame) | Automated (client) | Implemented in the Swift SDK; optional per room; relays forward ciphertext | — |
+| DAT-2 | Encryption in transit: [QUIC](https://www.rfc-editor.org/rfc/rfc9000)/TLS 1.3, mTLS on RelayLink, Cloud SQL `ENCRYPTED_ONLY` | Automated | Implemented | SQL-005 Pass |
+| DAT-3 | End-to-end media encryption ([SFrame](https://www.rfc-editor.org/rfc/rfc9605)) | Automated (client) | Implemented in the Swift SDK; optional per room; relays forward ciphertext | — |
 | DAT-4 | Media is relayed, not recorded | — | Implemented (no relay code writes media to storage; the recording bucket is provisioned but unused) | Code review |
 | DAT-5 | Secrets in Secret Manager or Kubernetes Secrets, never in repositories | Partially automated | Implemented; gitleaks gate Planned | — |
 | DAT-6 | Secrets rotated at least every 365 days | Automated (detect) | Planned (code ready) | SEC-002 |

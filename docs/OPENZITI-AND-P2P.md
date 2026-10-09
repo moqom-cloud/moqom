@@ -42,7 +42,7 @@ TCP/mTLS in production. UDP options exist — *Transwarp* for long-haul router
 links ([design doc](https://github.com/openziti/ziti/blob/main/doc/transwarp_b1/transwarp_b1.md)),
 experimental DTLS — but the maintainers report they have not matched TCP's
 performance ([forum](https://openziti.discourse.group/t/does-openziti-support-dtls/2189)).
-Carrying QUIC media over a TCP underlay brings back head-of-line blocking:
+Carrying [QUIC](https://www.rfc-editor.org/rfc/rfc9000) media over a TCP underlay brings back head-of-line blocking:
 one lost packet stalls every stream behind it, which is exactly what MoQ over
 QUIC exists to avoid. It also puts a second congestion controller under QUIC's,
 and the two fight.
@@ -55,9 +55,9 @@ viewer would be its own circuit, and the copying would still have to happen in
 a MoQ relay at one end — so OpenZiti would add a hop and a layer of encryption
 while removing nothing.
 
-The media path already has what OpenZiti would add: TLS 1.3 on every QUIC
+The media path already has what OpenZiti would add: [TLS 1.3](https://www.rfc-editor.org/rfc/rfc8446) on every QUIC
 connection, token and device-bound authorisation on every request, revocation
-that closes live connections, and SFrame for payload encryption.
+that closes live connections, and [SFrame](https://www.rfc-editor.org/rfc/rfc9605) for payload encryption.
 
 ## Where OpenZiti fits well
 
@@ -72,7 +72,7 @@ connections, where TCP is fine and "no open ports" is a real security gain.
 | **BYOC relays** | Customer opens ports for the control link | The customer's relay dials *out* over OpenZiti to Elliott Wave LLC's control plane. No inbound firewall rules, and the enrolment identity doubles as the licence — revoke it and the relay stops getting directives and certificates |
 | **Operator access** (SSH, Postgres, dashboards) | IAP / bastion | Dark services, per-person identities, policy-based |
 
-Media stays on QUIC directly. Viewers never need an OpenZiti identity.
+Media stays on [QUIC](https://www.rfc-editor.org/rfc/rfc9000) directly. Viewers never need an OpenZiti identity.
 
 ### Status of the management plane (dev, 6 October 2026)
 
@@ -162,27 +162,27 @@ safety detector) is required in the room.
 
 ### Design
 
-1. **Join as usual through the relay.** Tokens, possession proofs, MLS keys
+1. **Join as usual through the relay.** Tokens, possession proofs, [MLS](https://www.rfc-editor.org/rfc/rfc9420) keys
    and room state all work exactly as now, and media starts flowing through the
    relay immediately. Direct is an upgrade, never a precondition.
 2. **Exchange candidates over the room.** Each peer publishes its candidate
    addresses on a private track only the other members can read, encrypted
    under the room's MLS key, so the relay carries them but cannot read them.
    The candidates are the device's own addresses plus its public one. The
-   device learns the public address by asking a STUN server from the socket
+   device learns the public address by asking a [STUN](https://www.rfc-editor.org/rfc/rfc8489) server from the socket
    the direct path will use. Every relay answers STUN on UDP 3478, and the
    room's direct grant names one (`DirectGrant.stun`, set from
    `MOQOM_CONTROL_STUN`). Both SDKs ask that server by default, and an app can
    name its own instead. The relay answers only well-formed Binding requests,
    rate-limits each source, and replies from the address it was asked on.
-3. **Hole-punch with QUIC NAT traversal.** Simultaneous outbound connections
+3. **Hole-punch with [QUIC](https://www.rfc-editor.org/rfc/rfc9000) NAT traversal.** Simultaneous outbound connections
    from both sides, the technique standardised in the IETF QUIC NAT traversal
    work. [iroh](https://docs.iroh.computer/concepts/nat-traversal) runs it in
    production on a quinn fork and reports roughly 90% direct-connection success,
    falling back to its relays otherwise.
 4. **Speak MOQT directly.** One peer accepts a MOQT session from the other; the
    accepting side runs the same subscribe/publish code the relay talks to, with
-   no caching or fan-out. SFrame payloads are unchanged, so nothing about media
+   no caching or fan-out. [SFrame](https://www.rfc-editor.org/rfc/rfc9605) payloads are unchanged, so nothing about media
    encryption differs between paths.
 5. **Verify peers like a relay would.** Each side checks the other's MOQOM
    token and possession proof before accepting. That reuses the relay's code,
@@ -202,7 +202,7 @@ safety detector) is required in the room.
 ### Implementation risks
 
 - **Network.framework hole-punching is burst-only.** MoqomKit's direct path is
-  built on Network.framework: a UDP probe flow on the QUIC port steals the
+  built on Network.framework: a UDP probe flow on the [QUIC](https://www.rfc-editor.org/rfc/rfc9000) port steals the
   listener's packets, so Swift sends three probes and stops at the first
   inbound packet, and has no QUIC datagrams on direct paths. To cover this,
   MoqomKit can now run the direct path on the engine's Rust socket layer
@@ -218,7 +218,7 @@ safety detector) is required in the room.
 - **Mobile networks.** Carrier-grade NAT is where hole-punching fails most, so
   phone-to-phone on cellular will often stay on the relay. Measure before
   advertising.
-- **Symmetric NATs, and no TURN.** STUN tells a device the public port its
+- **Symmetric NATs, and no TURN.** [STUN](https://www.rfc-editor.org/rfc/rfc8489) tells a device the public port its
   NAT used toward the relay. A NAT that picks a new port for each destination
   (address-dependent mapping) gives the peer a different one, so the punch
   misses. MOQOM runs no TURN server, so those pairs fall back to the relay.
@@ -233,14 +233,14 @@ safety detector) is required in the room.
 |---|---|---|
 | Eligibility rules and the IP-exposure acknowledgement | Built, with the room's limit and `DirectPolicy` | Built, same rules and order; `DirectPolicy` on `MoqomSession`, automatic by default |
 | Sealed candidate offers | Built | Built; byte-identical, pinned by a shared test vector |
-| Offer exchange on the participant's `.direct` track | `DirectRoom`, on the stage or backstage slot | `DirectOffers` |
-| Direct endpoint: pinned mutual TLS, hole-punching, MOQT both ways | Built, loopback-tested | `DirectEndpoint`, loopback-tested on macOS; builds for iOS. The dialler is a legacy `NWConnectionGroup`, because `NetworkConnection<QUIC>` cannot open streams from a fixed local port. No QUIC datagrams on direct paths |
-| STUN server | `DirectPolicy::AUTOMATIC` asks the grant's (`RoomDirectPolicy::stun`), an explicit one wins | `.automatic` asks the grant's (`DirectRoomPolicy.stun`), `.automatic(stun:)` wins, `.relayOnly` asks none |
+| Offer exchange on the participant's `.direct` track | `DirectRoom`, on the stage slot | `DirectOffers` |
+| Direct endpoint: pinned mutual TLS, hole-punching, MOQT both ways | Built, loopback-tested | `DirectEndpoint`, loopback-tested on macOS; builds for iOS. The dialler is a legacy `NWConnectionGroup`, because `NetworkConnection<QUIC>` cannot open streams from a fixed local port. No [QUIC](https://www.rfc-editor.org/rfc/rfc9000) datagrams on direct paths |
+| [STUN](https://www.rfc-editor.org/rfc/rfc8489) server | `DirectPolicy::AUTOMATIC` asks the grant's (`RoomDirectPolicy::stun`), an explicit one wins | `.automatic` asks the grant's (`DirectRoomPolicy.stun`), `.automatic(stun:)` wins, `.relayOnly` asks none |
 | Direct socket backend | quinn on one UDP socket, STUN and continuous probing (`direct::socket`) | `DirectBackend`: `.networkFramework` (default) or `.rust`, which runs the Rust socket layer through `moqom-direct-ffi` (opt-in `MoqomDirectRust` module, iOS and macOS). All pairings interoperate on macOS |
 | Peer verification | Through the `PeerVerifier` trait; the relay's `PeerCheck` implements it | `DirectPeerCheck`, a port of the relay's token and proof checks, with a required proof. A refused peer is closed with `0x03`; the dialler's empty unidirectional stream is the final admission |
 | Merging relay and direct paths, with fallback | `DualSubscription` | `DualSubscription`, same rules |
 | Pausing the relay copy while direct | Same rules in `DualSubscription` (`PathSettings::quiet`, 500 ms); `pauses_relay` turns it off | `FORWARD=0` in `REQUEST_UPDATE` once direct, `FORWARD=1` on fallback or after 500 ms of direct silence |
-| Wired into `Room` | `DirectRoom` beside a `Session`: on by default under `DirectPolicy::AUTOMATIC` with the token's `RoomDirectPolicy`, per-peer `PathState`, relay fallback with backoff, tickets per path, a renewed grant applied mid-room, backstage paired with backstage. No catalog or MLS in the Rust client, so the caller states the roster, opt-ins and offer key (`RoomView`). Loopback-tested against an authenticating, ticketing relay | On by default under `DirectPolicy.automatic` (peers verified against `authorityKeys`), or `.custom(DirectRoomOptions)`; per-participant path state (`directPathChanged`), relay fallback with backoff, tickets per path. Backstage publishers pair with each other. Offers sealed under `MLS-Exporter("MOQOM direct offer")`. Loopback-tested on both backends |
+| Wired into `Room` | `DirectRoom` beside a `Session`: on by default under `DirectPolicy::AUTOMATIC` with the token's `RoomDirectPolicy`, per-peer `PathState`, relay fallback with backoff, tickets per path, a renewed grant applied mid-room, backstage never direct. No catalog or [MLS](https://www.rfc-editor.org/rfc/rfc9420) in the Rust client, so the caller states the roster, opt-ins and offer key (`RoomView`). Loopback-tested against an authenticating, ticketing relay | On by default under `DirectPolicy.automatic` (peers verified against `authorityKeys`), or `.custom(DirectRoomOptions)`; per-participant path state (`directPathChanged`), relay fallback with backoff, tickets per path. Backstage never goes direct. Offers sealed under `MLS-Exporter("MOQOM direct offer")`. Loopback-tested on both backends |
 | Direct tickets | `DirectRoom` asks the relay, presents them and holds the peer to its own (`verify_ticket`, on `moqom-token`'s keys) | `DirectTicketFeed` asks the relay; `DirectTicketGuard` presents them and holds the peer to its own |
 | Metering | Relay session, plus direct seconds from tickets | Same; `DirectUsage` counts direct bytes for the app |
 
@@ -277,7 +277,7 @@ Not done, or not known yet:
   stream is open. Logged as a known issue in the Swift tests.
 - **Datagrams need both sides.** quinn won't send datagrams from a side that
   didn't offer them, so a Rust ↔ Network.framework path has none.
-- **A dial can succeed and then close.** In TLS 1.3 the client finishes before
+- **A dial can succeed and then close.** In [TLS 1.3](https://www.rfc-editor.org/rfc/rfc8446) the client finishes before
   the server checks its certificate, so a dialler whose certificate the peer
   rejects sees a connection that closes at once; SETUP fails on it.
 - **Distribution.** Locally the package finds the framework through
@@ -288,7 +288,7 @@ Not done, or not known yet:
   aws-lc through rcgen's default features; removing it means changing the
   workspace's rcgen features, which the relay and recorder share.
 - **`Room` gaps.** Backstage publishing counts as audience; nothing watches for
-  network-interface changes; a viewer holding the room's MLS keys keeps the room on
+  network-interface changes; a viewer holding the room's [MLS](https://www.rfc-editor.org/rfc/rfc9420) keys keeps the room on
   the relay; the epoch-change re-offer has no dedicated test.
 - **iOS Simulator crash in the Network.framework carrier.** Running the direct
   suite on the iOS 26.2 Simulator, the process traps inside Network.framework
@@ -327,7 +327,7 @@ its own slot's track `.direct/{peerUser}/{peerDevice}` (the stage slot
 {"version":1,"ticket":"<compact JWS>","expires":1791288000,"keys":[{"kty":"OKP","crv":"Ed25519","kid":"…","x":"…"}]}
 ```
 
-The ticket is an Ed25519 compact JWS, header
+The ticket is an Ed25519 compact [JWS](https://www.rfc-editor.org/rfc/rfc7515), header
 `{"alg":"EdDSA","typ":"moqom-direct-ticket","kid"}`, claims `ten`, `room`,
 `sub`, `dev`, `peer` (`user/device`), `iat`, `exp` (90 s after issue), with
 unknown claims refused. It is bound to the holder's verified identity, the room
@@ -344,7 +344,7 @@ grants are rechecked on every renewal, and a change that makes the participant
 ineligible ends the subscription with `PUBLISH_DONE` (`UNAUTHORIZED`), which
 stops the metering with it.
 
-**The keys.** `MOQOM_RELAY_TICKET_KEYS` names a JWK set: the first key with a
+**The keys.** `MOQOM_RELAY_TICKET_KEYS` names a [JWK](https://www.rfc-editor.org/rfc/rfc7517) set: the first key with a
 private half signs, and every public half is published in each ticket object,
 so keys can be rotated by adding the new one, waiting a ticket lifetime, then
 moving it first. It is a fleet key, separate from the token keys: a ticket has
