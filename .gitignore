@@ -68,6 +68,7 @@ deploy/modules/*/.terraform.lock.hcl
 .env.*
 !.env.example
 *.pem
+!go/internal/apple/app_attest_root_ca.pem
 *.p8
 *.p12
 *.mobileprovision
