@@ -289,8 +289,14 @@ write_files:
       printf 'Authorization: Bearer %s\n' "$(fetch "${credential_secret_id}")" > "$WORK/relay.hdr"
 
       INSTANCE_TOKEN="$(metadata "instance/service-accounts/default/identity?audience=${ziti_enroll_audience}&format=full")"
+      # The fleet credential travels in this request, so it goes over ML-KEM
+      # like everything else on the join port: curl from a pinned image, since
+      # the boot image's OpenSSL has no ML-KEM.
       printf '{"instance_token":"%s"}' "$INSTANCE_TOKEN" \
-          | request --cacert "$WORK/link-ca.pem" -H @"$WORK/relay.hdr" \
+          | /usr/bin/docker run --rm -i --network host --user 0:0 \
+              --volume "$WORK:/work:ro" ${ziti_curl_image} \
+              -sS --fail --max-time 30 --retry 3 --retry-connrefused --curves MLKEM1024 \
+              --cacert /work/link-ca.pem -H @/work/relay.hdr \
               -H 'Content-Type: application/json' --data-binary @- \
               "${ziti_enroll_url}" > "$WORK/enrolment.json"
       sed -n 's/.*"enrollment_token":"\([^"]*\)".*/\1/p' "$WORK/enrolment.json" > "$WORK/enroll.jwt"

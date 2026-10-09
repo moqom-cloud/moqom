@@ -799,6 +799,7 @@ module "relay" {
   # control plane, on the join port beside /relay/link.
   ziti = var.ziti_relay_enabled ? {
     cli_image       = var.ziti_cli_image
+    curl_image      = var.relay_curl_image
     enroll_url      = "https://${module.control.public_address}:${local.control_join_port}/relay/enroll"
     enroll_audience = local.relay_enroll_audience
   } : null

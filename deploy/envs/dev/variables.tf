@@ -222,3 +222,9 @@ variable "relay_extra_rules" {
   default     = false
   description = "The relays' STUN and IPv6 forwarding rules. Off while the project's IN_USE_ADDRESSES quota (4) is used up by the sites, the control plane and one QUIC rule per region; turn on after it is raised."
 }
+
+variable "relay_curl_image" {
+  type        = string
+  description = "curlimages/curl on OpenSSL 3.5 or later, mirrored by tools/cloudbuild-ziti-mirror.yaml and pinned by digest. The relays enrol on the overlay with it, because the join port negotiates ML-KEM only."
+  default     = "us-docker.pkg.dev/moqom-503700/moqom-dev/curl@sha256:58adaa4e8dca9c988bae2aba4ab3434a0bb2da16bbe3f92dec39ec7785166777"
+}

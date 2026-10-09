@@ -262,6 +262,10 @@ variable "ziti" {
   type = object({
     # The tunneler sidecar: the ziti CLI image, pinned by digest.
     cli_image = string
+    # curl on OpenSSL 3.5 or later, pinned by digest, for the enrolment
+    # request: the join port negotiates ML-KEM only, and the boot image's own
+    # curl does not offer it.
+    curl_image = string
     # Where the relay asks the control plane for its overlay identity, and the
     # audience its instance identity token is minted for.
     enroll_url      = string

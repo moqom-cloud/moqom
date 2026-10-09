@@ -16,6 +16,9 @@ substitutions:
   _CLI: sha256:959b6fe0c70a5ef7aafd20f78ed7aeb90c8ef92cc40371b406179d6242597d97
   _SQL_PROXY_VERSION: "2.26.0"
   _SQL_PROXY: sha256:86e4f3cc266020e7ee07740df78d7511e2c340c274b56f84d80b7251913af9ad
+  # curl on OpenSSL 3.5, for the relays' ML-KEM enrolment request.
+  _CURL_VERSION: "8.22.0"
+  _CURL: sha256:58adaa4e8dca9c988bae2aba4ab3434a0bb2da16bbe3f92dec39ec7785166777
 steps:
   - name: gcr.io/go-containerregistry/gcrane:debug
     entrypoint: /busybox/sh
@@ -26,6 +29,7 @@ steps:
         gcrane cp docker.io/openziti/ziti-router@${_ROUTER} ${_DEST}/ziti-router:${_ZITI_VERSION}
         gcrane cp docker.io/openziti/ziti-cli@${_CLI} ${_DEST}/ziti-cli:${_ZITI_VERSION}
         gcrane cp gcr.io/cloud-sql-connectors/cloud-sql-proxy@${_SQL_PROXY} ${_DEST}/cloud-sql-proxy:${_SQL_PROXY_VERSION}
+        gcrane cp docker.io/curlimages/curl@${_CURL} us-docker.pkg.dev/${PROJECT_ID}/moqom-dev/curl:${_CURL_VERSION}
         for image in ziti-controller:${_ZITI_VERSION} ziti-router:${_ZITI_VERSION} ziti-cli:${_ZITI_VERSION} cloud-sql-proxy:${_SQL_PROXY_VERSION}; do
           echo "$$image $(gcrane digest ${_DEST}/$$image)"
         done
