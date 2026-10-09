@@ -691,8 +691,12 @@ module "relay" {
   registry_host = module.registry.registry_host
 
   machine_type = "n2d-standard-2"
-  min_replicas = 1
-  max_replicas = 3
+  # Standard rather than SSD: the disk holds the image and logs, and the
+  # region's SSD quota is spent by the cluster, so a surge rollout could not
+  # create the new relay's disk.
+  boot_disk_type = "pd-standard"
+  min_replicas   = 1
+  max_replicas   = 3
 
   # Three even though the tier is one machine: a regional MIG rejects a surge
   # smaller than its zone count, so this is a floor rather than a choice.
