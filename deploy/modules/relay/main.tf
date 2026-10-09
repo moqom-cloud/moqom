@@ -460,7 +460,7 @@ resource "google_compute_forwarding_rule" "quic" {
 # The relay replies from the address the request was sent to, which is this
 # one, so the device accepts the answer.
 resource "google_compute_forwarding_rule" "stun" {
-  count = var.stun_port == null ? 0 : 1
+  count = var.stun_port != null && var.extra_rules ? 1 : 0
 
   name    = "${local.name}-stun"
   project = var.project_id
@@ -494,7 +494,7 @@ resource "google_compute_address" "relay_v6" {
 }
 
 resource "google_compute_forwarding_rule" "quic_v6" {
-  count = var.enable_ipv6 ? 1 : 0
+  count = var.enable_ipv6 && var.extra_rules ? 1 : 0
 
   name    = "${local.name}-quic-v6"
   project = var.project_id
@@ -511,7 +511,7 @@ resource "google_compute_forwarding_rule" "quic_v6" {
 }
 
 resource "google_compute_forwarding_rule" "stun_v6" {
-  count = var.enable_ipv6 && var.stun_port != null ? 1 : 0
+  count = var.enable_ipv6 && var.stun_port != null && var.extra_rules ? 1 : 0
 
   name    = "${local.name}-stun-v6"
   project = var.project_id

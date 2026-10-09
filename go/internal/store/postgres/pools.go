@@ -194,8 +194,8 @@ func (s *Store) PutPoolRelay(ctx context.Context, tenant, id string, relay contr
 }
 
 func (s *Store) PoolTenants(ctx context.Context) ([]string, error) {
-	rows, err := s.pool.Query(ctx, `SELECT DISTINCT tenant FROM relay_pools
-		WHERE state <> $1 ORDER BY tenant COLLATE "C"`, string(control.PoolDeleted))
+	rows, err := s.pool.Query(ctx, `SELECT tenant FROM relay_pools
+		WHERE state <> $1 GROUP BY tenant ORDER BY tenant COLLATE "C"`, string(control.PoolDeleted))
 	if err != nil {
 		return nil, fmt.Errorf("listing tenants with pools: %w", err)
 	}

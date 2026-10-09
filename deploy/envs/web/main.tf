@@ -40,14 +40,15 @@ data "google_compute_network_endpoint_group" "control_api" {
   zone = each.key
 }
 
-# The pod serves TLS on this port with a private certificate. The balancer
-# encrypts to it and, like every Google front end, does not verify it.
+# The pod's hooks listener serves TLS on this port with a private certificate.
+# The balancer encrypts to it and, like every Google front end, does not
+# verify it.
 resource "google_compute_health_check" "control_api" {
   name = "moqom-control-api"
 
   https_health_check {
-    port         = 8444
-    request_path = "/v1/rates"
+    port         = 8445
+    request_path = "/healthz"
   }
 }
 

@@ -38,6 +38,8 @@ locals {
   # differently from everything else here -- publicly -- and a port shared with
   # the admin API would be an admin API on the internet.
   control_join_port = 8444
+  # Webhooks from Google's balancer only; see cmd/moqom-control/hooks.go.
+  control_hooks_port = 8445
 
   cluster_node_cidr    = "10.20.32.0/22"
   cluster_pod_cidr     = "10.21.0.0/16"
@@ -450,6 +452,7 @@ module "control" {
     # Requests for this host get the two webhook routes and nothing else; see
     # envs/web, which routes it.
     MOQOM_CONTROL_HOOKS_HOST = "hooks.moqom.cloud"
+    MOQOM_CONTROL_HOOKS_ADDR = ":${local.control_hooks_port}"
     # Stripe deliveries only from Stripe's published senders, read on every
     # plan so a change to the list lands with the next apply.
     MOQOM_CONTROL_HOOKS_STRIPE_IPS = join(",", jsondecode(data.http.stripe_webhook_ips.response_body).WEBHOOKS)
@@ -472,11 +475,11 @@ module "control" {
   labels = merge(local.labels, { component = "control" })
 }
 
-# The billing API, reached by browsers at api.moqom.cloud through the sites'
-# global load balancer (envs/web), which holds the publicly trusted certificate
-# the join port's private one cannot be. The balancer reaches the pod through
-# this service's standalone network endpoint groups, one per zone, named here so
-# envs/web can find them. The balancer only routes /v1/ to it.
+# Webhooks, delivered to hooks.moqom.cloud on the sites' global load balancer
+# (envs/web), which negotiates only classical key exchange. It reaches the
+# pod's hooks listener, which serves the two signed webhook routes and a health
+# check and nothing else, through this service's standalone network endpoint
+# groups, one per zone, named here so envs/web can find them.
 resource "kubernetes_service_v1" "control_api" {
   count = var.billing_enabled ? 1 : 0
 
@@ -486,7 +489,7 @@ resource "kubernetes_service_v1" "control_api" {
     labels    = merge(local.labels, { component = "control" })
     annotations = {
       "cloud.google.com/neg" = jsonencode({
-        exposed_ports = { (tostring(local.control_join_port)) = { name = "${local.name_prefix}-control-api" } }
+        exposed_ports = { (tostring(local.control_hooks_port)) = { name = "${local.name_prefix}-control-api" } }
       })
     }
   }
@@ -496,9 +499,9 @@ resource "kubernetes_service_v1" "control_api" {
     selector = { "app.kubernetes.io/name" = "${local.name_prefix}-control" }
 
     port {
-      name        = "api"
-      port        = local.control_join_port
-      target_port = local.control_join_port
+      name        = "hooks"
+      port        = local.control_hooks_port
+      target_port = local.control_hooks_port
       protocol    = "TCP"
     }
   }
@@ -524,7 +527,7 @@ resource "google_compute_firewall" "control_api" {
 
   allow {
     protocol = "tcp"
-    ports    = [tostring(local.control_join_port)]
+    ports    = [tostring(local.control_hooks_port)]
   }
 }
 
@@ -607,9 +610,9 @@ locals {
   # for the public address they offer a peer. The steered edge name when there
   # is one, since every relay answers; otherwise the cluster region's relay.
   # Only the address output is read, which depends on nothing here.
-  control_stun_env = {
+  control_stun_env = var.relay_extra_rules ? {
     MOQOM_CONTROL_STUN = "${local.edge_host != "" ? trimsuffix(local.edge_host, ".") : module.relay[var.region].external_ip}:${local.relay_stun_port}"
-  }
+  } : {}
 
   # Dev recordings are test artefacts. They go straight to Nearline and are
   # deleted after a week; nothing here is worth archiving.
@@ -682,6 +685,7 @@ module "relay" {
   network_tags = [module.network.relay_target_tag]
   stun_port    = local.relay_stun_port
   enable_ipv6  = local.relay_ipv6
+  extra_rules  = var.relay_extra_rules
 
   image         = var.relay_image
   registry_host = module.registry.registry_host

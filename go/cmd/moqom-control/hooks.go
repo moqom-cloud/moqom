@@ -1,11 +1,13 @@
 package main
 
 import (
+	"crypto/tls"
 	"fmt"
 	"net"
 	"net/http"
 	"net/netip"
 	"strings"
+	"time"
 
 	"github.com/moqom-cloud/moqom/go/internal/billing"
 )
@@ -19,7 +21,7 @@ var hooksPaths = map[string]bool{
 	billing.GitHubSecretScanningPath: true,
 }
 
-// hooksOnly answers every request addressed to host with a bare 404 unless it
+// hooksOnly answers every request addressed to host ("*" for any) with a bare 404 unless it
 // is a POST to one of hooksPaths, and, when stripe is not empty, a Stripe
 // delivery from one of those addresses. The balancer in front already routes
 // only those paths; this holds if it ever stops doing so.
@@ -29,7 +31,7 @@ func hooksOnly(host string, stripe []netip.Prefix, address func(*http.Request) s
 	}
 	host = strings.ToLower(host)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if requestHost(r) != host {
+		if host != "*" && requestHost(r) != host {
 			next.ServeHTTP(w, r)
 			return
 		}
@@ -41,6 +43,44 @@ func hooksOnly(host string, stripe []netip.Prefix, address func(*http.Request) s
 		}
 		next.ServeHTTP(w, r)
 	})
+}
+
+// hooksHealthPath is what the balancer in front of the hooks listener checks.
+const hooksHealthPath = "/healthz"
+
+// hooksEndpoint is the listener Google's balancer delivers webhooks to. A
+// port of its own because the balancer negotiates only classical key
+// exchange, which the public listener refuses: this one accepts it and in
+// exchange serves nothing but the two signed webhook routes and a health
+// check. Off unless an address is given; with billing off the webhook routes
+// answer 404.
+func hooksEndpoint(address string, billingRoutes http.Handler, stripe []netip.Prefix, certificate *tls.Certificate) *http.Server {
+	if address == "" {
+		return nil
+	}
+	webhooks := billingRoutes
+	if webhooks == nil {
+		webhooks = http.NotFoundHandler()
+	}
+	gated := hooksOnly("*", stripe, billing.ClientAddress, webhooks)
+	routes := http.NewServeMux()
+	routes.HandleFunc("GET "+hooksHealthPath, func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	})
+	routes.Handle("/", gated)
+	endpoint := &http.Server{
+		Addr:              address,
+		Handler:           routes,
+		ReadHeaderTimeout: 5 * time.Second,
+		WriteTimeout:      30 * time.Second,
+	}
+	if certificate != nil {
+		endpoint.TLSConfig = &tls.Config{
+			Certificates: []tls.Certificate{*certificate},
+			MinVersion:   tls.VersionTLS12,
+		}
+	}
+	return endpoint
 }
 
 func within(address string, networks []netip.Prefix) bool {

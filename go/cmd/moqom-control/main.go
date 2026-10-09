@@ -312,6 +312,19 @@ func run() error {
 			"transport", publicTransport())
 	}
 
+	hooks, err := hooksListener(billingRoutes)
+	if err != nil {
+		return err
+	}
+	if hooks != nil {
+		go func() {
+			if err := servePublic(hooks); err != nil && !errors.Is(err, http.ErrServerClosed) {
+				slog.Error("hooks listener stopped", "error", err)
+			}
+		}()
+		slog.Info("hooks listener listening", "address", hooks.Addr)
+	}
+
 	stopped := make(chan error, 3)
 	go func() { stopped <- grpcServer.Serve(listener) }()
 	if overlay != nil {
@@ -474,6 +487,28 @@ func publicEndpoint(instance *server.Server, billingRoutes, keyRoutes http.Handl
 		Certificates: []tls.Certificate{pair},
 	})
 	return endpoint, nil
+}
+
+// hooksListener is hooksEndpoint on MOQOM_CONTROL_HOOKS_ADDR, with the public
+// listener's certificate.
+func hooksListener(billingRoutes http.Handler) (*http.Server, error) {
+	address := os.Getenv("MOQOM_CONTROL_HOOKS_ADDR")
+	if address == "" {
+		return nil, nil
+	}
+	stripe, err := parseNetworks(os.Getenv("MOQOM_CONTROL_HOOKS_STRIPE_IPS"))
+	if err != nil {
+		return nil, fmt.Errorf("MOQOM_CONTROL_HOOKS_STRIPE_IPS: %w", err)
+	}
+	var certificate *tls.Certificate
+	if cert, key := os.Getenv("MOQOM_CONTROL_TLS_CERT"), os.Getenv("MOQOM_CONTROL_TLS_KEY"); cert != "" && key != "" {
+		pair, err := tls.LoadX509KeyPair(cert, key)
+		if err != nil {
+			return nil, fmt.Errorf("hooks listener certificate: %w", err)
+		}
+		certificate = &pair
+	}
+	return hooksEndpoint(address, billingRoutes, stripe, certificate), nil
 }
 
 // servePublic starts the listener with whatever transport it was given.

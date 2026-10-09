@@ -272,3 +272,9 @@ variable "ziti" {
   description = "Turns on the relay's OpenZiti tunneler: an identity minted per instance by the control plane at boot, a sidecar that intercepts the control plane's overlay service on loopback and hosts this relay's admin port and SSH for operators. Null leaves the relay on its TCP link alone."
   default     = null
 }
+
+variable "extra_rules" {
+  type        = bool
+  default     = true
+  description = "Create the STUN and IPv6 forwarding rules. Each external forwarding rule counts against the project's IN_USE_ADDRESSES quota, IPv6 and shared-address ones included, so a project at its limit turns this off and keeps the QUIC rule alone."
+}

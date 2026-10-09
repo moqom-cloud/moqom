@@ -216,3 +216,9 @@ variable "relay_link_overlay_only" {
   description = "The control plane refuses RelayLink unless it arrived over the overlay: the internal TCP path is dark to relays. Turn on only once every relay is attached via the overlay."
   default     = false
 }
+
+variable "relay_extra_rules" {
+  type        = bool
+  default     = false
+  description = "The relays' STUN and IPv6 forwarding rules. Off while the project's IN_USE_ADDRESSES quota (4) is used up by the sites, the control plane and one QUIC rule per region; turn on after it is raised."
+}
