@@ -23,7 +23,8 @@ provider "google" {
 }
 
 # The billing API on the same balancer, served by the dev control plane through
-# the network endpoint groups envs/dev creates (kubernetes_service_v1.control_api).
+# the network endpoint groups envs/dev creates (kubernetes_service_v1.control_api),
+# on the control plane's hooks listener.
 # Apply envs/dev first. GKE makes a group only in a zone where a node has run
 # the pod, and keeps it after, so this lists the zones in the service's
 # cloud.google.com/neg-status annotation; a pod rescheduled into a new zone
@@ -36,7 +37,7 @@ variable "control_api_zones" {
 data "google_compute_network_endpoint_group" "control_api" {
   for_each = toset(var.control_api_zones)
 
-  name = "moqom-dev-control-api"
+  name = "moqom-dev-control-hooks"
   zone = each.key
 }
 

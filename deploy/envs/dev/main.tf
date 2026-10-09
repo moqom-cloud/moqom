@@ -489,7 +489,7 @@ resource "kubernetes_service_v1" "control_api" {
     labels    = merge(local.labels, { component = "control" })
     annotations = {
       "cloud.google.com/neg" = jsonencode({
-        exposed_ports = { (tostring(local.control_hooks_port)) = { name = "${local.name_prefix}-control-api" } }
+        exposed_ports = { (tostring(local.control_hooks_port)) = { name = "${local.name_prefix}-control-hooks" } }
       })
     }
   }

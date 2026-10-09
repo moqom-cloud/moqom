@@ -54,7 +54,7 @@ func TestHooksEndpointServesWebhooksAndHealthOnly(t *testing.T) {
 		method, target, client string
 		want                   int
 	}{
-		{"GET", "/healthz", "35.191.0.1", http.StatusNoContent},
+		{"GET", "/healthz", "35.191.0.1", http.StatusOK},
 		{"POST", "/v1/stripe/webhook", "3.18.12.63", http.StatusTeapot},
 		{"POST", "/v1/stripe/webhook", "198.51.100.1", http.StatusNotFound},
 		{"POST", "/v1/github/secret-scanning", "198.51.100.1", http.StatusTeapot},

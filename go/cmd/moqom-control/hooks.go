@@ -65,7 +65,8 @@ func hooksEndpoint(address string, billingRoutes http.Handler, stripe []netip.Pr
 	gated := hooksOnly("*", stripe, billing.ClientAddress, webhooks)
 	routes := http.NewServeMux()
 	routes.HandleFunc("GET "+hooksHealthPath, func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusNoContent)
+		// 200 exactly: a Google health check counts anything else as down.
+		w.WriteHeader(http.StatusOK)
 	})
 	routes.Handle("/", gated)
 	endpoint := &http.Server{
