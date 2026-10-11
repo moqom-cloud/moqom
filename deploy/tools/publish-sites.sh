@@ -95,9 +95,21 @@ for site in "$@"; do
     # Alias objects have no extension in their last segment: `pricing`, `pricing/`.
     # gcloud splits --exclude on `|` into separate patterns, so no alternation
     # inside a pattern.
-    $GCS rsync "$dir/dist" "$target" --recursive --delete-unmatched-destination-objects \
+    $GCS rsync "$dir/dist" "$target" --recursive \
         --exclude='^_astro/|^[^/.]+/?$|.*/[^/.]+/?$' \
         --cache-control="$HTML_CACHE" >/dev/null
+    # --exclude only filters the source, so rsync's own delete would still remove
+    # old hashed assets and aliases; stale files are removed here instead.
+    $GCS ls --recursive "$target/**" | DIST="$dir/dist" TARGET="$target" python3 -c '
+import os, re, sys
+dist, target = os.environ["DIST"], os.environ["TARGET"] + "/"
+for url in sys.stdin.read().split():
+    rel = url[len(target):] if url.startswith(target) else ""
+    if not rel or rel.startswith("_astro/") or re.fullmatch(r"(.*/)?[^/.]+/?", rel):
+        continue
+    if not os.path.isfile(os.path.join(dist, rel)):
+        print(url)
+' | { grep . || true; } | $GCS rm -I >/dev/null 2>&1 || true
 
     # `gcloud storage cp` writes to `route/index.html` when `route/` already exists
     # as a prefix, so the alias objects go through the JSON API by exact name.
