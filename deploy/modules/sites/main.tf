@@ -29,7 +29,19 @@ locals {
   }
 
   # Every bucket prefix the map routes to, whichever variable named it.
-  served = toset(concat(keys(var.sites), values(var.project_hosts)))
+  served = toset(concat(
+    keys(var.sites),
+    values(var.project_hosts),
+    [for cfg in values(var.product_hosts) : cfg.site],
+  ))
+
+  # Path matcher name per product host (host rules need a unique matcher when `/` is a page).
+  product_matcher = {
+    for host in keys(var.product_hosts) :
+    host => "p-${replace(replace(host, ".", "-"), "*", "x")}"
+  }
+
+  product_host_list = sort(keys(var.product_hosts))
 }
 
 resource "google_storage_bucket" "sites" {
@@ -186,14 +198,34 @@ resource "google_compute_managed_ssl_certificate" "projects" {
   }
 }
 
+# One certificate for every product subdomain. Separate from project_hosts so adding
+# waves.khensu.nu does not burn a proxy certificate slot per name.
+resource "google_compute_managed_ssl_certificate" "products" {
+  count = length(local.product_host_list) == 0 ? 0 : 1
+
+  name = "${var.name_prefix}-products-${substr(sha1(join(",", concat(local.product_host_list, [tostring(var.certificate_epoch)]))), 0, 8)}"
+
+  managed {
+    domains = local.product_host_list
+  }
+
+  lifecycle {
+    create_before_destroy = true
+  }
+}
+
 resource "google_compute_url_map" "sites" {
   name            = "${var.name_prefix}-sites"
   default_service = google_compute_backend_bucket.sites.id
 
   lifecycle {
     precondition {
-      condition     = length(setintersection(toset(keys(var.project_hosts)), toset(concat(local.hosts, keys(var.apis))))) == 0
-      error_message = "A project host is already a site or API host; a URL map takes each host once."
+      condition     = length(setintersection(toset(keys(var.project_hosts)), toset(concat(local.hosts, keys(var.apis), keys(var.product_hosts))))) == 0
+      error_message = "A project host is already a site, API or product host; a URL map takes each host once."
+    }
+    precondition {
+      condition     = length(setintersection(toset(keys(var.product_hosts)), toset(concat(local.hosts, keys(var.apis))))) == 0
+      error_message = "A product host is already a site or API host; a URL map takes each host once."
     }
   }
 
@@ -208,16 +240,20 @@ resource "google_compute_url_map" "sites" {
   dynamic "path_matcher" {
     for_each = var.apis
     content {
-      name = "api-${replace(path_matcher.key, ".", "-")}"
-      default_url_redirect {
-        host_redirect          = path_matcher.value.redirect_host
-        path_redirect          = "/"
-        https_redirect         = true
-        strip_query            = true
-        redirect_response_code = "FOUND"
+      name            = "api-${replace(path_matcher.key, ".", "-")}"
+      default_service = path_matcher.value.redirect_host == null ? path_matcher.value.backend_service : null
+      dynamic "default_url_redirect" {
+        for_each = path_matcher.value.redirect_host == null ? [] : [path_matcher.value.redirect_host]
+        content {
+          host_redirect          = default_url_redirect.value
+          path_redirect          = "/"
+          https_redirect         = true
+          strip_query            = true
+          redirect_response_code = "FOUND"
+        }
       }
       path_rule {
-        paths   = ["/v1/*"]
+        paths   = path_matcher.value.paths
         service = path_matcher.value.backend_service
       }
     }
@@ -246,6 +282,14 @@ resource "google_compute_url_map" "sites" {
     content {
       hosts        = [host_rule.key]
       path_matcher = host_rule.value
+    }
+  }
+
+  dynamic "host_rule" {
+    for_each = var.product_hosts
+    content {
+      hosts        = [host_rule.key]
+      path_matcher = local.product_matcher[host_rule.key]
     }
   }
 
@@ -320,6 +364,53 @@ resource "google_compute_url_map" "sites" {
       }
     }
   }
+
+  # Product hosts: `/` is the product page; everything else (assets) is the site prefix.
+  dynamic "path_matcher" {
+    for_each = var.product_hosts
+    content {
+      name            = local.product_matcher[path_matcher.key]
+      default_service = google_compute_backend_bucket.sites.id
+
+      route_rules {
+        priority = 1
+        service  = google_compute_backend_bucket.sites.id
+        match_rules {
+          full_path_match = "/"
+        }
+        route_action {
+          # Always the publish-sites.sh alias object (`site` or `site/page`), not `…/index.html`.
+          # Rewriting `/` to `…/index.html` makes GCS 301 to that path on the product host, which
+          # then gets the asset prefix rewrite and 404s.
+          url_rewrite {
+            path_prefix_rewrite = path_matcher.value.page == null ? "/${path_matcher.value.site}" : "/${path_matcher.value.site}/${path_matcher.value.page}"
+          }
+        }
+      }
+
+      route_rules {
+        priority = 2
+        service  = google_compute_backend_bucket.sites.id
+        match_rules {
+          prefix_match = "/"
+        }
+        route_action {
+          url_rewrite {
+            path_prefix_rewrite = "/${path_matcher.value.site}/"
+          }
+        }
+      }
+
+      default_custom_error_response_policy {
+        error_service = google_compute_backend_bucket.sites.id
+        error_response_rule {
+          match_response_codes   = ["403", "404"]
+          path                   = "/${path_matcher.value.site}/404.html"
+          override_response_code = 404
+        }
+      }
+    }
+  }
 }
 
 resource "google_compute_ssl_policy" "sites" {
@@ -337,6 +428,7 @@ resource "google_compute_target_https_proxy" "sites" {
     google_compute_managed_ssl_certificate.apis[*].id,
     [for host in sort(keys(local.own_api_hosts)) : google_compute_managed_ssl_certificate.api_hosts[host].id],
     [for host in sort(keys(var.project_hosts)) : google_compute_managed_ssl_certificate.projects[host].id],
+    google_compute_managed_ssl_certificate.products[*].id,
   )
   ssl_policy = google_compute_ssl_policy.sites.id
 }

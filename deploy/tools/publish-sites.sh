@@ -95,14 +95,36 @@ for site in "$@"; do
     # Alias objects have no extension in their last segment: `pricing`, `pricing/`.
     # gcloud splits --exclude on `|` into separate patterns, so no alternation
     # inside a pattern.
-    $GCS rsync "$dir/dist" "$target" --recursive --delete-unmatched-destination-objects \
+    $GCS rsync "$dir/dist" "$target" --recursive \
         --exclude='^_astro/|^[^/.]+/?$|.*/[^/.]+/?$' \
         --cache-control="$HTML_CACHE" >/dev/null
+    # --exclude only filters the source, so rsync's own delete would still remove
+    # old hashed assets and aliases; stale files are removed here instead.
+    $GCS ls --recursive "$target/**" | DIST="$dir/dist" TARGET="$target" python3 -c '
+import os, re, sys
+dist, target = os.environ["DIST"], os.environ["TARGET"] + "/"
+for url in sys.stdin.read().split():
+    rel = url[len(target):] if url.startswith(target) else ""
+    if not rel or rel.startswith("_astro/") or re.fullmatch(r"(.*/)?[^/.]+/?", rel):
+        continue
+    if not os.path.isfile(os.path.join(dist, rel)):
+        print(url)
+' | { grep . || true; } | $GCS rm -I >/dev/null 2>&1 || true
 
     # `gcloud storage cp` writes to `route/index.html` when `route/` already exists
     # as a prefix, so the alias objects go through the JSON API by exact name.
     say "$site: aliasing pages"
     token="$(gcloud auth print-access-token)"
+    # Site root aliases (`site` and `site/`) so product hosts that rewrite `/` to
+    # the site prefix (e.g. void.khensu.nu → /khensu-void) do not 301 through index.html.
+    if [ -f "$dir/dist/index.html" ]; then
+        for alias in "$site" "$site/"; do
+            put_alias "$token" "$alias" "$dir/dist/index.html" || {
+                say "$site: failed to alias /$alias"
+                exit 1
+            }
+        done
+    fi
     (cd "$dir/dist" && find . -name index.html ! -path ./index.html) | while read -r page; do
         route="${page#./}"
         route="${route%/index.html}"

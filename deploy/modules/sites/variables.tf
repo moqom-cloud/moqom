@@ -27,6 +27,24 @@ variable "project_hosts" {
   }
 }
 
+variable "product_hosts" {
+  type = map(object({
+    site = string
+    # When set, `/` on this host serves `/{site}/{page}/`; assets still come from `/{site}/`.
+    page = optional(string)
+  }))
+  description = "Product subdomains (e.g. waves.khensu.nu → khensu-nu/waves). One shared certificate for every host, so they fit under the proxy's 15-certificate limit."
+  default     = {}
+
+  validation {
+    condition = alltrue([
+      for cfg in values(var.product_hosts) :
+      can(regex("^[a-z][-a-z0-9]{0,62}$", cfg.site)) && (cfg.page == null || can(regex("^[a-z][-a-z0-9]{0,62}$", cfg.page)))
+    ])
+    error_message = "product_hosts site and page are lowercase letters, digits and hyphens, starting with a letter."
+  }
+}
+
 variable "embed_paths" {
   type        = map(string)
   description = "Site directory to the one path prefix other sites may frame, e.g. { viewer = \"/embed/\" }. Everything else keeps X-Frame-Options: DENY."
@@ -41,8 +59,11 @@ variable "embed_paths" {
 variable "apis" {
   type = map(object({
     backend_service = string
-    # Where anything outside /v1/ is sent, so the API host serves nothing else.
-    redirect_host = string
+    # Where anything outside paths is sent, so the API host serves nothing
+    # else. Null sends it to the backend service too, for a host whose
+    # security policy answers the rest.
+    redirect_host = optional(string)
+    paths         = optional(list(string), ["/v1/*"])
     # A certificate of its own instead of a place on the shared API one, so
     # adding the host never re-issues the certificate live APIs are using.
     own_certificate = optional(bool, false)
