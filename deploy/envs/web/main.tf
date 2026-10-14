@@ -229,7 +229,8 @@ module "sites" {
 
   name_prefix       = "moqom"
   certificate_epoch = 1
-  http_redirect     = true
+  # Port-80 redirect spends an in-use address; quota is 4 and HTTPS already uses one.
+  http_redirect = false
 
   apis = merge(
     {
@@ -267,6 +268,24 @@ module "sites" {
   # project; see deploy/README.md for the DNS record each needs.
   project_hosts = {
     "six10nine.elliottwave.studio" = "six10nine"
+    "khensu.nu"                    = "khensu-nu"
+    "www.khensu.nu"                = "khensu-nu"
+    "dev.khensu.nu"                = "khensu-dev"
+  }
+
+  # Product subdomains. DNS A → sites address; `/` rewrites to the page under the site prefix.
+  # nu.Fi is fi.khensu.nu (not nufi). create → /creators; memory → /memory.
+  product_hosts = {
+    "webe.khensu.nu"    = { site = "khensu-nu", page = "webe" }
+    "void.khensu.nu"    = { site = "khensu-void" }
+    "media.khensu.nu"   = { site = "khensu-nu", page = "media" }
+    "memory.khensu.nu"  = { site = "khensu-nu", page = "memory" }
+    "create.khensu.nu"  = { site = "khensu-nu", page = "creators" }
+    "waves.khensu.nu"   = { site = "khensu-nu", page = "waves" }
+    "fi.khensu.nu"      = { site = "khensu-nu", page = "nufi" }
+    "bi.khensu.nu"      = { site = "khensu-nu", page = "bi" }
+    "shield.khensu.nu"  = { site = "khensu-nu", page = "shield" }
+    "network.khensu.nu" = { site = "khensu-nu", page = "network" }
   }
 
   # Site directory to the one prefix other sites may frame in an iframe.

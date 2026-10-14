@@ -115,6 +115,16 @@ for url in sys.stdin.read().split():
     # as a prefix, so the alias objects go through the JSON API by exact name.
     say "$site: aliasing pages"
     token="$(gcloud auth print-access-token)"
+    # Site root aliases (`site` and `site/`) so product hosts that rewrite `/` to
+    # the site prefix (e.g. void.khensu.nu → /khensu-void) do not 301 through index.html.
+    if [ -f "$dir/dist/index.html" ]; then
+        for alias in "$site" "$site/"; do
+            put_alias "$token" "$alias" "$dir/dist/index.html" || {
+                say "$site: failed to alias /$alias"
+                exit 1
+            }
+        done
+    fi
     (cd "$dir/dist" && find . -name index.html ! -path ./index.html) | while read -r page; do
         route="${page#./}"
         route="${route%/index.html}"
