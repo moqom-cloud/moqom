@@ -288,7 +288,9 @@ module "sites" {
     "network.khensu.nu" = { site = "khensu-nu", page = "network" }
     # Own cert: dig A → 34.107.228.246 verified 15 Oct 2026. Never join the
     # shared products pack first (that pack's PROVISIONING takes down bi/waves).
-    "sla.khensu.nu" = { site = "khensu-nu", page = "sla", own_certificate = true }
+    "sla.khensu.nu"       = { site = "khensu-nu", page = "sla", own_certificate = true }
+    "avatars.khensu.nu"   = { site = "khensu-nu", page = "avatars", own_certificate = true }
+    "indra.og.khensu.nu"  = { site = "khensu-nu", page = "indra", own_certificate = true }
   }
 
   # Site directory to the one prefix other sites may frame in an iframe.
