@@ -286,11 +286,9 @@ module "sites" {
     "bi.khensu.nu"      = { site = "khensu-nu", page = "bi" }
     "shield.khensu.nu"  = { site = "khensu-nu", page = "shield" }
     "network.khensu.nu" = { site = "khensu-nu", page = "network" }
-    # sla.khensu.nu: live at khensu.nu/sla. When Hover has A → 34.107.228.246,
-    # add ONLY with own_certificate = true (never onto the shared products pack
-    # first). A NXDOMAIN / PROVISIONING shared cert takes down bi, waves, create
-    # (wrong SNI → unstyled sites). Seen 14–15 Oct 2026. Module waits for ACTIVE
-    # before proxy swap; still never add a host that does not dig correctly.
+    # Own cert: dig A → 34.107.228.246 verified 15 Oct 2026. Never join the
+    # shared products pack first (that pack's PROVISIONING takes down bi/waves).
+    "sla.khensu.nu" = { site = "khensu-nu", page = "sla", own_certificate = true }
   }
 
   # Site directory to the one prefix other sites may frame in an iframe.
