@@ -238,31 +238,51 @@ resource "google_compute_managed_ssl_certificate" "product_hosts" {
   }
 }
 
-# Block proxy updates until the shared products cert is ACTIVE. Without this,
-# every product host (bi, waves, …) goes SSL-wrong for the whole provision window.
-resource "null_resource" "products_cert_active" {
-  count = length(local.product_host_list) == 0 ? 0 : 1
-
+# Block proxy updates until every certificate that will be attached is ACTIVE.
+# A single PROVISIONING / FAILED_NOT_VISIBLE cert on the target HTTPS proxy makes
+# Google ignore SNI and serve the first cert (e.g. elliottwave.dev) for bi/waves —
+# unstyled sites. Seen 15 Oct 2026 with moqom-apis + six10nine stuck FAILED.
+resource "null_resource" "proxy_certs_active" {
   triggers = {
-    cert_id   = google_compute_managed_ssl_certificate.products[0].id
-    cert_name = google_compute_managed_ssl_certificate.products[0].name
+    cert_names = join(",", concat(
+      [google_compute_managed_ssl_certificate.sites.name],
+      google_compute_managed_ssl_certificate.apis[*].name,
+      [for host in sort(keys(local.own_api_hosts)) : google_compute_managed_ssl_certificate.api_hosts[host].name],
+      [for host in sort(keys(var.project_hosts)) : google_compute_managed_ssl_certificate.projects[host].name],
+      google_compute_managed_ssl_certificate.products[*].name,
+      [for host in sort(keys(local.product_own_hosts)) : google_compute_managed_ssl_certificate.product_hosts[host].name],
+    ))
   }
 
   provisioner "local-exec" {
     interpreter = ["/bin/bash", "-c"]
     command     = <<-EOT
       set -euo pipefail
-      name="${google_compute_managed_ssl_certificate.products[0].name}"
-      echo "Waiting for products cert $name to become ACTIVE (proxy stays on the previous cert until then)…"
+      names="${join(" ", concat(
+        [google_compute_managed_ssl_certificate.sites.name],
+        google_compute_managed_ssl_certificate.apis[*].name,
+        [for host in sort(keys(local.own_api_hosts)) : google_compute_managed_ssl_certificate.api_hosts[host].name],
+        [for host in sort(keys(var.project_hosts)) : google_compute_managed_ssl_certificate.projects[host].name],
+        google_compute_managed_ssl_certificate.products[*].name,
+        [for host in sort(keys(local.product_own_hosts)) : google_compute_managed_ssl_certificate.product_hosts[host].name],
+      ))}"
+      echo "Waiting for every https-proxy cert to be ACTIVE: $names"
       for i in $(seq 1 180); do
-        st=$(gcloud compute ssl-certificates describe "$name" --global --project=moqom-503700 --format='value(managed.status)' 2>/dev/null || echo MISSING)
-        echo "  try $i: $st"
-        if [ "$st" = "ACTIVE" ]; then
+        bad=""
+        for name in $names; do
+          st=$(gcloud compute ssl-certificates describe "$name" --global --project=moqom-503700 --format='value(managed.status)' 2>/dev/null || echo MISSING)
+          if [ "$st" != "ACTIVE" ]; then
+            bad="$bad $name=$st"
+          fi
+        done
+        if [ -z "$bad" ]; then
+          echo "All proxy certs ACTIVE"
           exit 0
         fi
+        echo "  try $i: still not ACTIVE:$bad"
         sleep 20
       done
-      echo "FATAL: $name still not ACTIVE after 60m — refusing to point the https proxy at a PROVISIONING cert" >&2
+      echo "FATAL: refusing to attach non-ACTIVE certs to the https proxy:$bad" >&2
       exit 1
     EOT
   }
@@ -476,8 +496,8 @@ resource "google_compute_ssl_policy" "sites" {
 resource "google_compute_target_https_proxy" "sites" {
   name    = "${var.name_prefix}-sites"
   url_map = google_compute_url_map.sites.id
-  # Do not attach a replaced products cert until it is ACTIVE (null_resource).
-  depends_on = [null_resource.products_cert_active]
+  # Do not attach any cert until every cert in the list is ACTIVE.
+  depends_on = [null_resource.proxy_certs_active]
   # The shared certificate stays first: it is what a client without SNI gets.
   ssl_certificates = concat(
     [google_compute_managed_ssl_certificate.sites.id],

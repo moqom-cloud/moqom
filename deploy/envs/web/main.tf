@@ -232,16 +232,12 @@ module "sites" {
   # Port-80 redirect spends an in-use address; quota is 4 and HTTPS already uses one.
   http_redirect = false
 
+  # NEVER attach a PROVISIONING / FAILED_NOT_VISIBLE cert to the https proxy —
+  # Google then ignores SNI and serves the first cert (elliottwave.dev) for every
+  # host, including bi/waves (outage 15 Oct 2026). api.moqom.cloud stays off this
+  # list until its edge A record is live (FAILED_NOT_VISIBLE on the old shared cert).
   apis = merge(
     {
-      # Moving to the API's own post-quantum TLS edge (envs/dev module.api_edge,
-      # cmd/moqom-api-edge). Remove this entry, with control_api's backend and
-      # health check above, after api.moqom.cloud's A record at Hover points at
-      # the edge; see deploy/README.md.
-      "api.moqom.cloud" = {
-        backend_service = google_compute_backend_service.control_api.id
-        redirect_host   = "moqom.cloud"
-      }
       (local.hooks_host) = {
         backend_service = google_compute_backend_service.control_hooks.id
         paths           = [local.stripe_hooks_path, local.github_hooks_path]
@@ -267,10 +263,11 @@ module "sites" {
   # A lab project's docs: hostname to its directory under sites/. One line per
   # project; see deploy/README.md for the DNS record each needs.
   project_hosts = {
-    "six10nine.elliottwave.studio" = "six10nine"
-    "khensu.nu"                    = "khensu-nu"
-    "www.khensu.nu"                = "khensu-nu"
-    "dev.khensu.nu"                = "khensu-dev"
+    # six10nine.elliottwave.studio: NXDOMAIN / FAILED_NOT_VISIBLE — do not attach
+    # until dig A → sites LB. A dead cert on the proxy breaks SNI for all hosts.
+    "khensu.nu"     = "khensu-nu"
+    "www.khensu.nu" = "khensu-nu"
+    "dev.khensu.nu" = "khensu-dev"
   }
 
   # Product subdomains. DNS A → sites address; `/` rewrites to the page under the site prefix.
