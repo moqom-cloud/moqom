@@ -275,6 +275,9 @@ module "sites" {
 
   # Product subdomains. DNS A → sites address; `/` rewrites to the page under the site prefix.
   # nu.Fi is fi.khensu.nu (not nufi). create → /creators; memory → /memory.
+  # moments.khensu.nu is staged in GCP DNS and the site page is live at /moments; add it here
+  # only after Hover has an A record for moments.khensu.nu → the sites address (otherwise the
+  # shared products certificate stays PROVISIONING and product hosts fall back to the wrong cert).
   product_hosts = {
     "webe.khensu.nu"    = { site = "khensu-nu", page = "webe" }
     "void.khensu.nu"    = { site = "khensu-void" }
@@ -286,6 +289,10 @@ module "sites" {
     "bi.khensu.nu"      = { site = "khensu-nu", page = "bi" }
     "shield.khensu.nu"  = { site = "khensu-nu", page = "shield" }
     "network.khensu.nu" = { site = "khensu-nu", page = "network" }
+    # sla.khensu.nu: marketing page is live at khensu.nu/sla. Do NOT add here
+    # until `dig sla.khensu.nu A` returns 34.107.228.246 (not NXDOMAIN). A missing
+    # A record keeps the shared products cert PROVISIONING and breaks waves,
+    # create, media, etc. (seen 14–15 Oct 2026).
   }
 
   # Site directory to the one prefix other sites may frame in an iframe.
