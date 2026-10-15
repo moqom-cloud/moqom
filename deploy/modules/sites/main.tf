@@ -255,7 +255,7 @@ resource "null_resource" "products_cert_active" {
       name="${google_compute_managed_ssl_certificate.products[0].name}"
       echo "Waiting for products cert $name to become ACTIVE (proxy stays on the previous cert until then)…"
       for i in $(seq 1 180); do
-        st=$(gcloud compute ssl-certificates describe "$name" --global --format='value(managed.status)' 2>/dev/null || echo MISSING)
+        st=$(gcloud compute ssl-certificates describe "$name" --global --project=moqom-503700 --format='value(managed.status)' 2>/dev/null || echo MISSING)
         echo "  try $i: $st"
         if [ "$st" = "ACTIVE" ]; then
           exit 0
