@@ -289,10 +289,11 @@ module "sites" {
     "bi.khensu.nu"      = { site = "khensu-nu", page = "bi" }
     "shield.khensu.nu"  = { site = "khensu-nu", page = "shield" }
     "network.khensu.nu" = { site = "khensu-nu", page = "network" }
-    # sla.khensu.nu: marketing page is live at khensu.nu/sla. Do NOT add here
-    # until `dig sla.khensu.nu A` returns 34.107.228.246 (not NXDOMAIN). A missing
-    # A record keeps the shared products cert PROVISIONING and breaks waves,
-    # create, media, etc. (seen 14–15 Oct 2026).
+    # sla.khensu.nu: live at khensu.nu/sla. When Hover has A → 34.107.228.246,
+    # add ONLY with own_certificate = true (never onto the shared products pack
+    # first). A NXDOMAIN / PROVISIONING shared cert takes down bi, waves, create
+    # (wrong SNI → unstyled sites). Seen 14–15 Oct 2026. Module waits for ACTIVE
+    # before proxy swap; still never add a host that does not dig correctly.
   }
 
   # Site directory to the one prefix other sites may frame in an iframe.

@@ -32,8 +32,12 @@ variable "product_hosts" {
     site = string
     # When set, `/` on this host serves `/{site}/{page}/`; assets still come from `/{site}/`.
     page = optional(string)
+    # Own cert (like project_hosts): adding this host never recreates the shared
+    # products certificate. Use for any new subdomain until dig A → sites LB is
+    # proven, or forever when you cannot risk the shared pack going PROVISIONING.
+    own_certificate = optional(bool, false)
   }))
-  description = "Product subdomains (e.g. waves.khensu.nu → khensu-nu/waves). One shared certificate for every host, so they fit under the proxy's 15-certificate limit."
+  description = "Product subdomains (e.g. waves.khensu.nu → khensu-nu/waves). Shared certificate by default; set own_certificate to isolate a host from the pack."
   default     = {}
 
   validation {

@@ -41,7 +41,10 @@ locals {
     host => "p-${replace(replace(host, ".", "-"), "*", "x")}"
   }
 
-  product_host_list = sort(keys(var.product_hosts))
+  # Shared pack only. Hosts with own_certificate=true never touch this list, so
+  # a new subdomain's missing DNS cannot put bi/waves/create into PROVISIONING.
+  product_host_list = sort([for h, cfg in var.product_hosts : h if !cfg.own_certificate])
+  product_own_hosts = { for h, cfg in var.product_hosts : h => cfg if cfg.own_certificate }
 }
 
 resource "google_storage_bucket" "sites" {
@@ -198,8 +201,14 @@ resource "google_compute_managed_ssl_certificate" "projects" {
   }
 }
 
-# One certificate for every product subdomain. Separate from project_hosts so adding
-# waves.khensu.nu does not burn a proxy certificate slot per name.
+# Shared certificate for product subdomains that share the pack. Separate from
+# project_hosts so adding a name does not burn a proxy certificate slot per host.
+#
+# CRITICAL (always-live): the https proxy must NOT point at this cert until it is
+# ACTIVE. create_before_destroy alone is not enough — Terraform still swaps the
+# proxy onto the new (PROVISIONING) cert and browsers get the wrong SNI
+# (elliottwave.dev), which strips CSS/JS from every product host. Seen 14–15 Oct
+# 2026 when sla.khensu.nu (NXDOMAIN) was added to the pack.
 resource "google_compute_managed_ssl_certificate" "products" {
   count = length(local.product_host_list) == 0 ? 0 : 1
 
@@ -211,6 +220,51 @@ resource "google_compute_managed_ssl_certificate" "products" {
 
   lifecycle {
     create_before_destroy = true
+  }
+}
+
+# One certificate per isolated product host (own_certificate = true).
+resource "google_compute_managed_ssl_certificate" "product_hosts" {
+  for_each = local.product_own_hosts
+
+  name = "${substr("${var.name_prefix}-${replace(each.key, ".", "-")}", 0, 54)}-${substr(sha1("${each.key},${var.certificate_epoch}"), 0, 8)}"
+
+  managed {
+    domains = [each.key]
+  }
+
+  lifecycle {
+    create_before_destroy = true
+  }
+}
+
+# Block proxy updates until the shared products cert is ACTIVE. Without this,
+# every product host (bi, waves, …) goes SSL-wrong for the whole provision window.
+resource "null_resource" "products_cert_active" {
+  count = length(local.product_host_list) == 0 ? 0 : 1
+
+  triggers = {
+    cert_id   = google_compute_managed_ssl_certificate.products[0].id
+    cert_name = google_compute_managed_ssl_certificate.products[0].name
+  }
+
+  provisioner "local-exec" {
+    interpreter = ["/bin/bash", "-c"]
+    command     = <<-EOT
+      set -euo pipefail
+      name="${google_compute_managed_ssl_certificate.products[0].name}"
+      echo "Waiting for products cert $name to become ACTIVE (proxy stays on the previous cert until then)…"
+      for i in $(seq 1 180); do
+        st=$(gcloud compute ssl-certificates describe "$name" --global --format='value(managed.status)' 2>/dev/null || echo MISSING)
+        echo "  try $i: $st"
+        if [ "$st" = "ACTIVE" ]; then
+          exit 0
+        fi
+        sleep 20
+      done
+      echo "FATAL: $name still not ACTIVE after 60m — refusing to point the https proxy at a PROVISIONING cert" >&2
+      exit 1
+    EOT
   }
 }
 
@@ -422,6 +476,8 @@ resource "google_compute_ssl_policy" "sites" {
 resource "google_compute_target_https_proxy" "sites" {
   name    = "${var.name_prefix}-sites"
   url_map = google_compute_url_map.sites.id
+  # Do not attach a replaced products cert until it is ACTIVE (null_resource).
+  depends_on = [null_resource.products_cert_active]
   # The shared certificate stays first: it is what a client without SNI gets.
   ssl_certificates = concat(
     [google_compute_managed_ssl_certificate.sites.id],
@@ -429,6 +485,7 @@ resource "google_compute_target_https_proxy" "sites" {
     [for host in sort(keys(local.own_api_hosts)) : google_compute_managed_ssl_certificate.api_hosts[host].id],
     [for host in sort(keys(var.project_hosts)) : google_compute_managed_ssl_certificate.projects[host].id],
     google_compute_managed_ssl_certificate.products[*].id,
+    [for host in sort(keys(local.product_own_hosts)) : google_compute_managed_ssl_certificate.product_hosts[host].id],
   )
   ssl_policy = google_compute_ssl_policy.sites.id
 }
