@@ -92,12 +92,13 @@ for site in "$@"; do
         $GCS rsync "$dir/dist/_astro" "$target/_astro" --recursive \
             --cache-control="public, max-age=31536000, immutable" >/dev/null
     fi
-    # Alias objects have no extension in their last segment: `pricing`, `pricing/`.
-    # gcloud splits --exclude on `|` into separate patterns, so no alternation
-    # inside a pattern.
-    $GCS rsync "$dir/dist" "$target" --recursive \
-        --exclude='^_astro/|^[^/.]+/?$|.*/[^/.]+/?$' \
-        --cache-control="$HTML_CACHE" >/dev/null
+    # cp rather than rsync: the root alias objects `$site` and `$site/` make
+    # rsync's destination ambiguous. dist/ holds no alias objects; they are
+    # written below.
+    (cd "$dir/dist" && for entry in *; do
+        [ "$entry" = _astro ] && continue
+        $GCS cp --recursive --cache-control="$HTML_CACHE" "$entry" "$target/" >/dev/null 2>&1 || exit 1
+    done)
     # --exclude only filters the source, so rsync's own delete would still remove
     # old hashed assets and aliases; stale files are removed here instead.
     $GCS ls --recursive "$target/**" | DIST="$dir/dist" TARGET="$target" python3 -c '

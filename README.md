@@ -129,6 +129,8 @@ do when it fails.
 | [`OPERATOR-CONSOLE.md`](docs/OPERATOR-CONSOLE.md) | The operator console at admin.moqom.cloud |
 | [`OPEN-CORE.md`](docs/OPEN-CORE.md) | What is public, what stays private, and how the player is tied to the network |
 | [`BENCHMARKS-AND-SPECS.md`](docs/BENCHMARKS-AND-SPECS.md) | Measured performance and specifications |
+| [`MOQT-DRAFT-22-MIGRATION.md`](docs/MOQT-DRAFT-22-MIGRATION.md) | Work to move from MoQ Transport draft-19 to draft-22 |
+| [`MOQT-DRAFT-23-PROPOSAL.md`](docs/MOQT-DRAFT-23-PROPOSAL.md) | Changes we intend to propose to the MoQ working group (public) |
 | [`compliance/`](docs/compliance/README.md) | The compliance programme: policies, GDPR, CCPA, SOC 2 and ISO 27001 mappings, incident response |
 | [`deploy/README.md`](deploy/README.md) | Deploying: environments, secrets, the management overlay, viewer licensing |
 

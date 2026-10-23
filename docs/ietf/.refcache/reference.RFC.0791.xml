@@ -1,0 +1,10 @@
+<reference anchor="RFC0791" target="https://www.rfc-editor.org/info/rfc791">
+  <front>
+    <title>Internet Protocol</title>
+    <author fullname="J. Postel" initials="J." surname="Postel"/>
+    <date month="September" year="1981"/>
+  </front>
+  <seriesInfo name="STD" value="5"/>
+  <seriesInfo name="RFC" value="791"/>
+  <seriesInfo name="DOI" value="10.17487/RFC791"/>
+</reference>

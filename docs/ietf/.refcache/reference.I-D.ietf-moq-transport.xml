@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<reference anchor="I-D.ietf-moq-transport" target="https://datatracker.ietf.org/doc/html/draft-ietf-moq-transport-22">
+   <front>
+      <title>Media over QUIC Transport</title>
+      <author initials="S." surname="Nandakumar" fullname="Suhas Nandakumar">
+         <organization>Cisco</organization>
+      </author>
+      <author initials="V." surname="Vasiliev" fullname="Victor Vasiliev">
+         <organization>Google</organization>
+      </author>
+      <author initials="I." surname="Swett" fullname="Ian Swett">
+         <organization>Google</organization>
+      </author>
+      <author initials="A." surname="Frindell" fullname="Alan Frindell">
+         <organization>Meta</organization>
+      </author>
+      <date month="October" day="1" year="2026" />
+      <abstract>
+	 <t>   This document defines Media over QUIC Transport (MOQT), a publish/
+   subscribe protocol that runs over QUIC and WebTransport.  MOQT
+   leverages the features of these transports, such as streams,
+   datagrams, priorities, and partial reliability.  MOQT operates both
+   point-to-point and through intermediate relays, enabling scalable
+   low-latency delivery.  Despite its name, MOQT is media agnostic and
+   can be used for a wide range of use cases.
+
+	 </t>
+      </abstract>
+   </front>
+   <seriesInfo name="Internet-Draft" value="draft-ietf-moq-transport-22" />
+   
+</reference>

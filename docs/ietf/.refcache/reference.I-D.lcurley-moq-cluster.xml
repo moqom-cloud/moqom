@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<reference anchor="I-D.lcurley-moq-cluster" target="https://datatracker.ietf.org/doc/html/draft-lcurley-moq-cluster-01">
+   <front>
+      <title>MoQ Cluster Extension</title>
+      <author initials="L." surname="Curley" fullname="Luke Curley">
+         </author>
+      <date month="September" day="21" year="2026" />
+      <abstract>
+	 <t>   This document defines a clustering extension for MoQ Transport
+   [moqt], used to build a mesh of relays.  Each namespace advertisement
+   carries the list of Hop IDs it has passed through, starting with the
+   original publisher, and the accumulated cost of that path.  A
+   receiver uses the list to detect loops and to tell which
+   advertisements come from the same publisher, and the cost to choose
+   between paths.  Each endpoint declares its own Hop ID at setup, so a
+   peer never advertises or serves it a path that already passed through
+   it.
+
+	 </t>
+      </abstract>
+   </front>
+   <seriesInfo name="Internet-Draft" value="draft-lcurley-moq-cluster-01" />
+   
+</reference>
