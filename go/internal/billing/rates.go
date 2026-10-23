@@ -78,19 +78,27 @@ func AgoraListPrice() Ceiling {
 	}
 }
 
-// AgoraLessOneCent is AgoraListPrice less one cent per 1,000 minutes at every
-// rate.
-func AgoraLessOneCent() Ceiling {
-	ceiling := Ceiling{}
-	for role, tiers := range AgoraListPrice() {
-		// A fresh map per role: the list shares one between hosts and
-		// interactive audience.
-		ceiling[role] = map[Tier]Micros{}
-		for tier, rate := range tiers {
-			ceiling[role][tier] = rate - Cent
-		}
+// VolumeBand is a discount on a tenant's participant-minutes past FromMinutes
+// in a calendar month (UTC), applied to the minutes inside the band only.
+type VolumeBand struct {
+	FromMinutes         int64
+	DiscountBasisPoints int64
+}
+
+// AgoraVolumeBands is Agora's automatic monthly volume discount, band by
+// band: none to 100,000 minutes, 5% to 500,000, 7% to 1,000,000, 10% past
+// that. Agora stops publishing at 3,000,000 and quotes by contract; the last
+// band holds from there.
+//
+// Source: agora.io/en/pricing/interactive-live-streaming and docs.agora.io
+// legacy pricing, retrieved October 2026.
+func AgoraVolumeBands() []VolumeBand {
+	return []VolumeBand{
+		{FromMinutes: 0, DiscountBasisPoints: 0},
+		{FromMinutes: 100_000, DiscountBasisPoints: 500},
+		{FromMinutes: 500_000, DiscountBasisPoints: 700},
+		{FromMinutes: 1_000_000, DiscountBasisPoints: 1000},
 	}
-	return ceiling
 }
 
 // AssumedKbps is the bitrate a participant is assumed to receive at each tier
@@ -160,16 +168,23 @@ const (
 
 // Pricing turns usage into a charge.
 type Pricing struct {
+	// Costs is what MOQOM pays, recorded beside each charge so the margin is
+	// visible. It does not set the price.
 	Costs Costs
-	// MarkupBasisPoints is added to cost: 1500 is 15%.
-	MarkupBasisPoints int64
-	// PlatformFeePerGiB is charged on egress from MOQOM's own relays, on top of
-	// cost and markup.
-	PlatformFeePerGiB Micros
+	// Reference is the list price per 1,000 participant-minutes that hosted
+	// usage is priced against.
+	Reference Ceiling
+	// ShareBasisPoints is the share of Reference, after the volume discount,
+	// that MOQOM charges: 8500 is 85%, or 15% under.
+	ShareBasisPoints int64
+	// Bands discounts Reference by a tenant's participant-minutes on MOQOM's
+	// relays so far this month. Empty is no discount.
+	Bands []VolumeBand
 	// SelfHostedFeePerGiB is the whole price for egress from a tenant's own
-	// relays, where the tenant has already paid for the bytes. It is set
-	// against Agora's cheapest effective rate, about $0.16/GiB for 720p-1080p
-	// to a broadcast audience, so at 5¢ the fee alone stays 68% under it, and further under at lower
+	// relays, where the tenant has already paid for the bytes, capped at what
+	// the same minutes would cost hosted. It is set against Agora's cheapest
+	// effective rate, about $0.16/GiB for 720p-1080p to a broadcast audience,
+	// so at 5¢ the fee alone stays 68% under it, and further under at lower
 	// resolutions, where Agora charges more per GiB.
 	SelfHostedFeePerGiB Micros
 	// DirectFreeMinutesPerMonth is how many direct participant-minutes each
@@ -188,19 +203,17 @@ type Pricing struct {
 	// Cloudflare's relays each tenant has free in a calendar month (UTC).
 	// Past it, usage pays SelfHostedFeePerGiB.
 	CloudflareFreeMinutesPerMonth int64
-	// Ceiling caps every charge. Nil is no cap.
-	Ceiling Ceiling
 }
 
-// DefaultPricing is GCP list cost plus 15% and a one-cent-per-GiB platform fee
-// on MOQOM's relays, five cents per GiB on a tenant's own, all capped at Agora
-// less one cent. The markup and fee are placeholders for a
-// commercial decision, not one.
+// DefaultPricing is the owner's decision: hosted minutes at 85% of Agora's
+// list price at Agora's own volume bands, never less than one cent under
+// Agora at the same band, and five cents per GiB on a tenant's own relays.
 func DefaultPricing() Pricing {
 	return Pricing{
 		Costs:               GCPListPrice(),
-		MarkupBasisPoints:   1500,
-		PlatformFeePerGiB:   Cent,
+		Reference:           AgoraListPrice(),
+		ShareBasisPoints:    8500,
+		Bands:               AgoraVolumeBands(),
 		SelfHostedFeePerGiB: 5 * Cent,
 		// The owner's decision: 1,000 free a month, then 50 cents per 1,000.
 		DirectFreeMinutesPerMonth: 1000,
@@ -210,8 +223,54 @@ func DefaultPricing() Pricing {
 		// self-hosted fee.
 		CloudflareFreeUntil:           time.Date(2026, 11, 1, 0, 0, 0, 0, time.UTC),
 		CloudflareFreeMinutesPerMonth: 1000,
-		Ceiling:                       AgoraLessOneCent(),
 	}
+}
+
+func (p Pricing) bands() []VolumeBand {
+	if len(p.Bands) == 0 {
+		return []VolumeBand{{}}
+	}
+	return p.Bands
+}
+
+// RatePer1000 is the price of 1,000 participant-minutes in band: the
+// reference less the band's discount, times the share, rounded down to a
+// whole cent, and never above the discounted reference less one cent. False
+// when the reference has no rate for role and tier.
+func (p Pricing) RatePer1000(role Role, tier Tier, band int) (Micros, bool) {
+	list, ok := p.Reference[role][tier]
+	bands := p.bands()
+	if !ok || band < 0 || band >= len(bands) {
+		return 0, false
+	}
+	reference := list - scale(list, bands[band].DiscountBasisPoints, 10_000)
+	share := scale(reference, p.ShareBasisPoints, 10_000) / Cent * Cent
+	return max(min(share, reference-Cent), 0), true
+}
+
+// HostedPrice prices seconds of participant time on MOQOM's relays for a
+// tenant that had already used before seconds there this month, each part at
+// the rate of the volume band it falls in.
+func (p Pricing) HostedPrice(role Role, tier Tier, before, seconds int64) (Micros, bool) {
+	if _, ok := p.RatePer1000(role, tier, 0); !ok || seconds <= 0 {
+		return 0, ok
+	}
+	start := max(before, 0)
+	end := start + seconds
+	bands := p.bands()
+	var price Micros
+	for i, band := range bands {
+		from := max(start, band.FromMinutes*60)
+		to := end
+		if i+1 < len(bands) {
+			to = min(end, bands[i+1].FromMinutes*60)
+		}
+		if to > from {
+			rate, _ := p.RatePer1000(role, tier, i)
+			price += Per1000Minutes(rate, to-from)
+		}
+	}
+	return price, true
 }
 
 // DirectFee prices seconds of direct time for a tenant that had already used
@@ -255,39 +314,50 @@ type Usage struct {
 	EgressBytes  int64
 	IngressBytes int64
 	Hosting      Hosting
+	// Before is the tenant's participant-seconds on MOQOM's relays earlier
+	// this month, which sets the volume band.
+	Before int64
+	// Standby is the part of Seconds the participant spent on a direct path,
+	// holding the relay session only as a fallback. Charged at cost, so a
+	// direct call pays its direct fee and not the relay's rate as well.
+	Standby int64
 }
+
+// Relayed is the part of the interval the relay carried the participant.
+func (u Usage) Relayed() int64 { return max(u.Seconds-max(u.Standby, 0), 0) }
 
 // Charge is what one Usage costs us and costs the tenant.
 type Charge struct {
-	Cost   Micros
-	Price  Micros
+	Cost  Micros
+	Price Micros
+	// Capped is a self-hosted fee held down to the hosted price.
 	Capped bool
 }
 
 const gibibyte = 1 << 30
 
 // Rate prices usage. Each component rounds half up to the nearest micro.
+//
+// Relayed time is priced by the minute at the tenant's volume band. Standby
+// time, and hosted bytes reported with no time, can't be, and are charged at
+// cost.
 func (p Pricing) Rate(u Usage) Charge {
-	var cost Micros
-	fee := p.PlatformFeePerGiB
 	if u.Hosting == HostingSelf || u.Hosting == HostingCloudflare {
-		fee = p.SelfHostedFeePerGiB
-	} else {
-		cost = perGiB(u.EgressBytes, p.Costs.EgressPerGiB) +
-			perGiB(u.IngressBytes, p.Costs.IngressPerGiB) +
-			Micros(max(u.Seconds, 0))*p.Costs.ConnectedSecond
-	}
-	price := cost + scale(cost, p.MarkupBasisPoints, 10_000) +
-		perGiB(u.EgressBytes, fee)
-
-	charge := Charge{Cost: cost, Price: price}
-	if rate, ok := p.Ceiling[u.Role][u.Tier]; ok && u.Seconds > 0 {
-		if limit := Per1000Minutes(rate, u.Seconds); price > limit {
-			charge.Price = limit
-			charge.Capped = true
+		price := perGiB(u.EgressBytes, p.SelfHostedFeePerGiB)
+		if hosted, ok := p.HostedPrice(u.Role, u.Tier, 0, u.Seconds); ok && u.Seconds > 0 && price > hosted {
+			return Charge{Price: hosted, Capped: true}
 		}
+		return Charge{Price: price}
 	}
-	return charge
+	cost := perGiB(u.EgressBytes, p.Costs.EgressPerGiB) +
+		perGiB(u.IngressBytes, p.Costs.IngressPerGiB) +
+		Micros(max(u.Seconds, 0))*p.Costs.ConnectedSecond
+	relayed := u.Relayed()
+	hosted, ok := p.HostedPrice(u.Role, u.Tier, u.Before, relayed)
+	if !ok || relayed == 0 {
+		return Charge{Cost: cost, Price: cost}
+	}
+	return Charge{Cost: cost, Price: hosted + scale(cost, u.Seconds-relayed, u.Seconds)}
 }
 
 func perGiB(bytes int64, rate Micros) Micros {

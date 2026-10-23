@@ -51,10 +51,9 @@ func TestDirectMinutesAreFreeEachMonthThenChargedOnceEach(t *testing.T) {
 		return UsageRecord{ID: id, Tenant: tenant, Room: "call", Participant: "ada/0123456789abcdef",
 			Role: RoleHost, Tier: TierAudio, Seconds: 60, DirectSeconds: direct}
 	}
-	base, err := f.service.RecordUsage(ctx, Reporter{Hosting: HostingCloud}, []UsageRecord{standby("base", 0)})
-	if err != nil || base.Charged != 1 {
-		t.Fatalf("standby %+v %v", base, err)
-	}
+	base := struct{ Total Micros }{f.service.pricing.Rate(Usage{
+		Role: RoleHost, Tier: TierAudio, Seconds: 60, Standby: 60, Hosting: HostingCloud,
+	}).Price}
 	fee := func(record UsageRecord) (Micros, int) {
 		t.Helper()
 		result, err := f.service.RecordUsage(ctx, Reporter{Hosting: HostingCloud}, []UsageRecord{record})

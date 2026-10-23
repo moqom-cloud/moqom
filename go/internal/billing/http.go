@@ -196,12 +196,29 @@ func moneyOf(m Micros) money { return money{Micros: int64(m), Display: m.String(
 
 func (h *handler) rates(w http.ResponseWriter, _ *http.Request) {
 	pricing := h.service.Pricing()
-	ceiling := map[Role]map[Tier]money{}
-	for role, tiers := range pricing.Ceiling {
-		ceiling[role] = map[Tier]money{}
+	type bandView struct {
+		FromMinutes         int64                   `json:"from_minutes"`
+		DiscountBasisPoints int64                   `json:"agora_discount_basis_points"`
+		Per1000             map[Role]map[Tier]money `json:"per_1000_participant_minutes"`
+	}
+	reference := map[Role]map[Tier]money{}
+	for role, tiers := range pricing.Reference {
+		reference[role] = map[Tier]money{}
 		for tier, rate := range tiers {
-			ceiling[role][tier] = moneyOf(rate)
+			reference[role][tier] = moneyOf(rate)
 		}
+	}
+	var bands []bandView
+	for i, band := range pricing.bands() {
+		view := bandView{FromMinutes: band.FromMinutes, DiscountBasisPoints: band.DiscountBasisPoints, Per1000: map[Role]map[Tier]money{}}
+		for role, tiers := range pricing.Reference {
+			view.Per1000[role] = map[Tier]money{}
+			for tier := range tiers {
+				rate, _ := pricing.RatePer1000(role, tier, i)
+				view.Per1000[role][tier] = moneyOf(rate)
+			}
+		}
+		bands = append(bands, view)
 	}
 	storage := map[StorageClass]money{}
 	for class, rate := range pricing.Costs.Storage {
@@ -211,14 +228,13 @@ func (h *handler) rates(w http.ResponseWriter, _ *http.Request) {
 		// Recording storage is charged at this cost, with no markup.
 		"recording_storage_cost_per_gib_month": storage,
 		"currency":                             "usd",
-		"model":                                "prepaid, cost-plus, capped",
-		"egress_cost_per_gib":                  moneyOf(pricing.Costs.EgressPerGiB),
-		"markup_basis_points":                  pricing.MarkupBasisPoints,
-		"platform_fee_per_gib":                 moneyOf(pricing.PlatformFeePerGiB),
-		"self_hosted_fee_per_gib":              moneyOf(pricing.SelfHostedFeePerGiB),
-		"ceiling_per_1000_participant_minutes": ceiling,
-		"direct_free_minutes_per_month":        pricing.DirectFreeMinutesPerMonth,
-		"direct_fee_per_1000_minutes":          moneyOf(pricing.DirectFeePer1000Minutes),
+		"model":                                "prepaid, 85% of Agora's list price at Agora's volume bands, at least one cent under",
+		"share_basis_points":                   pricing.ShareBasisPoints,
+		"agora_list_per_1000_participant_minutes": reference,
+		"volume_bands":                  bands,
+		"self_hosted_fee_per_gib":       moneyOf(pricing.SelfHostedFeePerGiB),
+		"direct_free_minutes_per_month": pricing.DirectFreeMinutesPerMonth,
+		"direct_fee_per_1000_minutes":   moneyOf(pricing.DirectFeePer1000Minutes),
 	})
 }
 

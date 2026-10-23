@@ -163,3 +163,21 @@ CREATE TABLE IF NOT EXISTS billing_cloudflare_claims (
     prior           bigint      NOT NULL,
     at              timestamptz NOT NULL DEFAULT now()
 );
+
+-- The same pair for participant time on MOQOM's own relays, which sets the
+-- tenant's volume band.
+CREATE TABLE IF NOT EXISTS billing_hosted_months (
+    tenant  text   NOT NULL,
+    month   date   NOT NULL,
+    seconds bigint NOT NULL,
+    PRIMARY KEY (tenant, month)
+);
+
+CREATE TABLE IF NOT EXISTS billing_hosted_claims (
+    idempotency_key text        PRIMARY KEY,
+    tenant          text        NOT NULL,
+    month           date        NOT NULL,
+    seconds         bigint      NOT NULL,
+    prior           bigint      NOT NULL,
+    at              timestamptz NOT NULL DEFAULT now()
+);

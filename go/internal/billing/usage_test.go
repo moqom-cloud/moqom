@@ -8,17 +8,10 @@ import (
 	"time"
 )
 
-func TestAgoraLessOneCentIsTheListLessOneCent(t *testing.T) {
-	list, ceiling := AgoraListPrice(), AgoraLessOneCent()
-	for role, tiers := range list {
-		for tier, rate := range tiers {
-			if ceiling[role][tier] != rate-Cent {
-				t.Errorf("%s %s: ceiling %s, list %s", role, tier, ceiling[role][tier], rate)
-			}
-		}
-	}
-	if list[RoleHost][TierHD] != 399*Cent || ceiling[RoleBroadcastAudience][Tier2KPlus] != 1798*Cent {
-		t.Fatalf("rates moved: %s, %s", list[RoleHost][TierHD], ceiling[RoleBroadcastAudience][Tier2KPlus])
+func TestAgoraListPriceHasNotMoved(t *testing.T) {
+	list := AgoraListPrice()
+	if list[RoleHost][TierHD] != 399*Cent || list[RoleBroadcastAudience][Tier2KPlus] != 1799*Cent {
+		t.Fatalf("rates moved: %s, %s", list[RoleHost][TierHD], list[RoleBroadcastAudience][Tier2KPlus])
 	}
 }
 
@@ -80,7 +73,7 @@ func TestUsageSummaryIsTheLedgerBesideAgorasList(t *testing.T) {
 	if got := microsOf(t, total["savings"]); got != wantAgora-acmeCharged {
 		t.Errorf("savings %s", got)
 	}
-	if total["seconds"].(float64) != 300 || total["records"].(float64) != 4 || total["capped_records"].(float64) != 1 {
+	if total["seconds"].(float64) != 300 || total["records"].(float64) != 4 || total["capped_records"].(float64) != 0 {
 		t.Errorf("total %v", total)
 	}
 	if lines := body["lines"].([]any); len(lines) != 4 {

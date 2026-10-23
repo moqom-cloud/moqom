@@ -272,9 +272,14 @@ module "sites" {
 
   # Product subdomains. DNS A → sites address; `/` rewrites to the page under the site prefix.
   # nu.Fi is fi.khensu.nu (not nufi). create → /creators; memory → /memory.
-  # moments.khensu.nu is staged in GCP DNS and the site page is live at /moments; add it here
-  # only after Hover has an A record for moments.khensu.nu → the sites address (otherwise the
-  # shared products certificate stays PROVISIONING and product hosts fall back to the wrong cert).
+  # moments.khensu.nu: Hover A → 34.107.228.246 verified 19 Oct 2026. Own cert
+  # moqom-moments-khensu-nu is attached on the proxy (not in this state yet).
+  # SSL_CERTIFICATES quota is 10, so on 21 Oct 2026 the per-host www and dev
+  # certs were replaced by one hand-made cert, moqom-www-getapps-dev-khensu-nu,
+  # covering www.khensu.nu, get.apps.khensu.nu (Hover A verified) and dev.khensu.nu.
+  # This state still expects separate www/dev project certs: do not apply this
+  # env until the module can pin that shared cert and moments is imported:
+  #   terraform import 'module.sites.google_compute_managed_ssl_certificate.product_hosts["moments.khensu.nu"]' moqom-moments-khensu-nu
   product_hosts = {
     "webe.khensu.nu"    = { site = "khensu-nu", page = "webe" }
     "void.khensu.nu"    = { site = "khensu-void" }
@@ -288,9 +293,24 @@ module "sites" {
     "network.khensu.nu" = { site = "khensu-nu", page = "network" }
     # Own cert: dig A → 34.107.228.246 verified 15 Oct 2026. Never join the
     # shared products pack first (that pack's PROVISIONING takes down bi/waves).
-    "sla.khensu.nu"       = { site = "khensu-nu", page = "sla", own_certificate = true }
-    "avatars.khensu.nu"   = { site = "khensu-nu", page = "avatars", own_certificate = true }
-    "indra.og.khensu.nu"  = { site = "khensu-nu", page = "indra", own_certificate = true }
+    "sla.khensu.nu" = { site = "khensu-nu", page = "sla", own_certificate = true }
+    # Pinned to ACTIVE bootstrap certs (15 Oct 2026). Import into state before apply:
+    #   terraform import 'module.sites.google_compute_managed_ssl_certificate.product_hosts["avatars.khensu.nu"]' moqom-avatars-khensu-nu-2dcc63e6
+    #   terraform import 'module.sites.google_compute_managed_ssl_certificate.product_hosts["indra.og.khensu.nu"]' moqom-indra-og-khensu-nu-1297f1f3
+    "avatars.khensu.nu" = {
+      site = "khensu-nu", page = "avatars", own_certificate = true
+      certificate_name = "moqom-avatars-khensu-nu-2dcc63e6"
+    }
+    "indra.og.khensu.nu" = {
+      site = "khensu-nu", page = "indra", own_certificate = true
+      certificate_name = "moqom-indra-og-khensu-nu-1297f1f3"
+    }
+    # Dig A → 34.107.228.246 verified 15 Oct 2026 (Hover). Own cert only — never shared pack.
+    # 21 Oct 2026: with the cert quota at 10, aura's cert was replaced by one hand-made cert,
+    # moqom-aura-iverse-khensu-nu, covering aura, iverse, universes, rabbithole and portal.khensu.nu
+    # (Hover A verified, mirrored in Cloud DNS). The four nu.universes hosts route to /khensu-nu/universes
+    # through path matcher p-universes-khensu-nu, added to the URL map by hand. Pin and import before apply.
+    "aura.khensu.nu" = { site = "khensu-nu", page = "aura", own_certificate = true }
   }
 
   # Site directory to the one prefix other sites may frame in an iframe.

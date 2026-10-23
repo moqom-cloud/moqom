@@ -20,13 +20,103 @@ import (
 
 const mebibyte = 1 << 20
 
-func TestRateIsCostPlusMarkupPlusFee(t *testing.T) {
+func TestRateIsEightyFivePercentOfAgora(t *testing.T) {
 	pricing := DefaultPricing()
 	charge := pricing.Rate(Usage{Role: RoleHost, Tier: TierHD, Seconds: 60, EgressBytes: mebibyte, Hosting: HostingCloud})
-	// Egress 120000/1024 = 117, compute 60: cost 177. Markup 15% = 27, fee
-	// 10000/1024 = 10: price 214.
-	if charge.Cost != 177 || charge.Price != 214 || charge.Capped {
-		t.Fatalf("got %+v, want cost 177 price 214 uncapped", charge)
+	// $3.99 x 85% = $3.3915, down to $3.39 per 1,000 minutes: 3390 micros a
+	// minute. Cost is still recorded: egress 120000/1024 = 117, compute 60.
+	if charge.Cost != 177 || charge.Price != 3390 || charge.Capped {
+		t.Fatalf("got %+v, want cost 177 price 3390", charge)
+	}
+}
+
+func TestRatePer1000AtEveryBand(t *testing.T) {
+	pricing := DefaultPricing()
+	for _, c := range []struct {
+		role Role
+		tier Tier
+		band int
+		want Micros
+	}{
+		{RoleHost, TierHD, 0, 339 * Cent},                // 3.99 x .85
+		{RoleHost, TierHD, 1, 322 * Cent},                // 3.99 x .95 = 3.7905 x .85 = 3.2219
+		{RoleHost, TierHD, 3, 305 * Cent},                // 3.99 x .90 = 3.591 x .85 = 3.0523
+		{RoleHost, TierAudio, 0, 84 * Cent},              // 0.99 x .85 = 0.8415
+		{RoleBroadcastAudience, TierAudio, 3, 45 * Cent}, // 0.59 x .90 = 0.531 x .85 = 0.4513
+		{RoleHost, Tier2KPlus, 0, 3059 * Cent},           // 35.99 x .85 = 30.5915
+	} {
+		if got, _ := pricing.RatePer1000(c.role, c.tier, c.band); got != c.want {
+			t.Errorf("%s %s band %d: %s, want %s", c.role, c.tier, c.band, got, c.want)
+		}
+	}
+}
+
+func TestRateIsAlwaysAtLeastACentUnderAgora(t *testing.T) {
+	for _, share := range []int64{8500, 9990, 10_000} {
+		pricing := DefaultPricing()
+		pricing.ShareBasisPoints = share
+		for role, tiers := range pricing.Reference {
+			for tier, list := range tiers {
+				for band, b := range pricing.Bands {
+					agora := list - scale(list, b.DiscountBasisPoints, 10_000)
+					if got, _ := pricing.RatePer1000(role, tier, band); got > agora-Cent {
+						t.Errorf("share %d %s %s band %d: %s, Agora %s", share, role, tier, band, got, agora)
+					}
+				}
+			}
+		}
+	}
+}
+
+func TestHostedPriceSplitsAcrossBands(t *testing.T) {
+	pricing := DefaultPricing()
+	edge := int64(100_000 * 60)
+	// Ten minutes either side of the first band's edge: half at $3.39, half at $3.22.
+	got, _ := pricing.HostedPrice(RoleHost, TierHD, edge-600, 1200)
+	want := Per1000Minutes(339*Cent, 600) + Per1000Minutes(322*Cent, 600)
+	if got != want {
+		t.Fatalf("across the edge: %s, want %s", got, want)
+	}
+	// A month cut into records costs what it costs in one.
+	var parts Micros
+	for before := int64(0); before < 2*edge; before += edge / 4 {
+		p, _ := pricing.HostedPrice(RoleHost, TierHD, before, edge/4)
+		parts += p
+	}
+	whole, _ := pricing.HostedPrice(RoleHost, TierHD, 0, 2*edge)
+	if parts != whole {
+		t.Fatalf("in parts %s, whole %s", parts, whole)
+	}
+}
+
+func TestRecordUsageMovesATenantIntoTheNextBand(t *testing.T) {
+	ctx := context.Background()
+	f := newFixture(t)
+	signup, _ := f.service.Signup(ctx, SignupRequest{Email: "dev@example.com", Name: "Example"})
+	tenant := signup.Tenant.ID
+	f.paid(t, tenant, "pi_first", 1_000_000)
+	record := func(id string, seconds int64) Micros {
+		t.Helper()
+		result, err := f.service.RecordUsage(ctx, Reporter{Hosting: HostingCloud},
+			[]UsageRecord{{ID: id, Tenant: tenant, Role: RoleHost, Tier: TierHD, Seconds: seconds}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return result.Total
+	}
+	// Records are at most a day long, so the first 100,000 minutes take several.
+	var first Micros
+	for used, i := int64(0), 0; used < 100_000*60; i++ {
+		seconds := min(int64(24*60*60), 100_000*60-used)
+		first += record(fmt.Sprintf("a%d", i), seconds)
+		used += seconds
+	}
+	second := record("b", 60_000)
+	if first != Per1000Minutes(339*Cent, 100_000*60) || second != Per1000Minutes(322*Cent, 60_000) {
+		t.Fatalf("first %s, second %s", first, second)
+	}
+	if again := record("b", 60_000); again != 0 {
+		t.Fatalf("a re-sent record charged %s", again)
 	}
 }
 
@@ -38,20 +128,11 @@ func TestRateSelfHostedIsTheFeeAlone(t *testing.T) {
 	}
 }
 
-func TestRateNeverExceedsAgoraLessOneCent(t *testing.T) {
+func TestSelfHostedNeverCostsMoreThanHosted(t *testing.T) {
 	pricing := DefaultPricing()
-	for role, tiers := range pricing.Ceiling {
-		for tier, ceiling := range tiers {
-			charge := pricing.Rate(Usage{Role: role, Tier: tier, Seconds: 60, EgressBytes: 10 << 30, Hosting: HostingCloud})
-			limit := scale(ceiling, 60, 60_000)
-			if !charge.Capped || charge.Price != limit {
-				t.Errorf("%s %s: got %+v, want capped at %d", role, tier, charge, limit)
-			}
-		}
-	}
-	// One minute of HD hosting is $3.98 per 1,000 minutes: 3980 micros.
-	if got := pricing.Rate(Usage{Role: RoleHost, Tier: TierHD, Seconds: 60, EgressBytes: 1 << 30}).Price; got != 3980 {
-		t.Fatalf("HD host minute = %d, want 3980", got)
+	charge := pricing.Rate(Usage{Role: RoleHost, Tier: TierHD, Seconds: 60, EgressBytes: 10 << 30, Hosting: HostingSelf})
+	if !charge.Capped || charge.Price != 3390 {
+		t.Fatalf("got %+v, want capped at 3390", charge)
 	}
 }
 
@@ -314,20 +395,20 @@ func TestPaidLifecycle(t *testing.T) {
 	result, err := f.service.RecordUsage(ctx, Reporter{Hosting: HostingCloud}, append(usage[:0:0], UsageRecord{
 		ID: "r1", Tenant: tenant, Room: "lobby", Role: RoleHost, Tier: TierHD, Seconds: 60, EgressBytes: mebibyte,
 	}))
-	if err != nil || result.Charged != 1 || result.Total != 214 {
+	if err != nil || result.Charged != 1 || result.Total != 3390 {
 		t.Fatalf("usage %+v %v", result, err)
 	}
 	again, _ := f.service.RecordUsage(ctx, Reporter{Hosting: HostingCloud}, []UsageRecord{{
 		ID: "r1", Tenant: tenant, Role: RoleHost, Tier: TierHD, Seconds: 60, EgressBytes: mebibyte,
 	}})
-	if again.Duplicates != 1 || f.balance(t, tenant) != 50*Dollar-214 {
+	if again.Duplicates != 1 || f.balance(t, tenant) != 50*Dollar-3390 {
 		t.Fatalf("a re-sent record was charged twice: %+v, balance %s", again, f.balance(t, tenant))
 	}
 
 	refund, _ := json.Marshal(Refund{ID: "re_1", Amount: 5000, Status: "succeeded", PaymentIntent: "pi_first"})
 	f.deliver(t, "refund.created", refund)
 	f.deliver(t, "refund.updated", refund)
-	if got := f.balance(t, tenant); got != -214 {
+	if got := f.balance(t, tenant); got != -3390 {
 		t.Fatalf("balance %s after refunding $50 twice", got)
 	}
 	if err := f.service.Allow(ctx, tenant); !errors.Is(err, ErrInsufficientCredit) {
@@ -356,7 +437,7 @@ func TestAutomaticTopUpChargesOnceAndCredits(t *testing.T) {
 	if f.stripe.chargeCount() != 1 {
 		t.Fatalf("%d charges, want 1", f.stripe.chargeCount())
 	}
-	if got := f.balance(t, tenant); got != 35*Dollar-214 {
+	if got := f.balance(t, tenant); got != 35*Dollar-3390 {
 		t.Fatalf("balance %s, want $35 less one minute", got)
 	}
 	report("r2")
@@ -537,5 +618,23 @@ func TestHTTP(t *testing.T) {
 		`{"records":[{"id":"direct-1","role":"host","tier":"audio","seconds":60,"egress_bytes":0,"ingress_bytes":0,"direct_seconds":61200}]}`))
 	if total, _ := body["total"].(map[string]any); response.StatusCode != http.StatusOK || total["micros"] != float64(Cent) {
 		t.Fatalf("direct usage %d %v", response.StatusCode, body)
+	}
+}
+
+func TestStandbyTimeIsChargedAtCostNotTheRate(t *testing.T) {
+	pricing := DefaultPricing()
+	minute := Usage{Role: RoleHost, Tier: TierHD, Seconds: 60, EgressBytes: 1 << 20, Hosting: HostingCloud}
+	relayed := pricing.Rate(minute)
+	standby := minute
+	standby.Standby = 60
+	direct := pricing.Rate(standby)
+	if direct.Price != direct.Cost || direct.Price >= relayed.Price {
+		t.Fatalf("a standby minute cost %s against %s relayed", direct.Price, relayed.Price)
+	}
+	half := minute
+	half.Standby = 30
+	rate, _ := pricing.HostedPrice(RoleHost, TierHD, 0, 30)
+	if got, want := pricing.Rate(half).Price, rate+scale(relayed.Cost, 30, 60); got != want {
+		t.Fatalf("half standby cost %s, want %s", got, want)
 	}
 }

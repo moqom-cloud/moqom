@@ -65,6 +65,9 @@ type Store interface {
 	// ClaimCloudflareSeconds is ClaimDirectSeconds for participant time on
 	// Cloudflare's relays, which has a free allowance of its own.
 	ClaimCloudflareSeconds(ctx context.Context, tenant string, month time.Time, key string, seconds int64) (before int64, err error)
+	// ClaimHostedSeconds is ClaimDirectSeconds for participant time on
+	// MOQOM's own relays, which sets the volume band.
+	ClaimHostedSeconds(ctx context.Context, tenant string, month time.Time, key string, seconds int64) (before int64, err error)
 
 	// AppendEntry writes an entry unless one with the same idempotency key
 	// exists, in which case it returns that one and false. The uniqueness is
@@ -110,6 +113,8 @@ type Memory struct {
 	claims  map[string]int64
 	cfUsed  map[directMonth]int64
 	cfClaim map[string]int64
+	hosted  map[directMonth]int64
+	hClaim  map[string]int64
 	audit   []AuditEntry
 	keyUse  []KeyUse
 }
@@ -140,7 +145,22 @@ func NewMemory() *Memory {
 		claims:  map[string]int64{},
 		cfUsed:  map[directMonth]int64{},
 		cfClaim: map[string]int64{},
+		hosted:  map[directMonth]int64{},
+		hClaim:  map[string]int64{},
 	}
+}
+
+func (m *Memory) ClaimHostedSeconds(_ context.Context, tenant string, month time.Time, key string, seconds int64) (int64, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if before, claimed := m.hClaim[key]; claimed {
+		return before, nil
+	}
+	which := directMonth{tenant, MonthOf(month)}
+	before := m.hosted[which]
+	m.hosted[which] = before + seconds
+	m.hClaim[key] = before
+	return before, nil
 }
 
 func (m *Memory) ClaimCloudflareSeconds(_ context.Context, tenant string, month time.Time, key string, seconds int64) (int64, error) {

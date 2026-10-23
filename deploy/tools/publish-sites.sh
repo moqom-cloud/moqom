@@ -85,19 +85,26 @@ for site in "$@"; do
         (cd "$dir" && pnpm install --frozen-lockfile >/dev/null && pnpm build >/dev/null)
     fi
 
-    say "$site: uploading to $target"
+    # gsutil rsync: `gcloud storage rsync` confuses the site-root alias objects
+    # (`$site` and `$site/`) with the prefix and fails. Trailing slash required.
+    say "$site: uploading to $target/"
     # Hashed assets first and never deleted: a page cached at the edge for five
     # minutes still points at the previous build's files.
     if [ -d "$dir/dist/_astro" ]; then
-        $GCS rsync "$dir/dist/_astro" "$target/_astro" --recursive \
-            --cache-control="public, max-age=31536000, immutable" >/dev/null
+        gsutil -m -o "GSUtil:parallel_process_count=1" \
+            -h "Cache-Control:public, max-age=31536000, immutable" \
+            rsync -r "$dir/dist/_astro/" "$target/_astro/" >/dev/null
     fi
     # Alias objects have no extension in their last segment: `pricing`, `pricing/`.
-    # gcloud splits --exclude on `|` into separate patterns, so no alternation
-    # inside a pattern.
-    $GCS rsync "$dir/dist" "$target" --recursive \
-        --exclude='^_astro/|^[^/.]+/?$|.*/[^/.]+/?$' \
-        --cache-control="$HTML_CACHE" >/dev/null
+    # Exclude those shapes from the source sync; aliases are written below.
+    gsutil -m -o "GSUtil:parallel_process_count=1" \
+        -h "Cache-Control:$HTML_CACHE" \
+        rsync -r -x '^_astro/|^[^/.]+/?$|.*/[^/.]+/?$' \
+        "$dir/dist/" "$target/" >/dev/null
+    # rsync guesses text/markdown with no charset, which browsers read as Latin-1.
+    if (cd "$dir/dist" && find . -name '*.md' | grep -q .); then
+        gsutil -m -q setmeta -h "Content-Type:text/markdown; charset=utf-8" "$target/**.md" >/dev/null 2>&1 || true
+    fi
     # --exclude only filters the source, so rsync's own delete would still remove
     # old hashed assets and aliases; stale files are removed here instead.
     $GCS ls --recursive "$target/**" | DIST="$dir/dist" TARGET="$target" python3 -c '

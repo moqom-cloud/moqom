@@ -227,7 +227,10 @@ resource "google_compute_managed_ssl_certificate" "products" {
 resource "google_compute_managed_ssl_certificate" "product_hosts" {
   for_each = local.product_own_hosts
 
-  name = "${substr("${var.name_prefix}-${replace(each.key, ".", "-")}", 0, 54)}-${substr(sha1("${each.key},${var.certificate_epoch}"), 0, 8)}"
+  name = coalesce(
+    each.value.certificate_name,
+    "${substr("${var.name_prefix}-${replace(each.key, ".", "-")}", 0, 54)}-${substr(sha1("${each.key},${var.certificate_epoch}"), 0, 8)}",
+  )
 
   managed {
     domains = [each.key]
@@ -238,10 +241,11 @@ resource "google_compute_managed_ssl_certificate" "product_hosts" {
   }
 }
 
-# Block proxy updates until every certificate that will be attached is ACTIVE.
-# A single PROVISIONING / FAILED_NOT_VISIBLE cert on the target HTTPS proxy makes
-# Google ignore SNI and serve the first cert (e.g. elliottwave.dev) for bi/waves —
-# unstyled sites. Seen 15 Oct 2026 with moqom-apis + six10nine stuck FAILED.
+# Wait for pack / shared certs that must already be ACTIVE before touching the proxy.
+# Do NOT include own_certificate product hosts here: Google-managed certs only leave
+# FAILED_NOT_VISIBLE after they are attached to the target HTTPS proxy (dig → LB
+# verified). Waiting for ACTIVE before attach is a deadlock. NXDOMAIN / wrong-A
+# hosts must never be on the proxy — that is what breaks SNI for bi/waves.
 resource "null_resource" "proxy_certs_active" {
   triggers = {
     cert_names = join(",", concat(
@@ -250,7 +254,6 @@ resource "null_resource" "proxy_certs_active" {
       [for host in sort(keys(local.own_api_hosts)) : google_compute_managed_ssl_certificate.api_hosts[host].name],
       [for host in sort(keys(var.project_hosts)) : google_compute_managed_ssl_certificate.projects[host].name],
       google_compute_managed_ssl_certificate.products[*].name,
-      [for host in sort(keys(local.product_own_hosts)) : google_compute_managed_ssl_certificate.product_hosts[host].name],
     ))
   }
 
@@ -264,9 +267,8 @@ resource "null_resource" "proxy_certs_active" {
         [for host in sort(keys(local.own_api_hosts)) : google_compute_managed_ssl_certificate.api_hosts[host].name],
         [for host in sort(keys(var.project_hosts)) : google_compute_managed_ssl_certificate.projects[host].name],
         google_compute_managed_ssl_certificate.products[*].name,
-        [for host in sort(keys(local.product_own_hosts)) : google_compute_managed_ssl_certificate.product_hosts[host].name],
       ))}"
-      echo "Waiting for every https-proxy cert to be ACTIVE: $names"
+      echo "Waiting for shared/pack https-proxy certs to be ACTIVE: $names"
       for i in $(seq 1 180); do
         bad=""
         for name in $names; do
@@ -276,13 +278,13 @@ resource "null_resource" "proxy_certs_active" {
           fi
         done
         if [ -z "$bad" ]; then
-          echo "All proxy certs ACTIVE"
+          echo "Shared/pack proxy certs ACTIVE"
           exit 0
         fi
         echo "  try $i: still not ACTIVE:$bad"
         sleep 20
       done
-      echo "FATAL: refusing to attach non-ACTIVE certs to the https proxy:$bad" >&2
+      echo "FATAL: refusing to update https proxy while shared/pack certs are not ACTIVE:$bad" >&2
       exit 1
     EOT
   }
@@ -496,7 +498,8 @@ resource "google_compute_ssl_policy" "sites" {
 resource "google_compute_target_https_proxy" "sites" {
   name    = "${var.name_prefix}-sites"
   url_map = google_compute_url_map.sites.id
-  # Do not attach any cert until every cert in the list is ACTIVE.
+  # Shared/pack certs must be ACTIVE first. own_certificate product hosts are
+  # attached while PROVISIONING so Google can issue them (see nu.harness).
   depends_on = [null_resource.proxy_certs_active]
   # The shared certificate stays first: it is what a client without SNI gets.
   ssl_certificates = concat(
@@ -508,6 +511,48 @@ resource "google_compute_target_https_proxy" "sites" {
     [for host in sort(keys(local.product_own_hosts)) : google_compute_managed_ssl_certificate.product_hosts[host].id],
   )
   ssl_policy = google_compute_ssl_policy.sites.id
+}
+
+# After attach: own product certs must reach ACTIVE (dig was preflighted). Stay
+# until they do so the apply does not "finish" while browsers still see elliottwave.dev.
+resource "null_resource" "own_product_certs_active" {
+  count = length(local.product_own_hosts) > 0 ? 1 : 0
+
+  triggers = {
+    cert_names = join(",", [for host in sort(keys(local.product_own_hosts)) : google_compute_managed_ssl_certificate.product_hosts[host].name])
+    proxy      = google_compute_target_https_proxy.sites.id
+  }
+
+  provisioner "local-exec" {
+    interpreter = ["/bin/bash", "-c"]
+    command     = <<-EOT
+      set -euo pipefail
+      names="${join(" ", [for host in sort(keys(local.product_own_hosts)) : google_compute_managed_ssl_certificate.product_hosts[host].name])}"
+      echo "Waiting for own_certificate product certs ACTIVE (attached): $names"
+      for i in $(seq 1 180); do
+        bad=""
+        for name in $names; do
+          st=$(gcloud compute ssl-certificates describe "$name" --global --project=moqom-503700 --format='value(managed.status)' 2>/dev/null || echo MISSING)
+          if [ "$st" != "ACTIVE" ]; then
+            bad="$bad $name=$st"
+          fi
+        done
+        bi=$(echo | openssl s_client -connect bi.khensu.nu:443 -servername bi.khensu.nu 2>/dev/null | openssl x509 -noout -subject || true)
+        if ! echo "$bi" | grep -q 'bi.khensu.nu'; then
+          echo "FATAL: bi.khensu.nu lost correct SNI while waiting on own certs: $bi" >&2
+          exit 1
+        fi
+        if [ -z "$bad" ]; then
+          echo "own_certificate product certs ACTIVE"
+          exit 0
+        fi
+        echo "  try $i: still not ACTIVE:$bad | $bi"
+        sleep 20
+      done
+      echo "FATAL: own_certificate product certs never became ACTIVE:$bad" >&2
+      exit 1
+    EOT
+  }
 }
 
 resource "google_compute_global_forwarding_rule" "https" {

@@ -36,6 +36,9 @@ variable "product_hosts" {
     # products certificate. Use for any new subdomain until dig A → sites LB is
     # proven, or forever when you cannot risk the shared pack going PROVISIONING.
     own_certificate = optional(bool, false)
+    # Pin the managed cert resource name after a manual bootstrap (quota / ACTIVE
+    # cert already on the proxy). When null, name is derived from host + epoch.
+    certificate_name = optional(string)
   }))
   description = "Product subdomains (e.g. waves.khensu.nu → khensu-nu/waves). Shared certificate by default; set own_certificate to isolate a host from the pack."
   default     = {}

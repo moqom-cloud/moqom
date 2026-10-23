@@ -871,8 +871,7 @@ func billingService(backing store.Store) (*billing.Service, error) {
 		}
 	}
 	for name, into := range map[string]*int64{
-		"MOQOM_BILLING_MARKUP_BP":               &config.Pricing.MarkupBasisPoints,
-		"MOQOM_BILLING_FEE_PER_GIB":             (*int64)(&config.Pricing.PlatformFeePerGiB),
+		"MOQOM_BILLING_SHARE_BP":                &config.Pricing.ShareBasisPoints,
 		"MOQOM_BILLING_SELF_HOSTED_FEE_PER_GIB": (*int64)(&config.Pricing.SelfHostedFeePerGiB),
 		"MOQOM_BILLING_EGRESS_PER_GIB":          (*int64)(&config.Pricing.Costs.EgressPerGiB),
 		"MOQOM_BILLING_DIRECT_FREE_MINUTES":     &config.Pricing.DirectFreeMinutesPerMonth,
@@ -927,7 +926,7 @@ func billingService(backing store.Store) (*billing.Service, error) {
 	}
 	slog.Info("billing on", "stripe", config.Stripe != nil, "exempt", len(config.Exempt),
 		"key_pepper", config.Peppers.Current(), "key_pepper_versions", len(config.Peppers.Versions()),
-		"markup_bp", config.Pricing.MarkupBasisPoints, "fee_per_gib", config.Pricing.PlatformFeePerGiB.String(),
+		"share_bp", config.Pricing.ShareBasisPoints,
 		"self_hosted_fee_per_gib", config.Pricing.SelfHostedFeePerGiB.String(),
 		"egress_per_gib", config.Pricing.Costs.EgressPerGiB.String(),
 		"direct_free_minutes", config.Pricing.DirectFreeMinutesPerMonth,

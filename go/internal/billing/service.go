@@ -133,7 +133,7 @@ func New(config Config) (*Service, error) {
 	if config.Logger == nil {
 		config.Logger = slog.Default()
 	}
-	if costs := config.Pricing.Costs; config.Pricing.Ceiling == nil && costs.Storage == nil &&
+	if costs := config.Pricing.Costs; config.Pricing.Reference == nil && costs.Storage == nil &&
 		costs.EgressPerGiB == 0 && costs.IngressPerGiB == 0 && costs.ConnectedSecond == 0 {
 		config.Pricing = DefaultPricing()
 	}
@@ -708,19 +708,28 @@ func (s *Service) RecordUsage(ctx context.Context, reporter Reporter, records []
 			return result, err
 		}
 
-		charge := s.pricing.Rate(Usage{
+		key := "usage:" + string(reporter.Hosting) + ":" + tenant + ":" + record.ID
+		usage := Usage{
 			Role:         record.Role,
 			Tier:         record.Tier,
 			Seconds:      record.Seconds,
 			EgressBytes:  record.EgressBytes,
 			IngressBytes: record.IngressBytes,
 			Hosting:      reporter.Hosting,
-		})
+			Standby:      record.DirectSeconds,
+		}
+		if relayed := usage.Relayed(); reporter.Hosting == HostingCloud && relayed > 0 {
+			before, err := s.store.ClaimHostedSeconds(ctx, tenant, MonthOf(s.now()), key, relayed)
+			if err != nil {
+				return result, err
+			}
+			usage.Before = before
+		}
+		charge := s.pricing.Rate(usage)
 		id, err := s.randomHex(12)
 		if err != nil {
 			return result, err
 		}
-		key := "usage:" + string(reporter.Hosting) + ":" + tenant + ":" + record.ID
 		// Claimed under the entry's own key, before the entry, so a report
 		// that failed between the two is priced the same when it is re-sent.
 		// After the cap, which is a ceiling on what relaying costs and has

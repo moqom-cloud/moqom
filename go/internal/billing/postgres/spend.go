@@ -151,7 +151,12 @@ func (s *Store) ClaimCloudflareSeconds(ctx context.Context, tenant string, month
 	return s.claimSeconds(ctx, "billing_cloudflare_months", "billing_cloudflare_claims", tenant, month, key, seconds)
 }
 
-// claimSeconds takes table names from the two callers above only, never from
+// ClaimHostedSeconds is ClaimDirectSeconds for time on MOQOM's own relays.
+func (s *Store) ClaimHostedSeconds(ctx context.Context, tenant string, month time.Time, key string, seconds int64) (int64, error) {
+	return s.claimSeconds(ctx, "billing_hosted_months", "billing_hosted_claims", tenant, month, key, seconds)
+}
+
+// claimSeconds takes table names from the callers above only, never from
 // input, which is what makes formatting them into the SQL safe.
 func (s *Store) claimSeconds(ctx context.Context, months, claims, tenant string, month time.Time, key string, seconds int64) (int64, error) {
 	claimed := func() (int64, error) {
