@@ -843,6 +843,9 @@ func sealKeys() ([]sectoken.SealKey, error) {
 //	                                       client: the cluster's pod range, where cmd/moqom-api-edge runs.
 //	                                       Read even with billing off, since the other public routes'
 //	                                       key allowlists use the same address.
+//	MOQOM_BILLING_SIGNUP_CREDIT            credit in micro-dollars granted at signup (default 0)
+//	MOQOM_BILLING_CREDIT_ADMITS_UNPAID     "on": a tenant that has never paid is admitted on its credit
+//	                                       for its own relays and Cloudflare's, never MOQOM's
 func billingService(backing store.Store) (*billing.Service, error) {
 	if raw := strings.TrimSpace(os.Getenv("MOQOM_BILLING_TRUSTED_PROXIES")); raw != "" {
 		proxies, err := billing.ParseNetworks(strings.Split(raw, ","))
@@ -864,6 +867,8 @@ func billingService(backing store.Store) (*billing.Service, error) {
 		Pricing:   billing.DefaultPricing(),
 		PublicURL: env("MOQOM_BILLING_PUBLIC_URL", "https://moqom.cloud"),
 		Exempt:    map[string]bool{},
+
+		CreditAdmitsUnpaid: os.Getenv("MOQOM_BILLING_CREDIT_ADMITS_UNPAID") == "on",
 	}
 	for _, tenant := range strings.Split(os.Getenv("MOQOM_BILLING_EXEMPT"), ",") {
 		if tenant = strings.TrimSpace(tenant); tenant != "" {
@@ -877,6 +882,7 @@ func billingService(backing store.Store) (*billing.Service, error) {
 		"MOQOM_BILLING_EGRESS_PER_GIB":          (*int64)(&config.Pricing.Costs.EgressPerGiB),
 		"MOQOM_BILLING_DIRECT_FREE_MINUTES":     &config.Pricing.DirectFreeMinutesPerMonth,
 		"MOQOM_BILLING_DIRECT_FEE_PER_1000_MIN": (*int64)(&config.Pricing.DirectFeePer1000Minutes),
+		"MOQOM_BILLING_SIGNUP_CREDIT":           (*int64)(&config.SignupCredit),
 	} {
 		if raw := os.Getenv(name); raw != "" {
 			value, err := strconv.ParseInt(raw, 10, 64)

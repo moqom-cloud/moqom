@@ -107,6 +107,18 @@ variable "billing_cors_origins" {
   default     = ["https://moqom.cloud", "https://www.moqom.cloud"]
 }
 
+variable "billing_signup_credit_micros" {
+  type        = number
+  description = "Credit granted to every new tenant, in micro-dollars. 1111000000 is $1,111."
+  default     = 0
+}
+
+variable "billing_credit_admits_unpaid" {
+  type        = bool
+  description = "Admit tenants that have never paid on their credit, for their own relays and Cloudflare's only. A tenant with any usage on MOQOM's relays needs a payment first."
+  default     = false
+}
+
 variable "billing_exempt_tenants" {
   type        = list(string)
   description = "Tenants never gated on credit: MOQOM's own, and the test rigs."
