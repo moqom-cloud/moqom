@@ -40,6 +40,10 @@ locals {
   control_join_port = 8444
   # Webhooks from Google's balancer only; see cmd/moqom-control/hooks.go.
   control_hooks_port = 8445
+  # moqom.cloud/v1/* from Google's balancer, plain HTTP, billing routes only
+  # (MOQOM_BILLING_ADDR). The balancer's route and backend service
+  # moqom-control-billing were made by hand; envs/web does not hold them.
+  control_billing_port = 8446
 
   cluster_node_cidr    = "10.20.32.0/22"
   cluster_pod_cidr     = "10.21.0.0/16"
@@ -170,6 +174,10 @@ locals {
     MOQOM_SMTP_PASSWORD       = "/etc/moqom/smtp-password"
     MOQOM_BILLING_EMAIL_FROM  = var.billing_email_from
     MOQOM_BILLING_CONSOLE_URL = "${trimsuffix(var.billing_public_url, "/")}/account"
+    MOQOM_BILLING_ADDR        = ":${local.control_billing_port}"
+
+    MOQOM_BILLING_SIGNUP_CREDIT        = tostring(var.billing_signup_credit_micros)
+    MOQOM_BILLING_CREDIT_ADMITS_UNPAID = var.billing_credit_admits_unpaid ? "on" : "off"
   } : {}
 
   # The name the control plane's certificate carries, and the name every client
@@ -489,7 +497,10 @@ resource "kubernetes_service_v1" "control_api" {
     labels    = merge(local.labels, { component = "control" })
     annotations = {
       "cloud.google.com/neg" = jsonencode({
-        exposed_ports = { (tostring(local.control_hooks_port)) = { name = "${local.name_prefix}-control-hooks" } }
+        exposed_ports = {
+          (tostring(local.control_hooks_port))   = { name = "${local.name_prefix}-control-hooks" }
+          (tostring(local.control_billing_port)) = { name = "${local.name_prefix}-control-billing" }
+        }
       })
     }
   }
@@ -502,6 +513,13 @@ resource "kubernetes_service_v1" "control_api" {
       name        = "hooks"
       port        = local.control_hooks_port
       target_port = local.control_hooks_port
+      protocol    = "TCP"
+    }
+
+    port {
+      name        = "billing"
+      port        = local.control_billing_port
+      target_port = local.control_billing_port
       protocol    = "TCP"
     }
   }
@@ -527,7 +545,7 @@ resource "google_compute_firewall" "control_api" {
 
   allow {
     protocol = "tcp"
-    ports    = [tostring(local.control_hooks_port)]
+    ports    = [tostring(local.control_hooks_port), tostring(local.control_billing_port)]
   }
 }
 

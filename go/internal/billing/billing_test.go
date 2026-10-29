@@ -230,19 +230,23 @@ type fixture struct {
 
 const webhookSecret = "whsec_test"
 
-func newFixture(t *testing.T) *fixture {
+func newFixture(t *testing.T, options ...func(*Config)) *fixture {
 	t.Helper()
 	f := &fixture{stripe: &fakeStripe{}, store: NewMemory(), now: time.Unix(1_800_000_000, 0)}
 	server := httptest.NewServer(f.stripe)
 	t.Cleanup(server.Close)
-	service, err := New(Config{
+	config := Config{
 		Store:         f.store,
 		Stripe:        &Stripe{SecretKey: "sk_test", BaseURL: server.URL, Client: server.Client()},
 		WebhookSecret: webhookSecret,
 		PublicURL:     "https://moqom.test",
 		Now:           func() time.Time { return f.now },
 		Logger:        slog.New(slog.NewTextHandler(io.Discard, nil)),
-	})
+	}
+	for _, option := range options {
+		option(&config)
+	}
+	service, err := New(config)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -392,6 +396,59 @@ func TestSelfHostedRelayPaysTheFeeForItsOwnTenantOnly(t *testing.T) {
 		ID: "r2", Tenant: "t_someone_else", Role: RoleHost, Tier: TierHD, Seconds: 60,
 	}}); !errors.Is(err, ErrInvalid) {
 		t.Fatalf("a tenant's relay billed another tenant: %v", err)
+	}
+}
+
+func TestUnpaidCreditPaysForOwnRelaysOnly(t *testing.T) {
+	ctx := context.Background()
+	f := newFixture(t, func(c *Config) {
+		c.SignupCredit = 1111 * Dollar
+		c.CreditAdmitsUnpaid = true
+	})
+	signup, err := f.service.Signup(ctx, SignupRequest{Email: "dev@example.com", Name: "Example"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	tenant := signup.Tenant.ID
+	if got := f.balance(t, tenant); got != 1111*Dollar {
+		t.Fatalf("balance %s after signup, want $1111", got)
+	}
+	if err := f.service.Allow(ctx, tenant); err != nil {
+		t.Fatalf("unpaid tenant in credit refused: %v", err)
+	}
+
+	for i, reporter := range []Reporter{{Tenant: tenant, Hosting: HostingSelf}, {Tenant: tenant, Hosting: HostingCloudflare}} {
+		if _, err := f.service.RecordUsage(ctx, reporter, []UsageRecord{{
+			ID: fmt.Sprintf("own%d", i), Role: RoleHost, Tier: TierHD, Seconds: 60, EgressBytes: mebibyte,
+		}}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := f.service.Allow(ctx, tenant); err != nil {
+		t.Fatalf("refused after usage on its own relays and Cloudflare's: %v", err)
+	}
+
+	if _, err := f.service.RecordUsage(ctx, Reporter{Hosting: HostingCloud}, []UsageRecord{{
+		ID: "cloud", Tenant: tenant, Role: RoleHost, Tier: TierHD, Seconds: 60, EgressBytes: mebibyte,
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.service.Allow(ctx, tenant); !errors.Is(err, ErrPaymentRequired) {
+		t.Fatalf("unpaid tenant admitted after usage on MOQOM's relays: %v", err)
+	}
+
+	f.paid(t, tenant, "pi_first", 1000)
+	if err := f.service.Allow(ctx, tenant); err != nil {
+		t.Fatalf("paid tenant refused: %v", err)
+	}
+}
+
+func TestSignupCreditWithoutUnpaidAdmissionWaitsForPayment(t *testing.T) {
+	ctx := context.Background()
+	f := newFixture(t, func(c *Config) { c.SignupCredit = 1111 * Dollar })
+	signup, _ := f.service.Signup(ctx, SignupRequest{Email: "dev@example.com", Name: "Example"})
+	if err := f.service.Allow(ctx, signup.Tenant.ID); !errors.Is(err, ErrPaymentRequired) {
+		t.Fatalf("unpaid tenant admitted on credit alone: %v", err)
 	}
 }
 

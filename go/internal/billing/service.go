@@ -49,9 +49,13 @@ type Config struct {
 	MaxTopUp     Micros
 	DefaultTopUp Micros
 	// SignupCredit is granted at signup and spendable once the tenant has paid
-	// once. Zero by default: free credit without a card is the first thing an
-	// abuser automates.
+	// once, or before that when CreditAdmitsUnpaid is set. Zero by default:
+	// free credit without a card is the first thing an abuser automates.
 	SignupCredit Micros
+	// CreditAdmitsUnpaid admits a tenant that has never paid on its credit
+	// alone, until it has any usage on a relay MOQOM runs: an unpaid tenant's
+	// credit pays for its own relays and Cloudflare's, never MOQOM's egress.
+	CreditAdmitsUnpaid bool
 
 	// Exempt tenants are admitted without a balance and their usage is not
 	// charged: operator test tenants, benchmarks, and the demo.
@@ -93,6 +97,7 @@ type Service struct {
 	maxTopUp      Micros
 	defaultTopUp  Micros
 	signupCredit  Micros
+	unpaidCredit  bool
 	exempt        map[string]bool
 	usage         UsageFilter
 	notifier      Notifier
@@ -151,6 +156,7 @@ func New(config Config) (*Service, error) {
 		maxTopUp:      config.MaxTopUp,
 		defaultTopUp:  config.DefaultTopUp,
 		signupCredit:  config.SignupCredit,
+		unpaidCredit:  config.CreditAdmitsUnpaid,
 		exempt:        config.Exempt,
 		usage:         config.Usage,
 		notifier:      config.Notifier,
@@ -344,7 +350,14 @@ func (s *Service) admit(ctx context.Context, tenant string) (Tenant, error) {
 	switch record.Status {
 	case StatusActive:
 	case StatusPending:
-		return record, ErrPaymentRequired
+		if !s.unpaidCredit {
+			return record, ErrPaymentRequired
+		}
+		if used, err := s.usedCloud(ctx, record); err != nil {
+			return record, err
+		} else if used {
+			return record, ErrPaymentRequired
+		}
 	default:
 		return record, ErrSuspended
 	}
@@ -362,6 +375,22 @@ func (s *Service) admit(ctx context.Context, tenant string) (Tenant, error) {
 		return record, ErrInsufficientCredit
 	}
 	return record, nil
+}
+
+// usedCloud reports whether a tenant has any usage MOQOM pays for: relays it
+// runs, recording storage, and anything else not marked as the tenant's own
+// relays or Cloudflare's.
+func (s *Service) usedCloud(ctx context.Context, record Tenant) (bool, error) {
+	buckets, err := s.store.UsageBreakdown(ctx, record.ID, record.CreatedAt, s.now().Add(time.Minute))
+	if err != nil {
+		return false, err
+	}
+	for _, bucket := range buckets {
+		if bucket.Records > 0 && bucket.Hosting != HostingSelf && bucket.Hosting != HostingCloudflare {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 func (s *Service) limitReached(ctx context.Context, record Tenant) (bool, error) {
